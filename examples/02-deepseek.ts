@@ -24,7 +24,7 @@ async function main() {
   const provider = new DeepseekProvider({ apiKey });
 
   const tools = new ToolRegistry();
-  tools.register(bashTool());
+  tools.register(bashTool);
 
   const agent = new AIAgent(provider, tools, {
     model: "deepseek-v4-flash",

@@ -28,7 +28,7 @@ async function main() {
   const provider = new AnthropicProvider({ apiKey });
 
   const tools = new ToolRegistry();
-  tools.register(bashTool());
+  tools.register(bashTool);
   tools.register(createReadTool());
   tools.register(createWriteTool());
 

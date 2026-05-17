@@ -47,7 +47,7 @@ import {
 const provider = new AnthropicProvider({ apiKey: process.env.ANTHROPIC_API_KEY! });
 
 const tools = new ToolRegistry();
-tools.register(bashTool());
+tools.register(bashTool);
 tools.register(createReadTool());
 tools.register(createWriteTool());
 
