@@ -7,7 +7,7 @@
  * Originally derived from Nous Research's hermes-agent (MIT); see NOTICE.
  */
 
-export const MAESTRO_SDK_VERSION = "0.1.0" as const;
+export const MAESTRO_SDK_VERSION = "0.1.2" as const;
 export const MAESTRO_UPSTREAM_SNAPSHOT = "v0.13.0 (2026-05-07)" as const;
 
 // ─── Core agent loop ─────────────────────────────────────────────────────────
@@ -90,7 +90,12 @@ export { getTodoStore, dropTodoStore } from "@/state/todos";
 export type { MaestroMcpServerSpec, MaestroMcpClient, MaestroMcpTool } from "@/mcp/client";
 
 // ─── Session store ───────────────────────────────────────────────────────────
-export { deleteMaestroSession } from "@/session-store";
+export {
+  deleteMaestroSession,
+  maestroSessionsDir,
+  cleanupStaleMaestroSessions,
+  DEFAULT_MAESTRO_SESSION_TTL_MS,
+} from "@/session-store";
 
 // ─── Host integration points (dependency injection) ──────────────────────────
 export { setLogger, type Logger, type LogFn } from "@/platform/logger";

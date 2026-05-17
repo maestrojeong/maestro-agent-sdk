@@ -114,6 +114,28 @@ for await (const event of runConversation(agent, "Summarize today's news.")) {
 More runnable scripts live under [`examples/`](./examples) — Anthropic, DeepSeek,
 and a custom-tool walkthrough.
 
+## Configuration
+
+The SDK resolves a few paths at module load. Override via env vars **before**
+importing any SDK module (the values are captured once):
+
+| Env var | Default | What it does |
+|---|---|---|
+| `MAESTRO_DATA_DIR` | `~/.maestro` | Where session JSONLs, skill usage counters, and todo stores live. `maestroSessionsDir()` resolves to `<DATA_DIR>/sessions`. |
+| `MAESTRO_WORKSPACE_DIR` | `~/maestro-workspace` | Sandbox root for the builtin filesystem tools (`read`, `write`, `edit`, `bash`). |
+| `MAESTRO_COMPRESSION_MODEL` | `claude-haiku-4-5-20251001` | Cheap/fast model id used by the memory compressor. |
+
+For session housekeeping there's a helper that hosts can wire into their
+startup sweep:
+
+```ts
+import { cleanupStaleMaestroSessions, DEFAULT_MAESTRO_SESSION_TTL_MS } from "maestro-agent-sdk";
+
+// At boot: drop JSONLs untouched for >30 days (default).
+const { deleted, scanned } = cleanupStaleMaestroSessions();
+console.log(`maestro sweep: deleted ${deleted}/${scanned}`);
+```
+
 ## Architecture
 
 ```

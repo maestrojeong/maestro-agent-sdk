@@ -16,9 +16,14 @@ import { resolve } from "node:path";
 
 const HOME = homedir();
 
+// Default lives at `~/.maestro` (NOT `~/.maestro-agent`) so the path matches
+// `maestroSessionsDir()`'s historical layout — earlier SDK versions hard-
+// coded `~/.maestro/sessions/`, and hosts that started writing there before
+// 0.1.2 wired the directory through `DATA_DIR` should keep finding the
+// JSONLs in the same place after upgrading.
 export const DATA_DIR: string = process.env.MAESTRO_DATA_DIR
   ? resolve(process.env.MAESTRO_DATA_DIR)
-  : resolve(HOME, ".maestro-agent");
+  : resolve(HOME, ".maestro");
 
 export const WORKSPACE_DIR: string = process.env.MAESTRO_WORKSPACE_DIR
   ? resolve(process.env.MAESTRO_WORKSPACE_DIR)

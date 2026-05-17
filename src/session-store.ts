@@ -24,8 +24,8 @@
 
 import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { DATA_DIR } from "@/platform/config";
 import {
   assertUuidLike,
   type ChatPair,
@@ -39,9 +39,20 @@ import { parseJsonlText, writeJsonlFile } from "@/platform/jsonl";
 import { logger } from "@/platform/logger";
 import type { ConversationEntry } from "@/storage/conversations";
 
-/** Root directory for maestro session/rollout files. */
+/**
+ * Root directory for maestro session/rollout files.
+ *
+ * Resolves under `DATA_DIR` (which the host can pin via the
+ * `MAESTRO_DATA_DIR` env var — see `platform/config`). One canonical knob
+ * for "where SDK state lives" keeps the sessions, skill-usage counters,
+ * and todo stores all under the same root.
+ *
+ * Re-reads `DATA_DIR` on every call so a host that sets the env var late
+ * (before the first session save) still gets the override. The penalty
+ * is one `path.join` per call, which is negligible.
+ */
 export function maestroSessionsDir(): string {
-  return join(homedir(), ".maestro", "sessions");
+  return join(DATA_DIR, "sessions");
 }
 
 /** Absolute path of the JSONL backing a given sessionId. */
@@ -238,8 +249,13 @@ export function trimToSafePrefix(messages: ProviderMessage[]): ProviderMessage[]
   return messages.slice(0, end);
 }
 
-/** Default retention: sessions untouched for 30 days are auto-purged. */
-const DEFAULT_MAESTRO_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+/**
+ * Default retention used by `cleanupStaleMaestroSessions` when no override
+ * is passed: sessions untouched for 30 days are auto-purged. Exported so
+ * host startup sweeps can hand the value back in or compare against their
+ * own policy.
+ */
+export const DEFAULT_MAESTRO_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 /**
  * Sweep `~/.maestro/sessions/` and unlink JSONL files whose mtime is older
