@@ -1,20 +1,25 @@
 # maestro-agent-sdk
 
-**Provider-agnostic TypeScript agent SDK** — embeddable agent loop with built-in tools, skills, memory compression, and MCP.
+[![CI](https://github.com/maestrojeong/maestro-agent-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/maestrojeong/maestro-agent-sdk/actions/workflows/ci.yml)
+[![npm version](https://img.shields.io/npm/v/maestro-agent-sdk.svg)](https://www.npmjs.com/package/maestro-agent-sdk)
+[![license](https://img.shields.io/npm/l/maestro-agent-sdk.svg)](./LICENSE)
+
+**Embeddable, provider-agnostic TypeScript agent SDK** — pluggable providers, built-in tools, skills, memory, and MCP.
 
 > **Status:** Early port (v0.1.x). Active development. API surface may change before 1.0.
 
-This package is a standalone, embeddable port of the Maestro agent runtime, originally developed by [Nous Research](https://github.com/NousResearch/hermes-agent) as part of `hermes-agent`. Upstream is a self-contained end-user product (Telegram/Discord/Slack gateway + cron + skills); this SDK extracts the agent **core** so it can be `npm install`-ed and embedded in any TypeScript/Node app.
+This package extracts the Maestro agent runtime — originally built into [Nous Research's `hermes-agent`](https://github.com/NousResearch/hermes-agent) — into a standalone npm package you can drop into any TypeScript / Node app.
 
 ## What's in the box
 
 - **Agent loop** — provider-driven tool-calling loop with iteration cap, abort signal, and event stream.
-- **Multi-provider** — first-class adapters for Anthropic (Claude) and DeepSeek V4; provider-neutral message schema so adding OpenAI / Gemini / Ollama is a thin file.
+- **Pluggable providers** — first-class adapters for Anthropic (Claude) and DeepSeek V4; provider-neutral message schema so adding OpenAI / Gemini / Ollama is a thin file.
 - **Built-in tools** — `bash`, `read`, `write`, `edit`, `agent` (sub-agent delegation), `todo_write`, `skill_view`, `web_fetch`. Bring your own via `ToolRegistry`.
 - **MCP** — built-in client pool (stdio + SSE) so any MCP server (`@modelcontextprotocol/sdk`) shows up as tools.
 - **Skills** — Anthropic-style `SKILL.md` packages with FTS-style indexing and on-demand expansion.
-- **Memory** — automatic context compression (summarization + pruning) when token budget is hit.
+- **Memory** — automatic context compression (summarization + pruning) when the token budget is hit.
 - **Filesystem sandbox** — optional path-allowlist hook for read/write/edit/bash.
+- **Host integration via DI** — `setLogger`, `setMcpResolver`, `setConversationReader` let you embed without inheriting any one host's opinions.
 
 ## Install
 
@@ -24,14 +29,20 @@ npm install maestro-agent-sdk
 bun add maestro-agent-sdk
 ```
 
-Peer requirement: Node.js >= 20.
+Requires Node.js 20+.
 
 ## Quick start
 
 ```ts
-import { AIAgent, ToolRegistry, runConversation } from "maestro-agent-sdk";
-import { AnthropicProvider } from "maestro-agent-sdk/providers/anthropic";
-import { bashTool, createReadTool, createWriteTool } from "maestro-agent-sdk/tools";
+import {
+  AIAgent,
+  AnthropicProvider,
+  bashTool,
+  createReadTool,
+  createWriteTool,
+  ToolRegistry,
+  runConversation,
+} from "maestro-agent-sdk";
 
 const provider = new AnthropicProvider({ apiKey: process.env.ANTHROPIC_API_KEY! });
 
@@ -41,8 +52,8 @@ tools.register(createReadTool());
 tools.register(createWriteTool());
 
 const agent = new AIAgent(provider, tools, {
-  model: "claude-sonnet-4-5",
-  systemPrompt: "You are a helpful assistant. Use tools to answer the user.",
+  model: "claude-sonnet-4-6",
+  systemPrompt: "You are a helpful assistant.",
   maxIterations: 30,
   maxTokens: 4096,
 });
@@ -52,6 +63,8 @@ for await (const event of runConversation(agent, "List files in /tmp.")) {
   if (event.type === "tool_use") console.error(`\n[tool] ${event.name}`);
 }
 ```
+
+More runnable examples live under [`examples/`](./examples).
 
 ## Architecture
 
@@ -64,11 +77,56 @@ src/
 ├── skills/       SKILL.md loader, index builder, usage tracker, curator
 ├── memory/       Context compressor, token estimator, reminders, scrubber
 ├── state/        Per-session todo store
-├── sub-agent/    Sub-agent runner for `agent` tool
-└── platform/     Injectable host adapters (logger, lifecycle, config)
+├── sub-agent/    Sub-agent runner for the `agent` tool
+├── platform/     Injectable host adapters (logger, lifecycle, config, jsonl, mcp-config)
+├── agents/       Cross-agent rollout helpers + per-agent registry contract
+├── storage/      ConversationReader DI (host supplies past turns for cross-agent forks)
+└── media/        File-event extraction from inline `[FILE:/path]` tags
 ```
 
-The `platform/` modules let you plug in your own logger / shutdown registry / data directory so the SDK never assumes a particular host process.
+The `platform/`, `storage/`, and `agents/contracts` modules expose **injection points** so the SDK never assumes a particular host process.
+
+## Host integration (DI)
+
+```ts
+import {
+  setLogger,
+  setMcpResolver,
+  setConversationReader,
+} from "maestro-agent-sdk";
+
+// 1) Replace the console logger with your structured logger (pino, winston, ...).
+setLogger(myPinoLogger);
+
+// 2) Provide MCP server specs per-query.
+setMcpResolver((opts) => ({
+  "playwright": { command: "playwright-mcp", args: [] },
+  "fs": { command: "mcp-fs", args: ["--root", opts.cwd] },
+}));
+
+// 3) Back-fill conversation history for cross-agent forks.
+setConversationReader((userId, topic, groupId) => myStore.read({ userId, topic, groupId }));
+```
+
+## Development
+
+```bash
+git clone git@github.com:maestrojeong/maestro-agent-sdk.git
+cd maestro-agent-sdk
+npm install
+npm run typecheck   # tsc --noEmit
+npm run build       # tsc + tsc-alias → dist/
+npm test            # vitest, 343 tests
+```
+
+### Known gaps
+
+Two test files are currently excluded in `vitest.config.ts`:
+
+- `maestro-registry.test.ts`
+- `maestro-session-store.test.ts`
+
+They rely on host-side helpers (`appendConversationEvent`, `getConversationPath`) and on the strict workspace-root check that the SDK loosened. They'll come back online once we wire them through the `ConversationReader` DI hook.
 
 ## License
 

@@ -1,7 +1,7 @@
 {
   "name": "maestro-agent-sdk",
   "version": "0.1.0",
-  "description": "Provider-agnostic TypeScript agent SDK with built-in skills, memory, and MCP. A standalone, embeddable port of the Maestro agent loop (originally from Nous Research's hermes-agent).",
+  "description": "Embeddable, provider-agnostic TypeScript agent SDK — pluggable providers, built-in tools, skills, memory, and MCP.",
   "license": "MIT",
   "author": "Yeonwoo Jeong <aadd4020@gmail.com>",
   "repository": {
@@ -39,6 +39,8 @@
     "build": "tsc -p tsconfig.build.json && tsc-alias -p tsconfig.build.json --resolve-full-paths",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "prepublishOnly": "npm run clean && npm run build"
   },
   "keywords": [
@@ -64,6 +66,7 @@
   "devDependencies": {
     "@types/node": "^20",
     "tsc-alias": "^1.8.17",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^4.1.6"
   }
 }
