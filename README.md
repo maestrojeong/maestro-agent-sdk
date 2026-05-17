@@ -33,6 +33,8 @@ Requires Node.js 20+.
 
 ## Quick start
 
+### Anthropic (Claude)
+
 ```ts
 import {
   AIAgent,
@@ -64,7 +66,53 @@ for await (const event of runConversation(agent, "List files in /tmp.")) {
 }
 ```
 
-More runnable examples live under [`examples/`](./examples).
+### DeepSeek (V4)
+
+Identical loop — only swap the provider class and model id. The unified event
+stream, tool registry, and `runConversation()` driver are unchanged.
+
+```ts
+import {
+  AIAgent,
+  DeepseekProvider,
+  bashTool,
+  ToolRegistry,
+  runConversation,
+} from "maestro-agent-sdk";
+
+const provider = new DeepseekProvider({ apiKey: process.env.DEEPSEEK_API_KEY! });
+
+const tools = new ToolRegistry();
+tools.register(bashTool);
+
+const agent = new AIAgent(provider, tools, {
+  model: "deepseek-v4-flash",      // or "deepseek-v4-pro"
+  systemPrompt: "You are a concise assistant.",
+  maxIterations: 20,
+  maxTokens: 2048,
+  effort: "medium",                 // DeepSeek maps this to `reasoning_effort`
+});
+
+for await (const event of runConversation(agent, "Summarize today's news.")) {
+  if (event.type === "text_delta") process.stdout.write(event.content);
+  if (event.type === "tool_use") console.error(`\n[tool] ${event.name}`);
+}
+```
+
+> **Effort scale.** `effort` drives both the thinking budget _and_ the
+> tool-iteration cap. The model also sees its remaining-iteration count in a
+> `<system-reminder>` block every turn so it can self-pace. Knobs:
+>
+> | effort  | thinking budget | iteration cap |
+> |---------|----------------:|--------------:|
+> | `low`   |          2 048  |             5 |
+> | `medium`|          8 192  |            20 |
+> | `high`  |         16 384  |            50 |
+> | `xhigh` |         32 768  |            90 |
+> | `max`   |         65 536  |           200 |
+
+More runnable scripts live under [`examples/`](./examples) — Anthropic, DeepSeek,
+and a custom-tool walkthrough.
 
 ## Architecture
 
@@ -130,4 +178,4 @@ They rely on host-side helpers (`appendConversationEvent`, `getConversationPath`
 
 ## License
 
-MIT. See [LICENSE](./LICENSE) and [NOTICE](./NOTICE) for upstream attribution to Nous Research.
+[MIT](./LICENSE) — same as the upstream [hermes-agent](https://github.com/NousResearch/hermes-agent) project this SDK is derived from. See [NOTICE](./NOTICE) for full attribution to Nous Research and a summary of the changes in this distribution.
