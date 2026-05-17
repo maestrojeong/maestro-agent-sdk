@@ -43,7 +43,7 @@ import { logger } from "@/platform/logger";
  * canonical (uncompacted) history on disk so resume can replay the full
  * thread if desired.
  *
- * Upstream reference: `/Users/maestrobot/__KEEP_MAESTRO_AGENT__/agent/context_compressor.py`
+ * Upstream reference: `hermes-agent/agent/context_compressor.py`
  * — the `should_compress(real_tokens)` → `compress_messages()` path, minus
  * the multi-provider tokenizer plumbing (we estimate; see token-estimate.ts).
  */

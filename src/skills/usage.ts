@@ -33,10 +33,11 @@ import { logger } from "@/platform/logger";
  * path is async (await the mutex, then sync-write the tmp + rename). Both
  * tolerate ENOENT — first-ever bump creates the file fresh.
  *
- * Upstream reference: `/Users/maestrobot/__KEEP_MAESTRO_AGENT__/tools/skill_usage.py`
- * (similar schema; we collapse their per-skill `.usage.json` directory
- * pattern into one central JSON to avoid polluting the upstream snapshot's
- * skills/ directory with mutated files).
+ * Schema mirrors the upstream skill-usage tracker (similar fields); the
+ * SDK collapses upstream's per-skill `.usage.json` directory pattern into
+ * one central JSON so the skill catalog itself stays read-only and a host
+ * can rsync / version-control the SKILL.md tree without dragging mutated
+ * counter files along.
  */
 
 export interface SkillCounters {

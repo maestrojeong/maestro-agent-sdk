@@ -7,7 +7,7 @@
  * Originally derived from Nous Research's hermes-agent (MIT); see NOTICE.
  */
 
-export const MAESTRO_SDK_VERSION = "0.1.2" as const;
+export const MAESTRO_SDK_VERSION = "0.1.3" as const;
 export const MAESTRO_UPSTREAM_SNAPSHOT = "v0.13.0 (2026-05-07)" as const;
 
 // ─── Core agent loop ─────────────────────────────────────────────────────────

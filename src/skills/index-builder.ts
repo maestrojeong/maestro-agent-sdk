@@ -4,15 +4,14 @@ import { SKILL_INDEX_DESCRIPTION_CAP, type SkillEntry } from "@/skills/loader";
  * Render the `## Skills (mandatory)` block that gets appended to the Maestro
  * system prompt.
  *
- * Lifted verbatim from upstream `agent/prompt_builder.py::build_skills_prompt`
- * with two changes:
- *   1. Maestro-CLI-specific guidance ("load the `__KEEP_MAESTRO_AGENT__` skill first
- *      when configuring Maestro...") is dropped — Clawgram doesn't ship the
- *      __KEEP_MAESTRO_AGENT__ skill, and the instruction would suggest a tool the
- *      model can't reach.
- *   2. The `skill_manage(action='patch')` invitation is dropped — Phase 4
- *      (Curator) lands that tool; surfacing it before then would invite a
- *      `unknown tool` error.
+ * Ported from upstream `agent/prompt_builder.py::build_skills_prompt` with
+ * two changes:
+ *   1. CLI-installer-specific guidance from the upstream tree is dropped —
+ *      the SDK ships no bundled SKILL.md catalog, so suggesting a tool that
+ *      isn't there would just produce `unknown tool` noise.
+ *   2. The `skill_manage(action='patch')` invitation is dropped — the
+ *      Curator's mutation path is intentionally deferred; surfacing the
+ *      tool before then would invite a `unknown tool` error.
  *
  * Everything else is preserved word-for-word because it's the "MUST load /
  * err on the side of loading" framing that actually raises the skill-call

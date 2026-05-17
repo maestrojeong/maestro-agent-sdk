@@ -16,7 +16,7 @@
  *     match the structure upstream uses, calibrated against many real
  *     compaction events on long sessions.
  *
- * Upstream reference: `/Users/maestrobot/__KEEP_MAESTRO_AGENT__/agent/context_compressor.py`
+ * Upstream reference: `hermes-agent/agent/context_compressor.py`
  * (look for the "ACTIVE_TASK_SUMMARY_TEMPLATE" / "compression_system_prompt"
  * constants). We keep the schema verbatim so summaries between agents stay
  * mutually intelligible if the topic later switches via set_agent.

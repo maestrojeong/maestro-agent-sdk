@@ -38,7 +38,7 @@ import type { ProviderContentBlock, ProviderMessage } from "@/providers/base";
  * savings slightly — fine for the anti-thrash threshold (better to over-skip
  * than over-prune).
  *
- * Upstream reference: `/Users/maestrobot/__KEEP_MAESTRO_AGENT__/agent/context_compressor.py:519-685`.
+ * Upstream reference: `hermes-agent/agent/context_compressor.py:519-685`.
  */
 
 export interface PruneOptions {

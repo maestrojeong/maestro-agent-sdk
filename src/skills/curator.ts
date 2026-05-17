@@ -23,21 +23,21 @@ import { logger } from "@/platform/logger";
  *                it via skill_view if the user explicitly names it, but
  *                it stops costing tokens on every turn.
  *
- * The `bundled` vs `agent-created` provenance bit (upstream's curator
- * tracks this) is approximated by the SKILL.md's parent path: anything
- * under the upstream snapshot (`/Users/maestrobot/__KEEP_MAESTRO_AGENT__/skills/`)
- * is `bundled`, otherwise `agent-created`. Bundled skills are never
- * archived — they're shipped intentionally and removing them would silently
- * break the next user's expectation.
+ * The `bundled` vs `agent-created` provenance bit is approximated by the
+ * SKILL.md's parent path: anything under the SDK's skill root
+ * (`MAESTRO_SKILL_DIR` or its `<DATA_DIR>/skills` default) is `bundled`,
+ * otherwise `agent-created`. Bundled skills are never archived — they're
+ * shipped intentionally and removing them would silently break the next
+ * user's expectation.
  *
  * The state file lives at `${DATA_DIR}/agents/maestro/skills/state.json`.
- * Like the usage sidecar it's process-local + atomic-write — Clawgram is
- * single-process and the curator runs once per turn at most.
+ * Like the usage sidecar it's process-local + atomic-write — a host loop
+ * is single-process and the curator runs at most once per turn.
  *
- * Upstream reference: `/Users/maestrobot/__KEEP_MAESTRO_AGENT__/agent/curator.py`
- * — we ship the rule-based transitions only. The LLM-review pass (which
- * proposes merges between near-duplicate skills) is intentionally deferred
- * to a later phase; needs a cost budget and operator-confirmed action.
+ * The SDK ships the rule-based lifecycle transitions only. The LLM-review
+ * pass that upstream uses to propose merges between near-duplicate skills
+ * is intentionally deferred — it needs a cost budget and operator-confirmed
+ * action, both of which are host-side concerns.
  */
 
 export type SkillLifecycle = "active" | "stale" | "archived";
@@ -117,13 +117,12 @@ function writeAtomic(path: string, contents: SkillStateFile): void {
   renameSync(tmp, path);
 }
 
-/** A skill is `bundled` if its file lives under the upstream snapshot
- *  directory (defaults to `~/__KEEP_MAESTRO_AGENT__/skills`, overridable via the
- *  same `MAESTRO_SKILL_DIR` env that loader.ts uses). Anything outside
- *  that tree is treated as agent-created. */
+/** A skill is `bundled` if its file lives under the SDK's skill root —
+ *  i.e. the directory `MAESTRO_SKILL_DIR` points at, or the default
+ *  `<DATA_DIR>/skills` (`~/.maestro/skills` unless `MAESTRO_DATA_DIR`
+ *  overrides). Anything outside that tree is treated as agent-created. */
 function isBundled(skill: SkillEntry): boolean {
-  const snapshotRoot =
-    process.env.MAESTRO_SKILL_DIR ?? `${process.env.HOME ?? ""}/__KEEP_MAESTRO_AGENT__/skills`;
+  const snapshotRoot = process.env.MAESTRO_SKILL_DIR ?? join(DATA_DIR, "skills");
   return skill.skillDir.startsWith(snapshotRoot);
 }
 

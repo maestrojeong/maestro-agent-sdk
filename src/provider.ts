@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { join } from "node:path";
+import { DATA_DIR } from "@/platform/config";
 import { AIAgent } from "@/core/agent";
 import { runConversation } from "@/core/loop";
 import { type MaestroMcpPool, registerMcpTools, startMcpPool } from "@/mcp/pool";
@@ -117,14 +119,16 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
   //     demand (progressive disclosure — saves the per-turn cost of inlining
   //     every skill body).
   //
-  // Source dir is picked from `MAESTRO_SKILL_DIR` first so power users can
-  // point at a Clawgram-local catalog later without code change; the v0.13.0
-  // upstream tree at `~/__KEEP_MAESTRO_AGENT__/skills/` is the current default.
+  // Source dir is picked from `MAESTRO_SKILL_DIR` first so hosts can point at
+  // their own catalog without code change; the default lives under
+  // `<DATA_DIR>/skills`, i.e. `~/.maestro/skills` unless `MAESTRO_DATA_DIR`
+  // overrides. SDK ships with no bundled SKILL.md files — an empty catalog
+  // is the expected state until a host populates one.
   //
   // Failures (rootDir missing, unreadable, every file malformed) reduce to an
   // empty catalog — the loop still runs with just bash + MCP tools.
   const skillsDir =
-    process.env.MAESTRO_SKILL_DIR ?? "/Users/maestrobot/__KEEP_MAESTRO_AGENT__/skills";
+    process.env.MAESTRO_SKILL_DIR ?? join(DATA_DIR, "skills");
   let skillsBlock = "";
   // Hoisted to outer scope so the Agent tool (registered below, after
   // model/effort resolve) can pass the same skill catalog to sub-agents.

@@ -18,7 +18,7 @@ import type { ProviderContentBlock, ProviderMessage } from "@/providers/base";
  * mode (compacting a turn early is mildly wasteful; missing a compact and
  * blowing past the context window is a hard 400 error).
  *
- * Upstream reference: `/Users/maestrobot/__KEEP_MAESTRO_AGENT__/agent/context_compressor.py`
+ * Upstream reference: `hermes-agent/agent/context_compressor.py`
  * uses a similar char-based approximation when no tokenizer is plugged in.
  */
 

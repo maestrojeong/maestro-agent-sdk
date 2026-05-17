@@ -14,7 +14,7 @@ import {
  *
  * Build a temporary skills tree on disk so we exercise the same directory
  * walk + frontmatter parse the real `maestroProvider` runs at startup,
- * without depending on the user's `~/__KEEP_MAESTRO_AGENT__/skills/` contents.
+ * without depending on whatever the host has under `MAESTRO_SKILL_DIR`.
  */
 
 let scratch: string;

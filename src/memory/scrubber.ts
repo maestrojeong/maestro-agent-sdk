@@ -32,7 +32,7 @@ import {
  * downstream. The caller does the actual yield. Idempotent on
  * empty/clean chunks (zero-byte pass-through).
  *
- * Upstream reference: `/Users/maestrobot/__KEEP_MAESTRO_AGENT__/agent/memory_manager.py`
+ * Upstream reference: `hermes-agent/agent/memory_manager.py`
  * — class `StreamingContextScrubber` (similar state-machine shape,
  * Python regex-based; ours is character-walking for predictable behavior
  * on multi-byte boundaries).
