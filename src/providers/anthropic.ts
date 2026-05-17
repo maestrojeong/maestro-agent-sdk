@@ -1,0 +1,550 @@
+import type {
+  Provider,
+  ProviderCompleteOptions,
+  ProviderContentBlock,
+  ProviderMessage,
+  ProviderResponse,
+  ProviderStreamChunk,
+  ProviderToolSchema,
+} from "@/providers/base";
+import type { TokenUsage } from "@/types";
+
+const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
+const ANTHROPIC_VERSION = "2023-06-01";
+const INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14";
+
+/** Anthropic cache-control marker. Wire-only — the rest of the Maestro
+ *  pipeline uses pure `ProviderContentBlock` without this field. */
+type CacheControl = { type: "ephemeral" };
+
+/** Anthropic accepts at most 4 cache_control markers per request. We use 3
+ *  (system, tools, last message) — leaves headroom if a future change wants
+ *  one more without restructuring the breakpoint plan. */
+const MAX_CACHE_BREAKPOINTS = 4;
+
+interface AnthropicUsage {
+  input_tokens: number;
+  output_tokens: number;
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
+}
+
+interface AnthropicResponse {
+  id: string;
+  type: "message";
+  role: "assistant";
+  content: ProviderContentBlock[];
+  model: string;
+  stop_reason: string;
+  usage: AnthropicUsage;
+}
+
+/**
+ * Raw Anthropic Messages API adapter for the Maestro TS port.
+ *
+ * Uses fetch directly (no @anthropic-ai/sdk dependency) — keeps the dep
+ * surface minimal and avoids overlap with Clawgram's existing
+ * @anthropic-ai/claude-agent-sdk usage (which is a higher-level wrapper
+ * around a claude CLI subprocess).
+ *
+ * Auth: ANTHROPIC_API_KEY env var. This is independent from Clawgram's
+ * existing Claude provider, which uses OAuth via the claude CLI.
+ */
+export class AnthropicProvider implements Provider {
+  constructor(private readonly apiKey: string) {}
+
+  static fromEnv(): AnthropicProvider {
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) {
+      throw new Error("Maestro AnthropicProvider: ANTHROPIC_API_KEY env var is not set");
+    }
+    return new AnthropicProvider(apiKey);
+  }
+
+  async complete(opts: ProviderCompleteOptions): Promise<ProviderResponse> {
+    // Apply prompt-caching breakpoints to the three slots Anthropic's cache
+    // recognizes (system, tools, last message). claude/codex SDKs do this
+    // internally; since maestro hits the API raw, we own it here.
+    //
+    // Cache hits drop input-token cost roughly 10× and shave hundreds of ms
+    // off TTFT for long-running multi-turn sessions — the same conversation
+    // re-sends the same system + tool schemas every iteration, and most of
+    // the prior history is stable across the agent loop's tool-round cycle.
+    //
+    // We rebuild the body each turn rather than mutating opts.messages in
+    // place so the persisted history (read back from JSONL on the next
+    // resume) stays free of stale cache_control markers.
+    const body: Record<string, unknown> = {
+      model: opts.model,
+      max_tokens: opts.maxTokens ?? 4096,
+      system: buildCacheableSystem(opts.system),
+      messages: buildCacheableMessages(opts.messages),
+    };
+    if (opts.tools && opts.tools.length > 0) {
+      body.tools = buildCacheableTools(opts.tools);
+    }
+    applyThinkingBudget(body, opts.thinkingBudget);
+
+    const headers: Record<string, string> = {
+      "content-type": "application/json",
+      "x-api-key": this.apiKey,
+      "anthropic-version": ANTHROPIC_VERSION,
+    };
+    applyThinkingHeaders(headers, opts.thinkingBudget);
+
+    const init: RequestInit = {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    };
+    if (opts.abortSignal) {
+      init.signal = opts.abortSignal;
+    }
+
+    const response = await fetch(ANTHROPIC_API_URL, init);
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`Anthropic API ${response.status}: ${text}`);
+    }
+    const data = (await response.json()) as AnthropicResponse;
+    return {
+      content: data.content,
+      stopReason: data.stop_reason,
+      usage: mapUsage(data.usage),
+    };
+  }
+
+  /**
+   * Streaming variant of `complete()`. Sends the same request body with
+   * `stream: true`, parses the resulting SSE event stream into the small
+   * set of chunks the agent loop consumes (text_delta, tool_use_start /
+   * input_delta / complete, message_complete).
+   *
+   * The model's network shape is Anthropic SSE — events like
+   * `message_start`, `content_block_start`, `content_block_delta`,
+   * `content_block_stop`, `message_delta`, `message_stop`, plus periodic
+   * `ping` keepalives. Most are housekeeping; the loop only needs the
+   * deltas + tool_use lifecycle + terminal stop_reason / usage. Everything
+   * else is consumed and dropped by this adapter.
+   */
+  async *stream(opts: ProviderCompleteOptions): AsyncGenerator<ProviderStreamChunk> {
+    const body: Record<string, unknown> = {
+      model: opts.model,
+      max_tokens: opts.maxTokens ?? 4096,
+      system: buildCacheableSystem(opts.system),
+      messages: buildCacheableMessages(opts.messages),
+      stream: true,
+    };
+    if (opts.tools && opts.tools.length > 0) {
+      body.tools = buildCacheableTools(opts.tools);
+    }
+    applyThinkingBudget(body, opts.thinkingBudget);
+
+    const headers: Record<string, string> = {
+      "content-type": "application/json",
+      "x-api-key": this.apiKey,
+      "anthropic-version": ANTHROPIC_VERSION,
+      accept: "text/event-stream",
+    };
+    applyThinkingHeaders(headers, opts.thinkingBudget);
+
+    const init: RequestInit = {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    };
+    if (opts.abortSignal) {
+      init.signal = opts.abortSignal;
+    }
+
+    const response = await fetch(ANTHROPIC_API_URL, init);
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`Anthropic API ${response.status}: ${text}`);
+    }
+    if (!response.body) {
+      throw new Error("Anthropic API: streaming response missing body");
+    }
+
+    // Per-block scratch space. Anthropic indexes content blocks by position
+    // in the assistant message; we key on that index so concurrent tool_use
+    // blocks (Anthropic allows parallel tool_use in a single response) get
+    // their input_json_delta routed to the right accumulator.
+    const blockMeta = new Map<
+      number,
+      {
+        type: "text" | "tool_use" | "thinking" | "redacted_thinking";
+        id?: string;
+        name?: string;
+        thinking?: string;
+        signature?: string;
+        data?: string;
+      }
+    >();
+    const usage: TokenUsage = { inputTokens: 0, outputTokens: 0 };
+    let stopReason = "end_turn";
+
+    for await (const event of parseSseStream(response.body, opts.abortSignal)) {
+      switch (event.type) {
+        case "message_start": {
+          // Initial usage comes here (input tokens + cache stats). output
+          // tokens still 0 — they accumulate via message_delta.
+          const u = asRecord(event.message)?.usage as AnthropicUsage | undefined;
+          if (u) {
+            usage.inputTokens = u.input_tokens ?? 0;
+            usage.outputTokens = u.output_tokens ?? 0;
+            if (u.cache_creation_input_tokens !== undefined) {
+              usage.cacheCreationInputTokens = u.cache_creation_input_tokens;
+            }
+            if (u.cache_read_input_tokens !== undefined) {
+              usage.cacheReadInputTokens = u.cache_read_input_tokens;
+            }
+          }
+          break;
+        }
+        case "content_block_start": {
+          const idx = event.index ?? 0;
+          const cb = asRecord(event.content_block);
+          if (cb?.type === "text") {
+            blockMeta.set(idx, { type: "text" });
+          } else if (cb?.type === "tool_use") {
+            const id = typeof cb.id === "string" ? cb.id : "";
+            const name = typeof cb.name === "string" ? cb.name : "";
+            blockMeta.set(idx, { type: "tool_use", id, name });
+            yield { type: "tool_use_start", id, name };
+          } else if (cb?.type === "thinking") {
+            const meta: {
+              type: "thinking";
+              thinking: string;
+              signature?: string;
+            } = {
+              type: "thinking",
+              thinking: typeof cb.thinking === "string" ? cb.thinking : "",
+            };
+            if (typeof cb.signature === "string") meta.signature = cb.signature;
+            blockMeta.set(idx, meta);
+          } else if (cb?.type === "redacted_thinking") {
+            blockMeta.set(idx, {
+              type: "redacted_thinking",
+              data: typeof cb.data === "string" ? cb.data : "",
+            });
+          }
+          break;
+        }
+        case "content_block_delta": {
+          const idx = event.index ?? 0;
+          const meta = blockMeta.get(idx);
+          const delta = asRecord(event.delta);
+          if (!meta || !delta) break;
+          if (meta.type === "text" && delta.type === "text_delta" && delta.text) {
+            yield { type: "text_delta", text: String(delta.text) };
+          } else if (
+            meta.type === "tool_use" &&
+            delta.type === "input_json_delta" &&
+            typeof delta.partial_json === "string"
+          ) {
+            yield {
+              type: "tool_use_input_delta",
+              id: meta.id ?? "",
+              partial_json: delta.partial_json,
+            };
+          } else if (
+            meta.type === "thinking" &&
+            delta.type === "thinking_delta" &&
+            typeof delta.thinking === "string"
+          ) {
+            meta.thinking = `${meta.thinking ?? ""}${delta.thinking}`;
+          } else if (
+            meta.type === "thinking" &&
+            delta.type === "signature_delta" &&
+            typeof delta.signature === "string"
+          ) {
+            meta.signature = `${meta.signature ?? ""}${delta.signature}`;
+          }
+          break;
+        }
+        case "content_block_stop": {
+          const idx = event.index ?? 0;
+          const meta = blockMeta.get(idx);
+          if (meta?.type === "tool_use") {
+            yield {
+              type: "tool_use_complete",
+              id: meta.id ?? "",
+              name: meta.name ?? "",
+            };
+          } else if (meta?.type === "thinking") {
+            yield {
+              type: "thinking_complete",
+              block: {
+                type: "thinking",
+                thinking: meta.thinking ?? "",
+                ...(meta.signature ? { signature: meta.signature } : {}),
+              },
+            };
+          } else if (meta?.type === "redacted_thinking") {
+            yield {
+              type: "thinking_complete",
+              block: { type: "redacted_thinking", data: meta.data ?? "" },
+            };
+          }
+          break;
+        }
+        case "message_delta": {
+          // Carries final stop_reason + cumulative output usage.
+          const delta = asRecord(event.delta);
+          if (typeof delta?.stop_reason === "string") stopReason = delta.stop_reason;
+          const u = event.usage as AnthropicUsage | undefined;
+          if (u?.output_tokens !== undefined) usage.outputTokens = u.output_tokens;
+          break;
+        }
+        case "message_stop": {
+          // Anthropic's "we're done" marker. Emit the terminal chunk.
+          yield { type: "message_complete", stopReason, usage };
+          return;
+        }
+        case "error": {
+          const err = event.error as { message?: string; type?: string } | undefined;
+          throw new Error(
+            `Anthropic stream error: ${err?.type ?? "unknown"} — ${err?.message ?? ""}`,
+          );
+        }
+        default:
+          // ping, etc. — ignore.
+          break;
+      }
+    }
+
+    // Stream ended without an explicit message_stop (server hung up cleanly).
+    // Emit a terminal chunk anyway so the loop can finalize its turn.
+    yield { type: "message_complete", stopReason, usage };
+  }
+}
+
+/** One parsed Anthropic SSE event. We keep the shape loose since we only
+ *  consume a handful of fields per event type. */
+interface SseEvent {
+  type: string;
+  index?: number;
+  // A strict union mirroring every Anthropic event shape would add hundreds
+  // of lines for fields we never read; the switch above already narrows on
+  // `type` and reads the small set of nested keys per branch.
+  [key: string]: unknown;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+/**
+ * Parse Anthropic's `text/event-stream` response body into typed SSE events.
+ *
+ * Anthropic frames each event as
+ *   event: <type>\ndata: <json>\n\n
+ * We buffer across chunk boundaries, split on the blank-line terminator,
+ * and JSON-parse the `data:` payload. The `event:` line is informational
+ * (Anthropic always also embeds the type inside the JSON), so we trust
+ * the `data` payload's `type` field as the authoritative event type —
+ * matches what the official SDKs do.
+ *
+ * The abort signal is honored by aborting the underlying ReadableStream
+ * reader, which propagates AbortError up into the caller.
+ */
+async function* parseSseStream(
+  body: ReadableStream<Uint8Array>,
+  abortSignal?: AbortSignal,
+): AsyncGenerator<SseEvent> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let buf = "";
+  const onAbort = () => {
+    reader.cancel("aborted").catch(() => {});
+  };
+  abortSignal?.addEventListener("abort", onAbort, { once: true });
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      // Drain every complete event (terminated by a blank line).
+      let idx = buf.indexOf("\n\n");
+      while (idx >= 0) {
+        const raw = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        const dataLine = raw
+          .split("\n")
+          .find((l) => l.startsWith("data:"))
+          ?.slice("data:".length)
+          .trim();
+        if (dataLine) {
+          try {
+            yield JSON.parse(dataLine) as SseEvent;
+          } catch {
+            // Malformed frame — skip rather than abort the stream; Anthropic
+            // shouldn't emit these but defensive parsing avoids one bad byte
+            // taking down a whole turn.
+          }
+        }
+        idx = buf.indexOf("\n\n");
+      }
+    }
+  } finally {
+    abortSignal?.removeEventListener("abort", onAbort);
+    reader.releaseLock();
+  }
+}
+
+/**
+ * Convert the user-supplied `system` (plain string) into the array shape
+ * Anthropic accepts when you need a cache_control marker. A string slot
+ * has no cache field, so we lift it into a single text block and tag it
+ * ephemeral. Returning the original string unchanged when it's empty keeps
+ * the request shape minimal for prompt-less calls.
+ */
+export function buildCacheableSystem(
+  system: string,
+): string | Array<{ type: "text"; text: string; cache_control: CacheControl }> {
+  if (!system || system.length === 0) return system;
+  return [{ type: "text", text: system, cache_control: { type: "ephemeral" } }];
+}
+
+/**
+ * Tag the last tool with cache_control so the (usually large) tool schema
+ * block lands in the cache after the first turn. Other tools are passed
+ * through verbatim — Anthropic caches the entire tools array prefix up to
+ * the last marker, so one breakpoint covers every preceding entry.
+ *
+ * Returns a new array; the caller's `opts.tools` reference is untouched so
+ * subsequent calls don't accumulate markers.
+ */
+export function buildCacheableTools(
+  tools: readonly ProviderToolSchema[],
+): Array<ProviderToolSchema & { cache_control?: CacheControl }> {
+  if (tools.length === 0) return [];
+  const out: Array<ProviderToolSchema & { cache_control?: CacheControl }> = tools.map((t) => ({
+    ...t,
+  }));
+  out[out.length - 1] = { ...out[out.length - 1], cache_control: { type: "ephemeral" } };
+  return out;
+}
+
+/**
+ * Tag the last block of the last message with cache_control. This is the
+ * rolling breakpoint that moves forward each turn — the second-to-last
+ * marker (set on the previous call) ages out into a regular cache prefix,
+ * which Anthropic will hit on the new call's read.
+ *
+ * Three message-shape cases:
+ *   - last message is `{role, content: string}` → lift to a single text
+ *     block with cache_control.
+ *   - last message has a block array → shallow-clone the array and replace
+ *     just the final block with a copy carrying cache_control.
+ *   - empty content (defensive) → leave unchanged, no marker.
+ *
+ * Anthropic allows max 4 cache_control markers per request. With system
+ * + tools + this rolling one we sit at 3, leaving headroom; we still cap
+ * defensively in case a future change adds another slot.
+ */
+export function buildCacheableMessages(messages: readonly ProviderMessage[]): ProviderMessage[] {
+  if (messages.length === 0) return [];
+  const out: ProviderMessage[] = messages.map((m) => m);
+  const lastIdx = out.length - 1;
+  const last = out[lastIdx];
+  if (typeof last.content === "string") {
+    if (last.content.length === 0) return out;
+    out[lastIdx] = {
+      role: last.role,
+      content: [
+        {
+          type: "text",
+          text: last.content,
+          cache_control: { type: "ephemeral" },
+        } as unknown as ProviderContentBlock,
+      ],
+    };
+    return out;
+  }
+  if (Array.isArray(last.content) && last.content.length > 0) {
+    const blocks = [...last.content];
+    const tailIdx = blocks.length - 1;
+    blocks[tailIdx] = {
+      ...blocks[tailIdx],
+      cache_control: { type: "ephemeral" },
+    } as ProviderContentBlock & { cache_control: CacheControl };
+    out[lastIdx] = { role: last.role, content: blocks };
+  }
+  return out;
+}
+
+// Export the cap so tests can assert we don't drift past Anthropic's limit.
+export const __cacheBreakpointCap = MAX_CACHE_BREAKPOINTS;
+
+/**
+ * Patch `body` with the Anthropic extended-thinking payload when a budget is
+ * supplied. No-op when `budget` is undefined / 0 — the model emits no
+ * reasoning chain, same as claude/codex with effort omitted.
+ *
+ * Anthropic requires `max_tokens > thinking.budget_tokens`; if the caller's
+ * max_tokens is too small we lift it past `budget + 1024` so the API doesn't
+ * reject the request. Caller's explicit ceiling wins when it's already
+ * larger — we never SHRINK max_tokens.
+ *
+ * Thinking is only valid on Claude Sonnet 4 / Opus 4 / Haiku 4.5 (and later).
+ * maestroRegistry currently only ships sonnet, so we don't gate on model id
+ * here; if Phase 5 multi-provider lands an older model, the provider for
+ * that model just ignores `thinkingBudget` (this helper is Anthropic-only).
+ */
+export function applyThinkingBudget(
+  body: Record<string, unknown>,
+  budget: number | undefined,
+): void {
+  if (!budget || budget <= 0) return;
+  body.thinking = { type: "enabled", budget_tokens: budget };
+  const minMax = budget + 1024;
+  const current = typeof body.max_tokens === "number" ? body.max_tokens : 0;
+  if (current < minMax) body.max_tokens = minMax;
+}
+
+function applyThinkingHeaders(headers: Record<string, string>, budget: number | undefined): void {
+  if (!budget || budget <= 0) return;
+  headers["anthropic-beta"] = INTERLEAVED_THINKING_BETA;
+}
+
+/**
+ * Map Clawgram's shared `EffortLevel` to an Anthropic thinking budget in
+ * tokens. Maestro only accepts `low|medium|high|xhigh` (see
+ * `MAESTRO_EFFORT_VALUES`); other values return undefined so the caller skips
+ * thinking entirely. Budget scale is a deliberate match for the rough
+ * progression claude-agent-sdk uses internally (the SDK doesn't expose its
+ * mapping, so these are calibrated empirically against the latency / cost
+ * curve we see on sonnet-4-6).
+ */
+export function effortToThinkingBudget(e: string | undefined): number | undefined {
+  switch (e) {
+    case "low":
+      return 2048;
+    case "medium":
+      return 8192;
+    case "high":
+      return 16384;
+    case "xhigh":
+      return 32768;
+    default:
+      return undefined;
+  }
+}
+
+function mapUsage(u: AnthropicUsage): TokenUsage {
+  const out: TokenUsage = {
+    inputTokens: u.input_tokens,
+    outputTokens: u.output_tokens,
+  };
+  if (u.cache_creation_input_tokens !== undefined) {
+    out.cacheCreationInputTokens = u.cache_creation_input_tokens;
+  }
+  if (u.cache_read_input_tokens !== undefined) {
+    out.cacheReadInputTokens = u.cache_read_input_tokens;
+  }
+  return out;
+}

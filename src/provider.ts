@@ -1,0 +1,418 @@
+import { randomUUID } from "node:crypto";
+import { AIAgent } from "@/core/agent";
+import { runConversation } from "@/core/loop";
+import { type MaestroMcpPool, registerMcpTools, startMcpPool } from "@/mcp/pool";
+import { buildSystemReminder } from "@/memory/reminder";
+import { AnthropicProvider, effortToThinkingBudget } from "@/providers/anthropic";
+import type { Provider, ProviderContentBlock, ProviderMessage } from "@/providers/base";
+import { DeepseekProvider } from "@/providers/deepseek";
+import { maestroRegistry } from "@/registry";
+import {
+  isWellFormedMessage,
+  loadMaestroSession,
+  saveMaestroSession,
+  trimToSafePrefix,
+} from "@/session-store";
+import { curateSkills } from "@/skills/curator";
+import { buildSkillsIndex } from "@/skills/index-builder";
+import { loadSkillsCached } from "@/skills/loader";
+import { getTodoStore } from "@/state/todos";
+import { createAgentTool } from "@/tools/builtin/agent";
+import { bashTool } from "@/tools/builtin/bash";
+import { createEditTool } from "@/tools/builtin/edit";
+import { createReadTool } from "@/tools/builtin/read";
+import { createSkillViewTool } from "@/tools/builtin/skill_view";
+import { createTodoWriteTool } from "@/tools/builtin/todo_write";
+import { webFetchTool } from "@/tools/builtin/web_fetch";
+import { createWriteTool } from "@/tools/builtin/write";
+import { getFileStateTracker } from "@/tools/file-state";
+import { createSandboxFsHook } from "@/tools/hooks/sandbox-fs";
+import { ToolRegistry } from "@/tools/registry";
+import { logger } from "@/platform/logger";
+import { getMcpServersForQuery } from "@/platform/mcp-config";
+import type { AgentQueryOptions, UnifiedEvent } from "@/types";
+
+/**
+ * Maestro SDK provider (TS port of Maestro Agent v0.13.0).
+ *
+ * Multi-turn resume: when `opts.sessionId` is set we hydrate prior messages
+ * from `~/.maestro/sessions/<id>.jsonl` (written by the previous turn's
+ * persistence path or by a cross-agent rollout). Otherwise we mint a fresh
+ * UUIDv4 — matching the contract claude/codex providers expose, so the
+ * router stays agent-agnostic and `{type:"session", sessionId}` always comes
+ * back on the first iteration.
+ *
+ * After the loop drains we write the updated history back to disk so a
+ * subsequent call resumes correctly. Failures here are logged but never
+ * thrown — losing one persistence round is a degraded experience, not a
+ * stream-breaking one.
+ *
+ * MCP integration: every server in `getMcpServersForQuery(opts)` is leased
+ * from the process-wide cache (`mcp/pool-cache.ts`) and its tools are
+ * registered under `mcp__<server>__<tool>` — the same name convention Claude
+ * SDK uses, so the model sees consistent tool names across providers in the
+ * same topic. Unlike claudeProvider / codexProvider — which hand `mcpServers`
+ * to a vendor SDK that owns MCP lifecycle internally — Maestro hits Anthropic's
+ * Messages API via raw fetch, so we own startup + dispatch + cleanup here.
+ * Cache key includes (userId, session, groupId) so two users never share an
+ * MCP client; the cache evicts idle clients via TTL + LRU cap so stale slots
+ * don't accumulate.
+ *
+ * Snapshot pinned to upstream Maestro v0.13.0 (MIT, Nous Research). See
+ * docs/maestro-integration.md for the porting roadmap.
+ */
+export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<UnifiedEvent> {
+  // Provider instantiation is deferred until after model resolution so the
+  // right adapter (Anthropic / DeepSeek) is chosen based on the resolved
+  // model id. The env-var check happens at fromEnv() time inside each
+  // adapter — we surface its error as a normal `error` UnifiedEvent so the
+  // dispatcher doesn't see a synthetic crash.
+
+  // Resolve sessionId up-front so per-session resources (file-state tracker,
+  // skill_view) can key off a stable id. Either supplied by the caller
+  // (resume / cross-agent bridge) or minted now for a fresh session.
+  const sessionId = opts.sessionId ?? randomUUID();
+
+  // Per-session file-state tracker drives the Read-before-Edit gate. Module-
+  // level registry (see tools/file-state.ts) keeps the tracker alive across
+  // turns so a Read in turn N is still recorded when an Edit fires in N+1.
+  const fileTracker = getFileStateTracker(sessionId);
+
+  // Per-session TodoWrite store. Same module-level cache pattern — the
+  // store hydrates from `~/.maestro/sessions/<sid>.todos.json` on first
+  // access so a multi-turn plan survives across calls.
+  const todoStore = getTodoStore(sessionId);
+
+  const tools = new ToolRegistry();
+
+  // Filesystem sandbox runs as a PreToolUse hook so every tool with a
+  // `file_path` argument (Read/Write/Edit + future FS-touching MCP tools)
+  // shares one gate. Registered first so it fires before any caller-added
+  // hook in this turn.
+  tools.use(createSandboxFsHook());
+
+  tools.register(bashTool);
+  // Read/Write/Edit/WebFetch — claude SDK parity builtins. Same name + schema
+  // so the model's pretrained instinct calls them with the right shape, and
+  // prompt cache keys line up across agents when a topic is bridged.
+  // Read/Write/Edit also gate on the workspace sandbox (inline today; future
+  // Phase 2.1 migrates to a hook) and on the per-session file-state tracker
+  // so Edit can't mutate a path that hasn't been Read in this session.
+  tools.register(createReadTool({ tracker: fileTracker }));
+  tools.register(createWriteTool({ tracker: fileTracker }));
+  tools.register(createEditTool({ tracker: fileTracker }));
+  tools.register(webFetchTool);
+  tools.register(createTodoWriteTool({ store: todoStore }));
+
+  // --- Skills: load SKILL.md catalog + register `skill_view` ---------------
+  //
+  // Domain accuracy lever (Phase 2). The model gets:
+  //   - A `## Skills (mandatory)` block appended to the system prompt (60-char
+  //     summary per skill) so prefix caching covers the catalog across turns.
+  //   - A `skill_view(name)` builtin so it can pull the full SKILL.md body on
+  //     demand (progressive disclosure — saves the per-turn cost of inlining
+  //     every skill body).
+  //
+  // Source dir is picked from `MAESTRO_SKILL_DIR` first so power users can
+  // point at a Clawgram-local catalog later without code change; the v0.13.0
+  // upstream tree at `~/__KEEP_MAESTRO_AGENT__/skills/` is the current default.
+  //
+  // Failures (rootDir missing, unreadable, every file malformed) reduce to an
+  // empty catalog — the loop still runs with just bash + MCP tools.
+  const skillsDir =
+    process.env.MAESTRO_SKILL_DIR ?? "/Users/maestrobot/__KEEP_MAESTRO_AGENT__/skills";
+  let skillsBlock = "";
+  // Hoisted to outer scope so the Agent tool (registered below, after
+  // model/effort resolve) can pass the same skill catalog to sub-agents.
+  let loadedSkills: ReturnType<typeof loadSkillsCached> = [];
+  try {
+    const skills = loadSkillsCached(skillsDir);
+    loadedSkills = skills;
+    if (skills.length > 0) {
+      // Curator filters the catalog: archived skills (agent-created, never
+      // viewed, >60 days old) are dropped from the system-prompt index but
+      // stay reachable via skill_view by exact name. Bundled skills under
+      // the upstream snapshot directory are protected from archival.
+      // skill_view still sees the full set — model can resolve any name
+      // the user explicitly mentions even if it's been archived.
+      const curated = curateSkills(skills);
+      const visibleSkills = curated.map((c) => c.skill);
+      tools.register(createSkillViewTool({ skills, sessionId })); // full set
+      skillsBlock = buildSkillsIndex(visibleSkills);
+      logger.info(
+        {
+          agent: "maestro",
+          skillsDir,
+          skillCount: skills.length,
+          visibleCount: visibleSkills.length,
+          archivedCount: skills.length - visibleSkills.length,
+        },
+        "maestroProvider: skill catalog loaded (curated)",
+      );
+    }
+  } catch (e) {
+    logger.warn({ err: e, skillsDir }, "maestroProvider: skill catalog load failed (degraded)");
+  }
+
+  // --- MCP pool: spawn every configured server, register their tools -------
+  //
+  // Failures here are logged but non-fatal: a turn can still serve from
+  // builtins alone if every server is unhealthy. This mirrors the partial-
+  // availability stance of the existing Playwright exit-propagation path,
+  // where one dead MCP doesn't take out the rest of the toolset.
+  let mcpPool: MaestroMcpPool | null = null;
+  try {
+    const servers = getMcpServersForQuery(opts);
+    // Scope cache to (userId, session, groupId, agentKind) so two users never
+    // share an MCP client (privacy) and so two sessions within one user keep
+    // their own playwright instance (forum/dm scope rules). The cache hashes
+    // the spec on top of this, so a server spec change inside the same scope
+    // also creates a fresh client.
+    mcpPool = await startMcpPool(servers as unknown as Record<string, unknown>, {
+      userId: opts.userId,
+      session: opts.session,
+      groupId: opts.groupId,
+      agentKind: "maestro",
+    });
+    registerMcpTools(tools, mcpPool, opts.abortController?.signal);
+    logger.info(
+      {
+        agent: "maestro",
+        mcpServerCount: mcpPool.clients.length,
+        mcpToolCount: mcpPool.tools.length,
+      },
+      "maestroProvider: MCP pool ready",
+    );
+  } catch (e) {
+    logger.warn({ err: e }, "maestroProvider: MCP pool start failed — continuing without MCP");
+  }
+
+  const requestedModel = opts.model ?? maestroRegistry.defaultModel;
+  const resolvedModel = maestroRegistry.expandModelAlias(requestedModel);
+
+  // Pick provider by resolved model id prefix. DeepSeek models (`deepseek-*`)
+  // route to DeepseekProvider; anything else falls through to Anthropic. If
+  // the chosen adapter's env var is missing, close the MCP pool we already
+  // started before bailing so we don't leak subprocesses.
+  let provider: Provider;
+  try {
+    provider = providerForModel(resolvedModel);
+  } catch (e) {
+    if (mcpPool) {
+      await mcpPool.close().catch((err) => {
+        logger.warn({ err }, "maestroProvider: mcp pool close after provider error failed");
+      });
+    }
+    yield {
+      type: "error",
+      content: e instanceof Error ? e.message : String(e),
+    };
+    return;
+  }
+
+  // --- Prior history hydration -------------------------------------------
+  //
+  // `sessionId` was already resolved at the top of this function so per-
+  // session resources (file-state tracker, skill_view) could be keyed off
+  // it. Three load cases for the persisted JSONL:
+  //   1. Caller supplied a sessionId AND file exists → resume.
+  //   2. Caller supplied a sessionId but file is missing/empty → keep the
+  //      id (so cross-agent set_agent's pre-registered DB id stays valid)
+  //      and start with empty history.
+  //   3. No sessionId → fresh UUIDv4 was minted above; no file to load.
+  const persisted = opts.sessionId ? loadMaestroSession(opts.sessionId) : null;
+  const priorMessages: ProviderMessage[] = (persisted ?? []).filter(isWellFormedMessage);
+
+  // Attach a `<system-reminder>` text block AFTER the user prompt on every
+  // new turn. Two reasons this lives at push time rather than on-wire:
+  //   1. Anthropic's automatic prompt cache breaks at the first byte
+  //      divergence — past-turn user messages must be stable across future
+  //      calls. Mutating wireMessages would make turn N's message differ
+  //      between turn N's call (with reminder) and turn N+1's call (without
+  //      reminder once canonical re-renders), nuking cache hits.
+  //   2. Compactor preserves the most-recent user message; the reminder
+  //      rides along automatically. Historical turns keep the reminder
+  //      that was true at THAT turn (sandbox could have flipped since) —
+  //      drift across env-var changes is feature, not bug.
+  // Claude Code places `<system-reminder>` at the tail of user content; we
+  // match that order so the model's pretrained intuition treats the
+  // reminder as meta annotation, not as user intent.
+  const reminderText = buildSystemReminder({ sessionId, todos: todoStore.list() });
+  const userBlocks: ProviderContentBlock[] = [
+    { type: "text", text: opts.prompt },
+    { type: "text", text: reminderText },
+  ];
+  const messages: ProviderMessage[] = [...priorMessages, { role: "user", content: userBlocks }];
+
+  // Emit the session event before the first provider call so the router's
+  // recorder captures it in the unified conversation log — same shape as
+  // claude/codex `init` and `thread.started` events.
+  yield { type: "session", sessionId };
+
+  // Skills index goes into the system prompt (NOT a user message) so
+  // Anthropic's prefix cache covers it across every turn — the catalog only
+  // changes when SKILL.md files on disk change, while user messages roll
+  // every turn. Append, don't prepend: caller-supplied systemPrompt is
+  // identity / instructions that should still anchor the prompt, and the
+  // skills block reads naturally as a final "and also, here's what tools
+  // you have access to" section.
+  const augmentedSystemPrompt = skillsBlock
+    ? `${opts.systemPrompt}\n\n${skillsBlock}`
+    : opts.systemPrompt;
+
+  // Resolve effort → thinking budget. Falls back to the registry default
+  // (`medium`) when the caller didn't pin one, matching how claude-provider
+  // hands effort to its SDK. The mapping itself lives in `providers/anthropic`
+  // so a future non-Anthropic provider in Phase 5 can ignore the budget and
+  // do its own effort-to-reasoning translation.
+  const resolvedEffort = opts.effort ?? maestroRegistry.defaultEffort;
+
+  // Register the `Agent` tool last — it captures the resolved model,
+  // effort, augmented system prompt (parent base for sub-agents), and the
+  // already-loaded skill catalog. Registered only on the PARENT call;
+  // sub-agents do NOT get an Agent tool because `runSubAgent` builds its
+  // own registry without registering one (advisor: depth=1 cap).
+  tools.register(
+    createAgentTool({
+      parent: {
+        parentSessionId: sessionId,
+        parentSystemPrompt: augmentedSystemPrompt,
+        parentModel: resolvedModel,
+        ...(resolvedEffort ? { parentEffort: resolvedEffort } : {}),
+        ...(opts.abortController?.signal ? { parentAbortSignal: opts.abortController.signal } : {}),
+        skills: loadedSkills,
+      },
+    }),
+  );
+  const thinkingBudget = effortToThinkingBudget(resolvedEffort);
+
+  const agent = new AIAgent(provider, tools, {
+    model: resolvedModel,
+    systemPrompt: augmentedSystemPrompt,
+    ...(thinkingBudget ? { thinkingBudget } : {}),
+    ...(resolvedEffort ? { effort: resolvedEffort } : {}),
+    ...(opts.abortController?.signal ? { abortSignal: opts.abortController.signal } : {}),
+  });
+
+  // Wire abort → close MCP pool early. Without this, an aborted turn could
+  // leave Playwright / OCR subprocesses spinning until the finally block,
+  // which only runs after the loop's awaited operation completes.
+  const abortSignal = opts.abortController?.signal;
+  const onAbortClosePool = () => {
+    if (mcpPool) {
+      mcpPool.close().catch((err) => {
+        logger.warn({ err }, "maestroProvider: mcp pool close on abort failed");
+      });
+    }
+  };
+  abortSignal?.addEventListener("abort", onAbortClosePool, { once: true });
+
+  logger.info(
+    {
+      agent: "maestro",
+      model: resolvedModel,
+      sessionId,
+      session: opts.session ?? null,
+      resumed: priorMessages.length > 0,
+      priorTurns: priorMessages.length,
+    },
+    "maestroProvider: starting run_conversation",
+  );
+
+  let drained = false;
+  let aborted = false;
+  try {
+    for await (const event of runConversation(agent, messages)) {
+      yield event;
+    }
+    drained = true;
+  } catch (e) {
+    // Abort is a user-initiated signal, not a provider failure. claude/codex
+    // both silently return on AbortError (claude-provider relies on the SDK
+    // closing the stream, codex-provider catches `err.name === "AbortError"`
+    // and returns without yielding). Match that so the dispatcher doesn't
+    // see a synthetic "maestroProvider crashed: The operation was aborted"
+    // error event after the user simply moved on to a new prompt.
+    if (isAbortError(e) || abortSignal?.aborted) {
+      aborted = true;
+    } else {
+      yield {
+        type: "error",
+        content: `maestroProvider crashed: ${e instanceof Error ? e.message : String(e)}`,
+      };
+    }
+  } finally {
+    abortSignal?.removeEventListener("abort", onAbortClosePool);
+    if (mcpPool) {
+      await mcpPool.close();
+    }
+    // Always persist a safe prefix — even on partial drain (abort mid-tool,
+    // Anthropic API throw, MCP crash). Earlier versions gated on
+    // `drained === true` to avoid persisting half-finished tool rounds, but
+    // in practice that gate dropped the entire turn on every abort and
+    // users saw "maestro forgets everything I just said". The new contract:
+    //   - clean drain → save messages verbatim (no change)
+    //   - partial / crashed turn → `trimToSafePrefix` strips orphan
+    //     user-prompt or assistant-tool_use trailing entries so the next
+    //     resume passes Anthropic's tool_use/tool_result pairing check
+    // If the trim collapses everything (e.g. the only push before the
+    // crash was the new user prompt), we skip the write so the previous
+    // good checkpoint stays intact.
+    try {
+      const safePrefix = drained ? messages : trimToSafePrefix(messages);
+      if (safePrefix.length > 0) {
+        saveMaestroSession(sessionId, safePrefix);
+        if (!drained && safePrefix.length < messages.length) {
+          logger.info(
+            {
+              sessionId,
+              fullLength: messages.length,
+              savedLength: safePrefix.length,
+              dropped: messages.length - safePrefix.length,
+              aborted,
+            },
+            "maestroProvider: persisted trimmed prefix after partial turn",
+          );
+        }
+      }
+    } catch (err) {
+      logger.warn(
+        { err, sessionId, turns: messages.length },
+        "maestroProvider: persist failed (best-effort)",
+      );
+    }
+  }
+}
+
+/**
+ * Pick the right provider adapter for a resolved model id. DeepSeek's V4
+ * family uses `deepseek-*` ids; everything else (Anthropic claude-* + future
+ * direct full ids) falls through to the Anthropic adapter. Exported so tests
+ * can lock the dispatch shape independently of `maestroProvider`'s I/O.
+ */
+export function providerForModel(resolvedModel: string): Provider {
+  if (resolvedModel.startsWith("deepseek-")) {
+    return DeepseekProvider.fromEnv();
+  }
+  return AnthropicProvider.fromEnv();
+}
+
+/**
+ * Recognize the multiple shapes Node + WHATWG fetch use when a request is
+ * cancelled via `AbortController`:
+ *   - DOMException with name "AbortError" (fetch / EventSource)
+ *   - Error with name "AbortError" (older Node paths)
+ *   - DOMException with code 20 (legacy ABORT_ERR code)
+ *
+ * Catches both so the abort detection isn't tied to a single runtime.
+ *
+ * Exported for unit coverage — used internally by `maestroProvider`'s catch
+ * branch to distinguish a user-initiated abort from a real provider crash.
+ */
+export function isAbortError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const e = err as { name?: unknown; code?: unknown };
+  if (e.name === "AbortError") return true;
+  if (e.code === 20 || e.code === "ABORT_ERR") return true;
+  return false;
+}

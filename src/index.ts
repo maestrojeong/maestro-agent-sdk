@@ -1,0 +1,122 @@
+/**
+ * maestro-agent-sdk — public API.
+ *
+ * Provider-agnostic agent loop with built-in tools, skills, memory, and MCP.
+ * See README.md for a quick start.
+ *
+ * Originally derived from Nous Research's hermes-agent (MIT); see NOTICE.
+ */
+
+export const MAESTRO_SDK_VERSION = "0.1.0" as const;
+export const MAESTRO_UPSTREAM_SNAPSHOT = "v0.13.0 (2026-05-07)" as const;
+
+// ─── Core agent loop ─────────────────────────────────────────────────────────
+export { AIAgent, type AIAgentConfig } from "@/core/agent";
+export { runConversation } from "@/core/loop";
+
+// ─── Tool registry + hook surface ────────────────────────────────────────────
+export {
+  ToolRegistry,
+  type ToolHandler,
+  type HookRegistration,
+  type PreToolUseHook,
+  type PostToolUseHook,
+  type PreToolUseContext,
+  type PreToolUseDecision,
+  type PostToolUseContext,
+  type PostToolUseResult,
+} from "@/tools/registry";
+
+// ─── Built-in tools ──────────────────────────────────────────────────────────
+export { bashTool } from "@/tools/builtin/bash";
+export { createReadTool } from "@/tools/builtin/read";
+export { createWriteTool } from "@/tools/builtin/write";
+export { createEditTool } from "@/tools/builtin/edit";
+export { createTodoWriteTool } from "@/tools/builtin/todo_write";
+export { createSkillViewTool } from "@/tools/builtin/skill_view";
+export { createAgentTool } from "@/tools/builtin/agent";
+export { isSandboxEnabled, checkFilesystemAccess } from "@/tools/builtin/sandbox";
+export { createSandboxFsHook } from "@/tools/hooks/sandbox-fs";
+export { getFileStateTracker, dropFileStateTracker } from "@/tools/file-state";
+
+// ─── Providers ───────────────────────────────────────────────────────────────
+export type {
+  Provider,
+  ProviderToolSchema,
+  ProviderMessage,
+  ProviderContentBlock,
+  ProviderResponse,
+  ProviderStreamChunk,
+  ProviderCompleteOptions,
+} from "@/providers/base";
+
+export {
+  AnthropicProvider,
+  effortToThinkingBudget,
+  applyThinkingBudget,
+  buildCacheableSystem,
+  buildCacheableTools,
+  buildCacheableMessages,
+} from "@/providers/anthropic";
+export {
+  DeepseekProvider,
+  effortForDeepseek,
+  translateToolsToOpenAI,
+  translateMessagesToOpenAI,
+} from "@/providers/deepseek";
+
+// ─── Maestro registry + top-level provider entry point ───────────────────────
+export { maestroRegistry } from "@/registry";
+export { maestroProvider, providerForModel, isAbortError } from "@/provider";
+
+// ─── Skills ──────────────────────────────────────────────────────────────────
+export { loadSkillsCached, findSkillByName, type SkillEntry } from "@/skills/loader";
+export { buildSkillsIndex } from "@/skills/index-builder";
+export { curateSkills } from "@/skills/curator";
+export { loadUsage, bumpView, type SkillCounters } from "@/skills/usage";
+
+// ─── Memory / compression ────────────────────────────────────────────────────
+export { compressIfNeeded } from "@/memory/compressor";
+export { estimateTokens } from "@/memory/token-estimate";
+export { buildSystemReminder } from "@/memory/reminder";
+export { hashToolContent } from "@/memory/hash";
+export { ACTIVE_TASK_TEMPLATE, wrapCompactedSummary } from "@/memory/active-task-template";
+
+// ─── State (todos) ───────────────────────────────────────────────────────────
+export { getTodoStore, dropTodoStore } from "@/state/todos";
+
+// ─── MCP ─────────────────────────────────────────────────────────────────────
+export type { MaestroMcpServerSpec, MaestroMcpClient, MaestroMcpTool } from "@/mcp/client";
+
+// ─── Session store ───────────────────────────────────────────────────────────
+export { deleteMaestroSession } from "@/session-store";
+
+// ─── Host integration points (dependency injection) ──────────────────────────
+export { setLogger, type Logger, type LogFn } from "@/platform/logger";
+export { onShutdown, runShutdown } from "@/platform/lifecycle";
+export { setMcpResolver, type McpResolver, type McpServerMap } from "@/platform/mcp-config";
+export { setConversationReader, type ConversationReader } from "@/storage/conversations";
+
+// ─── Shared types ────────────────────────────────────────────────────────────
+export type {
+  TokenUsage,
+  EffortLevel,
+  AgentKind,
+  AgentQueryOptions,
+  UnifiedEvent,
+} from "@/types";
+export {
+  MAESTRO_EFFORT_VALUES,
+  SUPPORTED_AGENTS,
+  FALLBACK_AGENT,
+  isAgentKind,
+} from "@/types";
+export type { ConversationEntry } from "@/storage/conversations";
+export type {
+  AgentRegistry,
+  WriteRolloutOptions,
+  WriteRolloutResult,
+  ForkRegistryOptions,
+  ForkRegistryResult,
+  CleanupRolloutsOptions,
+} from "@/agents/contracts";

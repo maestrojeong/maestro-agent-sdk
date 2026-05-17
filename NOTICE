@@ -1,0 +1,24 @@
+maestro-agent-sdk
+=================
+
+This project is a derivative work based on the Maestro agent runtime
+originally developed by Nous Research as part of the hermes-agent project:
+
+  https://github.com/NousResearch/hermes-agent
+  Snapshot reference: v0.13.0 (2026-05-07)
+  Original license: MIT
+
+Original copyright (MIT):
+  Copyright (c) 2025-2026 Nous Research
+
+Changes in this distribution:
+  - Ported the Maestro Python runtime to TypeScript.
+  - Decoupled the agent loop, tool registry, providers (Anthropic, DeepSeek),
+    skills system, and memory compressor into an embeddable npm package.
+  - Removed the Telegram / Discord / Slack gateway, cron scheduler, and other
+    end-user surfaces that exist in the upstream standalone application.
+  - Replaced the host process's bespoke logger/lifecycle/config with
+    injectable interfaces so the SDK can be embedded by any host application.
+
+The upstream MIT license terms continue to apply to the ported code; see
+LICENSE for the SDK distribution license (also MIT).

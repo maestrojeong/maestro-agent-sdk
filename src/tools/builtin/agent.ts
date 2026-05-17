@@ -1,0 +1,130 @@
+import {
+  type RunSubAgentOptions,
+  runSubAgent,
+  type SubagentType,
+} from "@/sub-agent/runner";
+import type { ToolHandler } from "@/tools/registry";
+
+/**
+ * `Agent` builtin — spawn a focused sub-agent for one delegated task.
+ *
+ * Returns only the sub-agent's final text to the parent model — tool calls,
+ * intermediate text, and the sub-agent's own session id are not surfaced
+ * mid-stream. This is the same contract Claude Code's Task tool exposes.
+ *
+ * Two scoped types in v1:
+ *   - `general` — full builtin toolkit (bash + Read + Write + Edit +
+ *     WebFetch + skill_view). Use for self-contained units of work.
+ *   - `explore` — read-only (Read + WebFetch + skill_view). Use for
+ *     finding / surveying / reporting tasks where you don't want the
+ *     sub-agent mutating files by accident.
+ *
+ * `parallelSafe: false` — sub-agent invocation spawns a child loop with
+ * side effects (file writes for `general`, MCP-less Anthropic API calls
+ * for both). Running two in parallel would race the API rate limits + the
+ * shared file-state tracker registry.
+ *
+ * No `description` field on the schema (advisor): the model would either
+ * skip it or duplicate the prompt into it. We derive a log label from the
+ * prompt's first line internally.
+ */
+
+export interface AgentToolFactoryOptions {
+  /** Parent context the sub-agent inherits from. The runner uses these to
+   *  build the sub-agent's system prompt, model, abort signal, and skill
+   *  catalog — none of which the model needs to (or should) pass. */
+  parent: Pick<
+    RunSubAgentOptions,
+    | "parentSessionId"
+    | "parentSystemPrompt"
+    | "parentModel"
+    | "parentEffort"
+    | "parentAbortSignal"
+    | "skills"
+  >;
+}
+
+const VALID_TYPES = new Set<SubagentType>(["general", "explore"]);
+
+export function createAgentTool(opts: AgentToolFactoryOptions): ToolHandler {
+  return {
+    parallelSafe: false,
+    schema: {
+      name: "Agent",
+      description:
+        "Spawn a focused sub-agent to do ONE delegated task and return its final text. " +
+        "The sub-agent has its own context — your tool calls, files-Read state, and todo list " +
+        "are NOT shared with it. Use `general` for self-contained work that may need bash/Write/Edit, " +
+        "and `explore` for read-only surveys (Read/WebFetch/skill_view only). " +
+        "The sub-agent cannot spawn its own sub-agents (no recursion). Pass a self-contained " +
+        "prompt — the sub-agent sees ONLY that prompt and the inherited system context.",
+      input_schema: {
+        type: "object",
+        properties: {
+          subagent_type: {
+            type: "string",
+            description:
+              "Sub-agent role. 'general' = full builtin toolkit. 'explore' = read-only " +
+              "(Read/WebFetch/skill_view only — no bash, no write, no edit).",
+          },
+          prompt: {
+            type: "string",
+            description:
+              "Self-contained task brief. The sub-agent sees ONLY this text as its initial " +
+              "user message. State the goal, any constraints, and what 'done' looks like.",
+          },
+        },
+        required: ["subagent_type", "prompt"],
+      },
+    },
+    async execute(input) {
+      const subagentTypeRaw = input.subagent_type;
+      const prompt = input.prompt;
+      if (
+        typeof subagentTypeRaw !== "string" ||
+        !VALID_TYPES.has(subagentTypeRaw as SubagentType)
+      ) {
+        return JSON.stringify({
+          error: `Agent: subagent_type must be one of ${Array.from(VALID_TYPES).join(", ")}, got '${subagentTypeRaw}'`,
+        });
+      }
+      if (typeof prompt !== "string" || prompt.trim().length === 0) {
+        return JSON.stringify({
+          error: "Agent: prompt must be a non-empty string",
+        });
+      }
+      const subagentType = subagentTypeRaw as SubagentType;
+
+      const result = await runSubAgent({
+        subagentType,
+        prompt,
+        parentSessionId: opts.parent.parentSessionId,
+        parentSystemPrompt: opts.parent.parentSystemPrompt,
+        parentModel: opts.parent.parentModel,
+        ...(opts.parent.parentEffort ? { parentEffort: opts.parent.parentEffort } : {}),
+        ...(opts.parent.parentAbortSignal
+          ? { parentAbortSignal: opts.parent.parentAbortSignal }
+          : {}),
+        skills: opts.parent.skills,
+      });
+
+      if (result.aborted) {
+        // Aborted sub-agent: don't pretend a normal result. The parent
+        // model's next turn (if any) sees this and can decide.
+        return JSON.stringify({
+          error: "Agent: sub-agent was aborted (parent abort signal fired)",
+          subSessionId: result.subSessionId,
+        });
+      }
+
+      // Final text + a one-line provenance footer the model can use to
+      // attribute facts ("from the explore sub-agent: ...") and so the
+      // unified conversation log carries traceability without needing a
+      // separate event type. Usage is included for cost transparency.
+      const footer =
+        `\n\n— end of ${subagentType} sub-agent (${result.subSessionId.slice(0, 8)}) — ` +
+        `${result.usage.inputTokens} in / ${result.usage.outputTokens} out`;
+      return `${result.text}${footer}`;
+    },
+  };
+}

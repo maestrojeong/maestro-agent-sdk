@@ -1,0 +1,69 @@
+{
+  "name": "maestro-agent-sdk",
+  "version": "0.1.0",
+  "description": "Provider-agnostic TypeScript agent SDK with built-in skills, memory, and MCP. A standalone, embeddable port of the Maestro agent loop (originally from Nous Research's hermes-agent).",
+  "license": "MIT",
+  "author": "Yeonwoo Jeong <aadd4020@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/maestrojeong/maestro-agent-sdk.git"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./providers/anthropic": {
+      "types": "./dist/providers/anthropic.d.ts",
+      "import": "./dist/providers/anthropic.js"
+    },
+    "./providers/deepseek": {
+      "types": "./dist/providers/deepseek.d.ts",
+      "import": "./dist/providers/deepseek.js"
+    },
+    "./tools": {
+      "types": "./dist/tools/index.d.ts",
+      "import": "./dist/tools/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && tsc-alias -p tsconfig.build.json --resolve-full-paths",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run clean && npm run build"
+  },
+  "keywords": [
+    "agent",
+    "ai-agent",
+    "llm",
+    "anthropic",
+    "claude",
+    "deepseek",
+    "mcp",
+    "tool-use",
+    "agent-sdk",
+    "hermes-agent",
+    "maestro"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "cheerio": "^1.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "tsc-alias": "^1.8.17",
+    "typescript": "^5"
+  }
+}
