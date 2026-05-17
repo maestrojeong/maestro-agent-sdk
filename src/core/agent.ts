@@ -41,6 +41,23 @@ export interface AIAgentConfig {
   effort?: EffortLevel;
   /** External abort signal — wired to the AgentQueryOptions.abortController. */
   abortSignal?: AbortSignal;
+  /**
+   * Per-iteration system-reminder builder. Invoked by `runConversation`
+   * just before pushing each `tool_result` user message; the returned text
+   * is appended as a trailing `text` block on that user message so the
+   * model sees a fresh "iterations remaining" line on every turn.
+   *
+   * Freezing the reminder into the canonical `messages` array (rather than
+   * mutating wireMessages on-the-fly) keeps Anthropic's prefix cache intact:
+   * each historical user message permanently carries the budget that was
+   * live at THAT turn, byte-stable across future calls.
+   *
+   * Return `null`/empty to skip injection for a given iteration (e.g. when
+   * the caller has nothing dynamic to surface). The FIRST user message's
+   * reminder is built by the caller before the loop starts — this callback
+   * only fires for subsequent tool_result turns.
+   */
+  buildIterReminder?: (iterationsRemaining: number) => string | null;
 }
 
 export class AIAgent {
@@ -52,6 +69,7 @@ export class AIAgent {
     thinkingBudget?: number;
     effort?: EffortLevel;
     abortSignal?: AbortSignal;
+    buildIterReminder?: (iterationsRemaining: number) => string | null;
   };
 
   constructor(provider: Provider, tools: ToolRegistry, config: AIAgentConfig) {
@@ -67,6 +85,7 @@ export class AIAgent {
         : {}),
       ...(config.effort ? { effort: config.effort } : {}),
       ...(config.abortSignal ? { abortSignal: config.abortSignal } : {}),
+      ...(config.buildIterReminder ? { buildIterReminder: config.buildIterReminder } : {}),
     };
   }
 }

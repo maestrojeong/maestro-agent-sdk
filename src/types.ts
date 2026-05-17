@@ -19,7 +19,7 @@ export interface TokenUsage {
  * Anthropic ignores this and uses `thinkingBudget`; DeepSeek maps it to
  * `reasoning_effort` directly. Hosts can pass either string form.
  */
-export const MAESTRO_EFFORT_VALUES = ["low", "medium", "high", "xhigh"] as const;
+export const MAESTRO_EFFORT_VALUES = ["low", "medium", "high", "xhigh", "max"] as const;
 export type EffortLevel = "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 /**

@@ -5,6 +5,7 @@ import {
   buildCacheableMessages,
   buildCacheableSystem,
   buildCacheableTools,
+  effortToMaxIter,
   effortToThinkingBudget,
 } from "@/providers/anthropic";
 
@@ -490,20 +491,36 @@ describe("prompt caching breakpoints", () => {
 
 describe("extended thinking budget", () => {
   describe("effortToThinkingBudget", () => {
-    test("maps the four maestro effort levels to monotonic budgets", () => {
+    test("maps the five maestro effort levels to monotonic budgets", () => {
       expect(effortToThinkingBudget("low")).toBe(2048);
       expect(effortToThinkingBudget("medium")).toBe(8192);
       expect(effortToThinkingBudget("high")).toBe(16384);
       expect(effortToThinkingBudget("xhigh")).toBe(32768);
+      expect(effortToThinkingBudget("max")).toBe(65536);
     });
 
     test("returns undefined for unsupported / unset values", () => {
       expect(effortToThinkingBudget(undefined)).toBeUndefined();
-      // 'minimal' and 'max' are claude/codex-only — maestro never sees them
-      // but the helper still degrades gracefully (skip thinking entirely).
+      // 'minimal' is codex-only — maestro never sees it but the helper
+      // still degrades gracefully (skip thinking entirely).
       expect(effortToThinkingBudget("minimal")).toBeUndefined();
-      expect(effortToThinkingBudget("max")).toBeUndefined();
       expect(effortToThinkingBudget("nonsense")).toBeUndefined();
+    });
+  });
+
+  describe("effortToMaxIter", () => {
+    test("maps each maestro effort level to a monotonic iteration cap", () => {
+      expect(effortToMaxIter("low")).toBe(5);
+      expect(effortToMaxIter("medium")).toBe(20);
+      expect(effortToMaxIter("high")).toBe(50);
+      expect(effortToMaxIter("xhigh")).toBe(90);
+      expect(effortToMaxIter("max")).toBe(200);
+    });
+
+    test("falls back to 90 (historical default) for unset / unknown values", () => {
+      expect(effortToMaxIter(undefined)).toBe(90);
+      expect(effortToMaxIter("minimal")).toBe(90);
+      expect(effortToMaxIter("nonsense")).toBe(90);
     });
   });
 

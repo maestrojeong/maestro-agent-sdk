@@ -53,6 +53,7 @@ export type {
 export {
   AnthropicProvider,
   effortToThinkingBudget,
+  effortToMaxIter,
   applyThinkingBudget,
   buildCacheableSystem,
   buildCacheableTools,
@@ -67,7 +68,7 @@ export {
 
 // ─── Maestro registry + top-level provider entry point ───────────────────────
 export { maestroRegistry } from "@/registry";
-export { maestroProvider, providerForModel, isAbortError } from "@/provider";
+export { maestroProvider, providerForModel, isAbortError, iterationBudgetLine } from "@/provider";
 
 // ─── Skills ──────────────────────────────────────────────────────────────────
 export { loadSkillsCached, findSkillByName, type SkillEntry } from "@/skills/loader";

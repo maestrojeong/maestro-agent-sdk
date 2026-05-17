@@ -530,8 +530,50 @@ export function effortToThinkingBudget(e: string | undefined): number | undefine
       return 16384;
     case "xhigh":
       return 32768;
+    case "max":
+      return 65536;
     default:
       return undefined;
+  }
+}
+
+/**
+ * Map effort to a per-turn tool-iteration cap. Used as `AIAgent.maxIterations`
+ * AND surfaced to the model via the per-iteration system-reminder so it can
+ * self-pace (low → wrap up fast, max → take your time).
+ *
+ * Lives next to `effortToThinkingBudget` for grep affinity even though the
+ * cap is provider-agnostic (the maestro loop owns it, not the API request).
+ * The Anthropic SDK / DeepSeek API themselves don't see this value; only the
+ * model does, through the reminder.
+ *
+ * Scale rationale:
+ *   - `low` (5)    — single Read + answer territory. Forces the wrap-up
+ *      tone almost immediately so the model stops tooling early.
+ *   - `medium` (20) — "research one thing then answer" budget.
+ *   - `high` (50)  — multi-file edits, moderate debugging chains.
+ *   - `xhigh` (90) — matches the previous hard-coded default; extended
+ *      exploration runs without hitting the cap.
+ *   - `max` (200)  — large refactors / deep delegations; rarely should
+ *      reach this many turns in practice but the headroom exists.
+ *
+ * Unknown effort falls back to 90 (= `xhigh`) — keeps the loop running
+ * with the historical default rather than silently strangling it.
+ */
+export function effortToMaxIter(e: string | undefined): number {
+  switch (e) {
+    case "low":
+      return 5;
+    case "medium":
+      return 20;
+    case "high":
+      return 50;
+    case "xhigh":
+      return 90;
+    case "max":
+      return 200;
+    default:
+      return 90;
   }
 }
 

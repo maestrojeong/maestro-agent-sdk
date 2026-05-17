@@ -3,7 +3,11 @@ import { AIAgent } from "@/core/agent";
 import { runConversation } from "@/core/loop";
 import { type MaestroMcpPool, registerMcpTools, startMcpPool } from "@/mcp/pool";
 import { buildSystemReminder } from "@/memory/reminder";
-import { AnthropicProvider, effortToThinkingBudget } from "@/providers/anthropic";
+import {
+  AnthropicProvider,
+  effortToMaxIter,
+  effortToThinkingBudget,
+} from "@/providers/anthropic";
 import type { Provider, ProviderContentBlock, ProviderMessage } from "@/providers/base";
 import { DeepseekProvider } from "@/providers/deepseek";
 import { maestroRegistry } from "@/registry";
@@ -190,6 +194,14 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
   const requestedModel = opts.model ?? maestroRegistry.defaultModel;
   const resolvedModel = maestroRegistry.expandModelAlias(requestedModel);
 
+  // Resolve effort up-front (was previously deferred until after history
+  // hydration) so we can both build the initial system-reminder with the
+  // correct "iterations remaining: N/N" line and pass `maxIter` into
+  // `AIAgent` below. Default is the registry's `medium`, matching how
+  // claude-provider hands effort to its SDK when the caller doesn't pin one.
+  const resolvedEffort = opts.effort ?? maestroRegistry.defaultEffort;
+  const maxIter = effortToMaxIter(resolvedEffort);
+
   // Pick provider by resolved model id prefix. DeepSeek models (`deepseek-*`)
   // route to DeepseekProvider; anything else falls through to Anthropic. If
   // the chosen adapter's env var is missing, close the MCP pool we already
@@ -237,7 +249,18 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
   // Claude Code places `<system-reminder>` at the tail of user content; we
   // match that order so the model's pretrained intuition treats the
   // reminder as meta annotation, not as user intent.
-  const reminderText = buildSystemReminder({ sessionId, todos: todoStore.list() });
+  // The reminder carries the iteration budget so the model can self-pace
+  // ("8 left → wrap up", "90 left → take your time"). Closure shared with
+  // the per-iteration builder below so first-turn and subsequent-turn
+  // reminders render with identical shape — the model sees the same fields
+  // in the same order, only the counts change.
+  const buildIterReminder = (iterationsRemaining: number): string =>
+    buildSystemReminder({
+      sessionId,
+      todos: todoStore.list(),
+      extras: [iterationBudgetLine(iterationsRemaining, maxIter)],
+    });
+  const reminderText = buildIterReminder(maxIter);
   const userBlocks: ProviderContentBlock[] = [
     { type: "text", text: opts.prompt },
     { type: "text", text: reminderText },
@@ -259,13 +282,6 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
   const augmentedSystemPrompt = skillsBlock
     ? `${opts.systemPrompt}\n\n${skillsBlock}`
     : opts.systemPrompt;
-
-  // Resolve effort → thinking budget. Falls back to the registry default
-  // (`medium`) when the caller didn't pin one, matching how claude-provider
-  // hands effort to its SDK. The mapping itself lives in `providers/anthropic`
-  // so a future non-Anthropic provider in Phase 5 can ignore the budget and
-  // do its own effort-to-reasoning translation.
-  const resolvedEffort = opts.effort ?? maestroRegistry.defaultEffort;
 
   // Register the `Agent` tool last — it captures the resolved model,
   // effort, augmented system prompt (parent base for sub-agents), and the
@@ -289,6 +305,12 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
   const agent = new AIAgent(provider, tools, {
     model: resolvedModel,
     systemPrompt: augmentedSystemPrompt,
+    // Effort-derived tool-iteration cap. The model sees the same number via
+    // the per-iteration `<system-reminder>` (see `buildIterReminder` above)
+    // so it can self-pace — low effort tells it to wrap up fast, xhigh
+    // gives it room to dig.
+    maxIterations: maxIter,
+    buildIterReminder,
     ...(thinkingBudget ? { thinkingBudget } : {}),
     ...(resolvedEffort ? { effort: resolvedEffort } : {}),
     ...(opts.abortController?.signal ? { abortSignal: opts.abortController.signal } : {}),
@@ -311,6 +333,9 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
     {
       agent: "maestro",
       model: resolvedModel,
+      effort: resolvedEffort,
+      maxIter,
+      thinkingBudget: thinkingBudget ?? null,
       sessionId,
       session: opts.session ?? null,
       resumed: priorMessages.length > 0,
@@ -382,6 +407,47 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
       );
     }
   }
+}
+
+/**
+ * Compose the "Tool iterations remaining: N/M — <tone>" line that rides
+ * inside the per-iteration `<system-reminder>` block. Tone shifts with
+ * ABSOLUTE remaining count (not percentage of maxIter) — same threshold
+ * fires the same urgency regardless of effort level, so the model gets a
+ * consistent cue from a `low` run reaching 4-left as from a `xhigh` run
+ * reaching 4-left.
+ *
+ * Why absolute, not relative: at `low` (maxIter=5) the model crosses the
+ * wrap-up line almost immediately; at `xhigh` (maxIter=90) 75% left lasts
+ * ~22 turns. The user-visible behavior the threshold is targeting is "how
+ * many tool calls before I MUST stop" — that's an absolute count, not a
+ * fraction.
+ *
+ * Thresholds:
+ *   - >= 10  → plenty of room. (no urgency)
+ *   - 5..9   → pace yourself.
+ *   - 2..4   → start wrapping up — consolidate, avoid new tool calls.
+ *   - 0..1   → finalize NOW. Stop tooling, write the answer.
+ *
+ * Imperative phrasing matters: passing a bare count ("3 remaining") gets
+ * acknowledged but doesn't change behavior much. Pairing the count with a
+ * verb the model can act on ("start wrapping up", "finalize NOW") is what
+ * shifts the next-token distribution toward "emit final answer" instead
+ * of "call another tool". Exported so sub-agent / tests can share the
+ * exact phrasing if they need parity.
+ */
+export function iterationBudgetLine(remaining: number, max: number): string {
+  let tone: string;
+  if (remaining >= 10) {
+    tone = "plenty of room.";
+  } else if (remaining >= 5) {
+    tone = "pace yourself.";
+  } else if (remaining >= 2) {
+    tone = "start wrapping up — consolidate findings, avoid new tool calls unless essential.";
+  } else {
+    tone = "finalize NOW. Stop tooling and write the final answer.";
+  }
+  return `Tool iterations remaining: ${remaining}/${max} — ${tone}`;
 }
 
 /**

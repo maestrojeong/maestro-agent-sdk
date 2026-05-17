@@ -289,9 +289,15 @@ function buildRequestBody(opts: ProviderCompleteOptions, stream: boolean): Recor
 }
 
 /**
- * Map Clawgram's `EffortLevel` to DeepSeek's `reasoning_effort` string.
- * `xhigh` maps to `max` (DeepSeek's most aggressive tier). Returns undefined
- * when effort is unset/unknown so the caller can skip thinking entirely.
+ * Map the SDK's `EffortLevel` to DeepSeek's `reasoning_effort` string.
+ * DeepSeek's API ships four tiers (low/medium/high/max); maestro's
+ * `xhigh` and `max` both collapse onto DeepSeek `max` — the thinking
+ * depth is identical between them, but their maestro-side `maxIter` caps
+ * differ (xhigh=90, max=200), so the user-facing distinction is "how
+ * much rope before the loop strangles", not API-side reasoning depth.
+ *
+ * Returns undefined when effort is unset/unknown so the caller can skip
+ * thinking entirely.
  */
 export function effortForDeepseek(e: EffortLevel | undefined): string | undefined {
   switch (e) {
@@ -302,6 +308,8 @@ export function effortForDeepseek(e: EffortLevel | undefined): string | undefine
     case "high":
       return "high";
     case "xhigh":
+      return "max";
+    case "max":
       return "max";
     default:
       return undefined;

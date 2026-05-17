@@ -307,6 +307,30 @@ export async function* runConversation(
         content: result,
       });
     }
+
+    // Append a fresh `<system-reminder>` text block AFTER the tool_result
+    // blocks so the model's next turn sees an up-to-date "iterations
+    // remaining" line. Budget = `maxIter - (iterations + 1)` because we
+    // haven't bumped `iterations` for this turn yet — the value reflects
+    // what the model will have AFTER consuming this turn.
+    //
+    // Anthropic accepts mixed tool_result+text blocks in a single user
+    // message; the trailing text block reads as meta annotation rather
+    // than user intent (claude/codex use the same shape).
+    //
+    // Freezing the reminder into `messages` (rather than re-injecting at
+    // wire time each iteration) keeps prefix-cache hits intact: turn N's
+    // reminder is byte-stable across every subsequent call, so the cache
+    // boundary moves forward one turn at a time instead of invalidating
+    // on every API hit.
+    if (agent.config.buildIterReminder) {
+      const remaining = Math.max(0, maxIter - (iterations + 1));
+      const reminderText = agent.config.buildIterReminder(remaining);
+      if (reminderText && reminderText.length > 0) {
+        toolResultBlocks.push({ type: "text", text: reminderText });
+      }
+    }
+
     messages.push({ role: "user", content: toolResultBlocks });
     iterations++;
   }
