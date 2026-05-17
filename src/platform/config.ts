@@ -1,3 +1,4 @@
+import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 
@@ -37,6 +38,20 @@ export const MODEL_DEEPSEEK_V4_PRO: string = "deepseek-v4-pro";
 export const MODEL_DEEPSEEK_V4_FLASH: string = "deepseek-v4-flash";
 
 export const FILE_TAG_REGEX: RegExp = /\[FILE:(\/[^\]]+)\]/gi;
+
+// Make sure DATA_DIR and WORKSPACE_DIR exist before any tool/skill code tries
+// to mkdtemp/readdir into them. Idempotent and best-effort — hosts that point
+// these at read-only mount points should override before importing the SDK.
+try {
+  mkdirSync(DATA_DIR, { recursive: true });
+} catch {
+  // ignore — host may have pre-created with stricter perms
+}
+try {
+  mkdirSync(WORKSPACE_DIR, { recursive: true });
+} catch {
+  // ignore — host may have pre-created with stricter perms
+}
 
 /** Returns `process.env` without `CLAUDECODE` so spawned subprocesses don't
  *  inherit a nested-claude-code detection flag from a parent harness. */
