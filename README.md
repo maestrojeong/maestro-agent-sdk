@@ -132,8 +132,8 @@ startup sweep:
 import { cleanupStaleMaestroSessions, DEFAULT_MAESTRO_SESSION_TTL_MS } from "maestro-agent-sdk";
 
 // At boot: drop JSONLs untouched for >30 days (default).
-const { deleted, scanned } = cleanupStaleMaestroSessions();
-console.log(`maestro sweep: deleted ${deleted}/${scanned}`);
+const { scanned, removed } = cleanupStaleMaestroSessions();
+console.log(`maestro sweep: removed ${removed}/${scanned}`);
 ```
 
 ## Architecture
