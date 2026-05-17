@@ -13,11 +13,11 @@ import { dirname } from "node:path";
 /**
  * Narrowed JSONL helpers for the SDK.
  *
- * Upstream clawgram exposes cross-process append locks via a sidecar
- * `.lock` file and `Bun.sleepSync`. The SDK only ships single-process
- * read/write helpers — the agent loop and session-store never share a
- * JSONL file with another process — so the lock complexity (and Bun
- * dependency) is dropped here.
+ * Single-process JSONL helpers. The SDK never shares a JSONL file with
+ * another process — the agent loop and session-store own their writes —
+ * so the multi-process append-lock complexity that some host runtimes
+ * layer on top is intentionally absent (also keeps the SDK free of any
+ * Bun-specific APIs).
  */
 
 export function readJsonlLines(filePath: string): string[] {

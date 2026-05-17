@@ -40,15 +40,16 @@ interface AnthropicResponse {
 }
 
 /**
- * Raw Anthropic Messages API adapter for the Maestro TS port.
+ * Raw Anthropic Messages API adapter.
  *
- * Uses fetch directly (no @anthropic-ai/sdk dependency) — keeps the dep
- * surface minimal and avoids overlap with Clawgram's existing
- * @anthropic-ai/claude-agent-sdk usage (which is a higher-level wrapper
- * around a claude CLI subprocess).
+ * Uses fetch directly (no `@anthropic-ai/sdk` dependency) — keeps the dep
+ * surface minimal and lets hosts that already pull in the official SDK (or
+ * the higher-level `@anthropic-ai/claude-agent-sdk` Claude-CLI wrapper) use
+ * either side-by-side without version conflicts.
  *
- * Auth: ANTHROPIC_API_KEY env var. This is independent from Clawgram's
- * existing Claude provider, which uses OAuth via the claude CLI.
+ * Auth: `ANTHROPIC_API_KEY` env var. Independent from any OAuth-based
+ * Claude Code session the host process may have — passing an explicit key
+ * to the constructor takes precedence.
  */
 export class AnthropicProvider implements Provider {
   constructor(private readonly apiKey: string) {}
@@ -512,8 +513,8 @@ function applyThinkingHeaders(headers: Record<string, string>, budget: number | 
 }
 
 /**
- * Map Clawgram's shared `EffortLevel` to an Anthropic thinking budget in
- * tokens. Maestro only accepts `low|medium|high|xhigh` (see
+ * Map the SDK's shared `EffortLevel` to an Anthropic thinking budget in
+ * tokens. Maestro accepts `low|medium|high|xhigh|max` (see
  * `MAESTRO_EFFORT_VALUES`); other values return undefined so the caller skips
  * thinking entirely. Budget scale is a deliberate match for the rough
  * progression claude-agent-sdk uses internally (the SDK doesn't expose its

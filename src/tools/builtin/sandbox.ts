@@ -14,10 +14,11 @@ import { WORKSPACE_DIR } from "@/platform/config";
  * with the whole UID anyway.
  *
  * Opt-in: set `MAESTRO_FS_SANDBOX_ENABLED=1` to enforce. Only paths under
- * `${WORKSPACE_DIR}` (`~/claude-code-workspace`) are allowed when enabled;
- * system paths (`~/.ssh`, `/etc`, `/usr`, sibling clawgram clones, etc.)
- * are rejected. Useful for multi-tenant or hardened setups where the
- * model should not be trusted with arbitrary FS access.
+ * `${WORKSPACE_DIR}` (defaults to `~/maestro-workspace`, override via
+ * `MAESTRO_WORKSPACE_DIR`) are allowed when enabled; system paths
+ * (`~/.ssh`, `/etc`, `/usr`, sibling project clones, etc.) are rejected.
+ * Useful for multi-tenant or hardened setups where the model should not be
+ * trusted with arbitrary FS access.
  *
  * Symlink note: we resolve `..` segments via `path.resolve` but do NOT
  * follow symlinks (no `realpathSync`) — a symlink inside the workspace

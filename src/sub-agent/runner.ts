@@ -99,7 +99,7 @@ function resolveMaxTokens(): number {
 
 /** Where the sub-agent overlay prompts live on disk. Co-located with the
  *  other prompt resources under `src/prompts/`. Resolved via `fileURLToPath`
- *  for Node compatibility (clawgram's Bun build used `import.meta.dir`). */
+ *  for Node compatibility — `import.meta.dir` is Bun-only. */
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const OVERLAY_DIR = join(__dirname, "..", "prompts", "sub-agents");
 

@@ -29,8 +29,9 @@ const TOOL_RESULT_PREVIEW_MAX = 200;
 /**
  * run_conversation — Maestro agent loop (TS port).
  *
- * Yields UnifiedEvents so the Clawgram dispatcher can stream them to telegram
- * without caring about the underlying provider format.
+ * Yields UnifiedEvents so the host dispatcher can stream them to whatever
+ * surface it owns (CLI, Telegram bot, web UI, …) without caring about the
+ * underlying provider format.
  *
  * Multi-turn: the caller owns the `messages` array and passes it in
  * pre-populated with prior history (loaded from `~/.maestro/sessions/<id>.jsonl`

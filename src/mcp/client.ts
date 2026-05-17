@@ -56,7 +56,10 @@ export class MaestroMcpClient {
      */
     private readonly transportOverride?: Transport,
   ) {
-    this.client = new Client({ name: "clawgram-maestro", version: "0.1.0" }, { capabilities: {} });
+    this.client = new Client(
+      { name: "maestro-agent-sdk", version: "0.1.0" },
+      { capabilities: {} },
+    );
   }
 
   async start(): Promise<void> {

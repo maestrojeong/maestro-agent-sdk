@@ -56,10 +56,10 @@ export interface SkillEntry {
  *  `scan_skill_commands` skip set. */
 const SKIP_DIRS = new Set([".git", ".github", ".hub", ".archive", "node_modules"]);
 
-/** Description length cap for the rendered index. Upstream uses 80, but the
- *  Clawgram routing review settled on 60 to keep the system-prompt block
- *  tight (~6K tokens hard ceiling once the catalog has 60+ skills). The
- *  full description survives in `frontmatter.description` for skill_view. */
+/** Description length cap for the rendered index. Upstream uses 80; the SDK
+ *  empirically settled on 60 to keep the system-prompt block tight
+ *  (~6K tokens hard ceiling once the catalog has 60+ skills). The full
+ *  description survives in `frontmatter.description` for skill_view. */
 export const SKILL_INDEX_DESCRIPTION_CAP = 60;
 
 /**

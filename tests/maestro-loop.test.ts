@@ -302,11 +302,11 @@ describe("runConversation", () => {
   });
 
   test("[FILE:/abs/path] tags in assistant text emit file events", async () => {
-    // Parity with claude-provider.ts:352 and codex-provider.ts's
-    // turn.completed extract — the dispatcher relies on `file` UnifiedEvents
-    // to trigger send_file, so a maestro turn that mentions a file via the
-    // explicit tag must surface it the same way other providers do.
-    const filePath = "/Users/maestrobot/clawgram/tmp/result.png";
+    // The host dispatcher relies on `file` UnifiedEvents to trigger downstream
+    // side-effects (send_file, attachment preview, …), so a maestro turn that
+    // mentions a file via the explicit `[FILE:/path]` tag must surface it via
+    // the same event shape every other provider yields.
+    const filePath = "/tmp/maestro-test-result.png";
     const { provider } = makeProvider([
       {
         content: [{ type: "text", text: `done. [FILE:${filePath}]` }],

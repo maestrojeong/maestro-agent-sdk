@@ -19,7 +19,7 @@ import { logger } from "@/platform/logger";
  *   - patchCount:  bumped on skill edits (future `skill_edit` builtin).
  *
  * Storage: a single JSON file at `${DATA_DIR}/agents/maestro/skills/usage.json`.
- * Process-local — Clawgram is single-process in production, so a per-skill
+ * Process-local — the SDK targets single-process embedders, so a per-skill
  * sidecar would over-shard the disk for no gain. Atomic-write via tmp +
  * rename guards against the rare `writeFileSync` interrupted-write race.
  *

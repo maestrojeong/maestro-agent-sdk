@@ -5,12 +5,13 @@ const BASH_TIMEOUT_MS = 30_000;
 const BASH_MAX_OUTPUT = 16_000;
 
 /**
- * Bash tool — PoC for Phase 1.
+ * Bash tool — built-in subprocess executor.
  *
  * Minimal: shell out, capture stdout/stderr, enforce a 30s timeout and a
- * 16KB output cap. NOT a long-term solution — Phase 5 will replace this with
- * an adapter to Clawgram's MCP terminal tool so the Maestro loop inherits
- * Clawgram's permission system instead of having an unguarded subprocess.
+ * 16KB output cap. Not a permission-gated execution layer — hosts that need
+ * one should register an MCP terminal tool (or replace this with their own
+ * adapter via `ToolRegistry.register`) so subprocess calls flow through the
+ * host's existing permission system instead of an unguarded `spawn`.
  */
 export const bashTool: ToolHandler = {
   schema: {

@@ -3,7 +3,7 @@ import { logger } from "@/platform/logger";
 /**
  * Shared process-shutdown registry for SDK subsystems (MCP pool, sub-agents).
  *
- * Ported verbatim from clawgram. Modules call `onShutdown(name, priority, fn)`;
+ * Modules call `onShutdown(name, priority, fn)`;
  * the first SIGINT/SIGTERM/beforeExit drains them in descending priority order
  * with a per-handler timeout and a hard exit ceiling.
  *

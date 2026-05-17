@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { resolve } from "node:path";
 
 /**
- * SDK runtime configuration — replaces clawgram's bespoke `platform/config`.
+ * SDK runtime configuration — single source of truth for paths and model ids.
  *
  * Values are resolved once at module load. Hosts that need non-default paths
  * must set the corresponding env var (`MAESTRO_DATA_DIR`, `MAESTRO_WORKSPACE_DIR`,

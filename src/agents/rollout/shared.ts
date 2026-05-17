@@ -1,11 +1,11 @@
 /**
  * Helpers shared by every agent's rollout encoder.
  *
- * Ported from clawgram. The cwd-validation step that hard-references
- * WORKSPACE_DIR/ONBOARDING_DIR is loosened in the SDK build: hosts may
- * route any cwd through the agent loop, and the SDK has no business
- * dictating where a session may live. The other helpers (UUID shape,
- * `extractChatPairs`) are kept verbatim.
+ * The cwd-validation step that some upstream hosts implement against a
+ * hard-coded WORKSPACE_DIR/ONBOARDING_DIR pair is loosened in the SDK:
+ * hosts may route any cwd through the agent loop, and the SDK has no
+ * business dictating where a session may live. The other helpers (UUID
+ * shape, `extractChatPairs`) are kept verbatim.
  */
 
 import { mkdirSync } from "node:fs";

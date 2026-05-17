@@ -7,16 +7,16 @@ import type { EffortLevel } from "@/types";
  *
  * Upstream's AIAgent takes ~60 constructor params (credentials, callbacks,
  * checkpoints, prefill messages, smart routing, reasoning configs, etc.).
- * Phase 1 keeps the bare minimum needed to run a conversation against
- * Anthropic with a tool registry — the rest of upstream's surface area is
- * deferred or dropped because Clawgram owns the equivalent (gateway,
- * permissions, conversation log, etc.).
+ * The SDK keeps the bare minimum needed to run a conversation against a
+ * provider with a tool registry — the rest of upstream's surface area is
+ * deferred or dropped because the embedding host typically owns the
+ * equivalent (gateway, permissions, conversation log, etc.).
  */
 
 export interface AIAgentConfig {
   /** Resolved model id (e.g. `claude-sonnet-4-6`). */
   model: string;
-  /** System prompt — built by Clawgram's prompt-builder before calling. */
+  /** System prompt — usually composed by the host before each query. */
   systemPrompt: string;
   /** Hard cap on tool-calling iterations. Default 90 to match upstream. */
   maxIterations?: number;

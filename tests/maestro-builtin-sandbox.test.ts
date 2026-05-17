@@ -59,7 +59,7 @@ describe("checkFilesystemAccess", () => {
 
   test("rejects paths outside the workspace root", () => {
     expect(checkFilesystemAccess("/etc/passwd")).toContain("outside the workspace root");
-    expect(checkFilesystemAccess("/Users/maestrobot/.ssh/id_rsa")).toContain("outside");
+    expect(checkFilesystemAccess("/root/.ssh/id_rsa")).toContain("outside");
     expect(checkFilesystemAccess("/tmp/foo")).toContain("outside");
   });
 

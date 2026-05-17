@@ -34,7 +34,7 @@ describe("DeepseekProvider.fromEnv", () => {
 });
 
 describe("effortForDeepseek", () => {
-  test("maps each Clawgram effort to a DeepSeek reasoning_effort value", () => {
+  test("maps each maestro EffortLevel to a DeepSeek reasoning_effort value", () => {
     expect(effortForDeepseek("low")).toBe("low");
     expect(effortForDeepseek("medium")).toBe("medium");
     expect(effortForDeepseek("high")).toBe("high");

@@ -1,13 +1,13 @@
 /**
  * Pluggable logger for the SDK.
  *
- * Upstream clawgram used `pino`. The SDK ships with a minimal console-backed
- * default and exposes `setLogger()` so hosts can plug their own structured
- * logger (pino, winston, bunyan, …). All SDK call sites import `logger` from
- * this module and never assume a particular implementation.
+ * The SDK ships with a minimal console-backed default and exposes
+ * `setLogger()` so hosts can plug their own structured logger (pino,
+ * winston, bunyan, …). All SDK call sites import `logger` from this
+ * module and never assume a particular implementation.
  *
  * The interface mirrors pino's call shape — `(meta, msg)` or just `(msg)` —
- * so existing call sites copied from clawgram work unchanged.
+ * so a host plugging in pino directly is the zero-friction path.
  */
 
 export interface Logger {

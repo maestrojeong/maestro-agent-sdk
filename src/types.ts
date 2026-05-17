@@ -1,5 +1,6 @@
 /**
- * Core SDK types — narrowed from the upstream clawgram types.
+ * Core SDK types — narrowed to what the agent loop, providers, and tools
+ * actually consume across the public surface.
  *
  * The host application provides the rest (PII context, session bookkeeping,
  * Telegram-specific fields). The SDK only needs the pieces the agent loop,

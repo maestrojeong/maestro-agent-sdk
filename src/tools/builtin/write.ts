@@ -17,8 +17,9 @@ import type { ToolHandler } from "@/tools/registry";
  * additive writes should use the bash tool with `>>` for now (Phase 5 may add
  * a separate `Edit` builtin that handles the read-modify-write cycle).
  *
- * Path safety: absolute path is enforced. We DO NOT sandbox the write under
- * the user's workspace dir here — Clawgram's permission system + the agent
+ * Path safety: absolute path is enforced. The write is NOT sandboxed under
+ * the workspace dir here — the host's permission system (PreToolUse hooks
+ * via `ToolRegistry`, or the optional `createSandboxFsHook`) plus the agent
  * loop's abort plumbing are the authoritative guardrails. A stricter check
  * can land later without breaking the schema (the model only sees the public
  * fields).
