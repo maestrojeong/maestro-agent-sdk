@@ -32,7 +32,6 @@ import { createTodoWriteTool } from "@/tools/builtin/todo_write";
 import { webFetchTool } from "@/tools/builtin/web_fetch";
 import { createWriteTool } from "@/tools/builtin/write";
 import { getFileStateTracker } from "@/tools/file-state";
-import { createSandboxFsHook } from "@/tools/hooks/sandbox-fs";
 import { ToolRegistry } from "@/tools/registry";
 import { logger } from "@/platform/logger";
 import { getMcpServersForQuery } from "@/platform/mcp-config";
@@ -91,19 +90,12 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
 
   const tools = new ToolRegistry();
 
-  // Filesystem sandbox runs as a PreToolUse hook so every tool with a
-  // `file_path` argument (Read/Write/Edit + future FS-touching MCP tools)
-  // shares one gate. Registered first so it fires before any caller-added
-  // hook in this turn.
-  tools.use(createSandboxFsHook());
-
   tools.register(bashTool);
   // Read/Write/Edit/WebFetch — claude SDK parity builtins. Same name + schema
   // so the model's pretrained instinct calls them with the right shape, and
   // prompt cache keys line up across agents when a topic is bridged.
-  // Read/Write/Edit also gate on the workspace sandbox (inline today; future
-  // Phase 2.1 migrates to a hook) and on the per-session file-state tracker
-  // so Edit can't mutate a path that hasn't been Read in this session.
+  // Read/Write/Edit gate on the per-session file-state tracker so Edit can't
+  // mutate a path that hasn't been Read in this session.
   tools.register(createReadTool({ tracker: fileTracker }));
   tools.register(createWriteTool({ tracker: fileTracker }));
   tools.register(createEditTool({ tracker: fileTracker }));
@@ -248,8 +240,8 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
   //      reminder once canonical re-renders), nuking cache hits.
   //   2. Compactor preserves the most-recent user message; the reminder
   //      rides along automatically. Historical turns keep the reminder
-  //      that was true at THAT turn (sandbox could have flipped since) —
-  //      drift across env-var changes is feature, not bug.
+  //      that was true at THAT turn — drift across env-var changes is
+  //      feature, not bug.
   // Claude Code places `<system-reminder>` at the tail of user content; we
   // match that order so the model's pretrained intuition treats the
   // reminder as meta annotation, not as user intent.

@@ -5,20 +5,13 @@ import { join } from "node:path";
 import { countOccurrences, editTool } from "@/tools/builtin/edit";
 
 let tmp: string;
-let prevSandboxEnv: string | undefined;
 
 beforeEach(() => {
   tmp = mkdtempSync(join(tmpdir(), "maestro-edit-test-"));
-  // Sandbox is opt-in (default disabled); ensure the enable flag is unset
-  // so this suite's `/tmp/...` paths are reachable.
-  prevSandboxEnv = process.env.MAESTRO_FS_SANDBOX_ENABLED;
-  delete process.env.MAESTRO_FS_SANDBOX_ENABLED;
 });
 
 afterEach(() => {
   rmSync(tmp, { recursive: true, force: true });
-  if (prevSandboxEnv === undefined) delete process.env.MAESTRO_FS_SANDBOX_ENABLED;
-  else process.env.MAESTRO_FS_SANDBOX_ENABLED = prevSandboxEnv;
 });
 
 describe("editTool", () => {

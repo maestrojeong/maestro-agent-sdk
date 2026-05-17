@@ -4,11 +4,6 @@ import type { FileStateTracker } from "@/tools/file-state";
 import type { ToolHandler } from "@/tools/registry";
 
 /**
- * NOTE: filesystem sandboxing now lives in the `sandbox-fs` PreToolUse hook.
- * Standalone callers (tests, scripts) without the registry get NO sandbox.
- */
-
-/**
  * Write builtin — claude SDK `Write` tool parity for maestro.
  *
  * Mirrors the upstream `Write` tool's name + schema so the model's pretrained
@@ -17,12 +12,10 @@ import type { ToolHandler } from "@/tools/registry";
  * additive writes should use the bash tool with `>>` for now (Phase 5 may add
  * a separate `Edit` builtin that handles the read-modify-write cycle).
  *
- * Path safety: absolute path is enforced. The write is NOT sandboxed under
- * the workspace dir here — the host's permission system (PreToolUse hooks
- * via `ToolRegistry`, or the optional `createSandboxFsHook`) plus the agent
- * loop's abort plumbing are the authoritative guardrails. A stricter check
- * can land later without breaking the schema (the model only sees the public
- * fields).
+ * Path safety: absolute path is enforced. Any further restriction (workspace
+ * allowlist, owner check, etc.) is the host's job — register a PreToolUse
+ * hook via `ToolRegistry.use()` and inspect `ctx.input.file_path` there.
+ * The agent loop's abort plumbing remains the authoritative cancel path.
  */
 
 export interface WriteToolOptions {

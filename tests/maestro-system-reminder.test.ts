@@ -1,6 +1,5 @@
 import { describe, expect, test } from "vitest";
 import { buildSystemReminder } from "@/memory/reminder";
-import { WORKSPACE_DIR } from "@/platform/config";
 
 /**
  * Unit tests for the system-reminder builder.
@@ -9,11 +8,9 @@ import { WORKSPACE_DIR } from "@/platform/config";
  * single-attach per turn) live closer to the maestroProvider integration
  * level — see maestro-provider.integration tests when they land. The
  * smoke check below covers what we can verify without standing up a
- * real provider / loop: shape, sandbox state branching, and that
- * extras render verbatim.
+ * real provider / loop: shape, session id surfacing, and that extras
+ * render verbatim.
  */
-
-const ENV_ENABLED = "MAESTRO_FS_SANDBOX_ENABLED";
 
 describe("buildSystemReminder", () => {
   test("renders an opening + closing `<system-reminder>` tag pair", () => {
@@ -25,33 +22,6 @@ describe("buildSystemReminder", () => {
   test("includes the resolved sessionId so cross-session tools can reference it", () => {
     const out = buildSystemReminder({ sessionId: "deadbeef-1234" });
     expect(out).toContain("Session: deadbeef-1234");
-  });
-
-  test("renders sandbox-enabled state with workspace root when env opt-in is set", () => {
-    const prev = process.env[ENV_ENABLED];
-    process.env[ENV_ENABLED] = "1";
-    try {
-      const out = buildSystemReminder({ sessionId: "s" });
-      expect(out).toContain("Filesystem sandbox: enabled");
-      expect(out).toContain(WORKSPACE_DIR);
-    } finally {
-      if (prev === undefined) delete process.env[ENV_ENABLED];
-      else process.env[ENV_ENABLED] = prev;
-    }
-  });
-
-  test("renders sandbox-disabled state by default (env opt-in unset)", () => {
-    const prev = process.env[ENV_ENABLED];
-    delete process.env[ENV_ENABLED];
-    try {
-      const out = buildSystemReminder({ sessionId: "s" });
-      expect(out).toContain("Filesystem sandbox: disabled");
-      // Workspace root callout is omitted when the gate is off.
-      expect(out).not.toContain("Allowed root:");
-    } finally {
-      if (prev === undefined) delete process.env[ENV_ENABLED];
-      else process.env[ENV_ENABLED] = prev;
-    }
   });
 
   test("appends extras verbatim, dropping empties", () => {

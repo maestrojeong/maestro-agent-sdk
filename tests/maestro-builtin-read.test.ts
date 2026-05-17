@@ -11,22 +11,13 @@ import { __MAX_FILE_BYTES, readTool } from "@/tools/builtin/read";
  */
 
 let tmp: string;
-let prevSandboxEnv: string | undefined;
 
 beforeEach(() => {
   tmp = mkdtempSync(join(tmpdir(), "maestro-read-test-"));
-  // These tests intentionally operate on `/tmp/...` paths outside the
-  // workspace root. The sandbox is opt-in (default disabled) so we just
-  // ensure the enable flag is unset for the suite; the sandbox itself is
-  // covered in `maestro-builtin-sandbox.test.ts`.
-  prevSandboxEnv = process.env.MAESTRO_FS_SANDBOX_ENABLED;
-  delete process.env.MAESTRO_FS_SANDBOX_ENABLED;
 });
 
 afterEach(() => {
   rmSync(tmp, { recursive: true, force: true });
-  if (prevSandboxEnv === undefined) delete process.env.MAESTRO_FS_SANDBOX_ENABLED;
-  else process.env.MAESTRO_FS_SANDBOX_ENABLED = prevSandboxEnv;
 });
 
 describe("readTool", () => {

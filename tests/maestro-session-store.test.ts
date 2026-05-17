@@ -1,5 +1,6 @@
 import { afterEach, beforeAll, describe, expect, test } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ProviderMessage } from "@/providers/base";
 import {
@@ -12,16 +13,17 @@ import {
   trimToSafePrefix,
   writeMaestroRollout,
 } from "@/session-store";
-import { WORKSPACE_DIR } from "@/platform/config";
 import { appendConversationEvent, getConversationPath } from "@/storage/conversations";
+
+// Suite-local sandbox under the OS tmp dir. The SDK no longer surfaces a
+// workspace-root constant, so tests provision their own scratch directory
+// per file and clean up via `tracked`.
+const TEST_WORKSPACE_DIR = join(tmpdir(), "maestro-session-store-tests");
 
 const tracked: string[] = [];
 
-// CI runners may not yet have $HOME/claude-code-workspace materialized — the
-// production bot creates it on first user activity. `mkdtempSync` inside it
-// needs the parent to exist, so seed it here for the test suite.
 beforeAll(() => {
-  if (!existsSync(WORKSPACE_DIR)) mkdirSync(WORKSPACE_DIR, { recursive: true });
+  if (!existsSync(TEST_WORKSPACE_DIR)) mkdirSync(TEST_WORKSPACE_DIR, { recursive: true });
 });
 
 afterEach(() => {
@@ -122,7 +124,7 @@ describe("isWellFormedMessage", () => {
 
 describe("writeMaestroRollout (cross-agent bridge)", () => {
   test("synthesizes a session file from a ConversationEntry log", () => {
-    const cwd = mkdtempSync(join(WORKSPACE_DIR, "test-maestro-roll-"));
+    const cwd = mkdtempSync(join(TEST_WORKSPACE_DIR, "test-maestro-roll-"));
     tracked.push(cwd);
     const userId = "888888";
     const topicName = "maestro-bridge-test";
@@ -174,7 +176,7 @@ describe("writeMaestroRollout (cross-agent bridge)", () => {
   });
 
   test("reuses sessionId so the rollout path is stable across switches", () => {
-    const cwd = mkdtempSync(join(WORKSPACE_DIR, "test-maestro-reuse-"));
+    const cwd = mkdtempSync(join(TEST_WORKSPACE_DIR, "test-maestro-reuse-"));
     tracked.push(cwd);
     const first = writeMaestroRollout({
       cwd,

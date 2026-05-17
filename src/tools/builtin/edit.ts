@@ -4,11 +4,6 @@ import type { FileStateTracker } from "@/tools/file-state";
 import type { ToolHandler } from "@/tools/registry";
 
 /**
- * NOTE: filesystem sandboxing now lives in the `sandbox-fs` PreToolUse hook.
- * Standalone callers (tests, scripts) without the registry get NO sandbox.
- */
-
-/**
  * Edit builtin — claude SDK `Edit` tool parity for maestro.
  *
  * Mirrors the upstream `Edit` tool's name + input schema so the model's

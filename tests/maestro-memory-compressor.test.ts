@@ -14,6 +14,12 @@ import type {
  * inputs and returns a canned summary.
  */
 
+/** Default aux model id used by tests that exercise the aux-LLM dispatch
+ *  path. Production callers (`runConversation`) wire the agent's own model
+ *  in; tests pick an arbitrary string since RecordingProvider doesn't care
+ *  what the id is. */
+const TEST_AUX_MODEL = "claude-sonnet-4-6";
+
 function userText(text: string): ProviderMessage {
   return { role: "user", content: text };
 }
@@ -95,6 +101,7 @@ describe("compressIfNeeded — successful compaction", () => {
 
     const out = await compressIfNeeded(messages, {
       auxProvider: provider,
+      auxModel: TEST_AUX_MODEL,
       contextWindow: 200_000,
       triggerRatio: 0.8,
       headProtect: 2,
@@ -125,16 +132,19 @@ describe("compressIfNeeded — successful compaction", () => {
     expect(estimateTokens(out)).toBeLessThan(estimateTokens(messages));
   });
 
-  test("uses MODEL_HAIKU by default when auxModel unset", async () => {
+  test("falls back to prune-only when auxModel is unset", async () => {
     const provider = new RecordingProvider();
     const messages = buildBigHistory(60, 10000);
     __resetCompactorState(messages);
-    await compressIfNeeded(messages, {
+    const out = await compressIfNeeded(messages, {
       auxProvider: provider,
       contextWindow: 200_000,
       triggerRatio: 0.8,
     });
-    expect(provider.calls[0].model).toMatch(/^claude-haiku/);
+    // No aux LLM call should have been made — caller must supply auxModel.
+    expect(provider.calls.length).toBe(0);
+    // Output is still produced (prune-only), and shorter than the input.
+    expect(estimateTokens(out)).toBeLessThanOrEqual(estimateTokens(messages));
   });
 
   test("custom auxModel reaches the provider", async () => {
@@ -157,6 +167,7 @@ describe("compressIfNeeded — successful compaction", () => {
     __resetCompactorState(messages);
     await compressIfNeeded(messages, {
       auxProvider: provider,
+      auxModel: TEST_AUX_MODEL,
       contextWindow: 200_000,
       triggerRatio: 0.8,
       abortSignal: ac.signal,
@@ -174,6 +185,7 @@ describe("compressIfNeeded — fallbacks and safety", () => {
 
     const out = await compressIfNeeded(messages, {
       auxProvider: provider,
+      auxModel: TEST_AUX_MODEL,
       contextWindow: 200_000,
       triggerRatio: 0.8,
     });
@@ -190,6 +202,7 @@ describe("compressIfNeeded — fallbacks and safety", () => {
 
     const out = await compressIfNeeded(messages, {
       auxProvider: provider,
+      auxModel: TEST_AUX_MODEL,
       contextWindow: 200_000,
       triggerRatio: 0.8,
     });
@@ -232,11 +245,13 @@ describe("compressIfNeeded — anti-thrash", () => {
     // negative / under 10%), incrementing the failed-compactions counter.
     await compressIfNeeded(messages, {
       auxProvider: provider,
+      auxModel: TEST_AUX_MODEL,
       contextWindow: 200_000,
       triggerRatio: 0.8,
     });
     await compressIfNeeded(messages, {
       auxProvider: provider,
+      auxModel: TEST_AUX_MODEL,
       contextWindow: 200_000,
       triggerRatio: 0.8,
     });
@@ -245,6 +260,7 @@ describe("compressIfNeeded — anti-thrash", () => {
     // Third attempt is skipped — anti-thrash kicks in and returns prune-only.
     await compressIfNeeded(messages, {
       auxProvider: provider,
+      auxModel: TEST_AUX_MODEL,
       contextWindow: 200_000,
       triggerRatio: 0.8,
     });
@@ -262,11 +278,13 @@ describe("compressIfNeeded — anti-thrash", () => {
     __resetCompactorState(first);
     await compressIfNeeded(first, {
       auxProvider: provider,
+      auxModel: TEST_AUX_MODEL,
       contextWindow: 200_000,
       triggerRatio: 0.8,
     });
     await compressIfNeeded(first, {
       auxProvider: provider,
+      auxModel: TEST_AUX_MODEL,
       contextWindow: 200_000,
       triggerRatio: 0.8,
     });
@@ -276,6 +294,7 @@ describe("compressIfNeeded — anti-thrash", () => {
     __resetCompactorState(second);
     await compressIfNeeded(second, {
       auxProvider: provider,
+      auxModel: TEST_AUX_MODEL,
       contextWindow: 200_000,
       triggerRatio: 0.8,
     });

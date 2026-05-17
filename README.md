@@ -4,11 +4,19 @@
 [![npm version](https://img.shields.io/npm/v/maestro-agent-sdk.svg)](https://www.npmjs.com/package/maestro-agent-sdk)
 [![license](https://img.shields.io/npm/l/maestro-agent-sdk.svg)](./LICENSE)
 
-**Embeddable, provider-agnostic TypeScript agent SDK** — pluggable providers, built-in tools, skills, memory, and MCP.
+**Embeddable agent SDK that ships skills, memory, and MCP out of the box.**
+Anthropic + DeepSeek today, BYO-provider in one file. No CLI, no gateway, no host lock-in.
 
 > **Status:** Early port (v0.1.x). Active development. API surface may change before 1.0.
 
-This package extracts the Maestro agent runtime — originally built into [Nous Research's `hermes-agent`](https://github.com/NousResearch/hermes-agent) — into a standalone npm package you can drop into any TypeScript / Node app.
+Inspired by [Claude Code](https://www.anthropic.com/claude-code) and [`hermes-agent`](https://github.com/NousResearch/hermes-agent) — same agent-loop shape, repackaged as an embeddable TypeScript library.
+
+### How it compares
+
+| | What you get |
+|---|---|
+| **vs [`@anthropic-ai/claude-agent-sdk`](https://github.com/anthropics/claude-agent-sdk-typescript)** | Multi-provider from day one (Anthropic + DeepSeek), with skills (`SKILL.md` indexing), memory (auto context compaction), and MCP client pool built in — not provided as separate add-ons. |
+| **vs LangChain / LangGraph** | Thin loop, no DSL. A provider is one adapter file; a tool is `{ name, description, schema, run }`. You read the source in an afternoon. |
 
 ## What's in the box
 
@@ -17,9 +25,8 @@ This package extracts the Maestro agent runtime — originally built into [Nous 
 - **Built-in tools** — `bash`, `read`, `write`, `edit`, `agent` (sub-agent delegation), `todo_write`, `skill_view`, `web_fetch`. Bring your own via `ToolRegistry`.
 - **MCP** — built-in client pool (stdio + SSE) so any MCP server (`@modelcontextprotocol/sdk`) shows up as tools.
 - **Skills** — Anthropic-style `SKILL.md` packages with FTS-style indexing and on-demand expansion.
-- **Memory** — automatic context compression (summarization + pruning) when the token budget is hit.
-- **Filesystem sandbox** — optional path-allowlist hook for read/write/edit/bash.
-- **Host integration via DI** — `setLogger`, `setMcpResolver`, `setConversationReader` let you embed without inheriting any one host's opinions.
+- **Memory** — automatic context compression (summarization + pruning) when the token budget is hit. Reuses the agent's own model for compaction — no separate model knob.
+- **Host integration via DI** — `setLogger`, `setMcpResolver`, `setConversationReader` let you embed without inheriting any one host's opinions. FS policy (path allowlists, owner checks) is a host concern — register a `PreToolUseHook` via `ToolRegistry.use()`.
 
 ## Install
 
@@ -116,14 +123,16 @@ and a custom-tool walkthrough.
 
 ## Configuration
 
-The SDK resolves a few paths at module load. Override via env vars **before**
-importing any SDK module (the values are captured once):
+The SDK resolves its data directory at module load. Override via env var
+**before** importing any SDK module (the value is captured once):
 
 | Env var | Default | What it does |
 |---|---|---|
 | `MAESTRO_DATA_DIR` | `~/.maestro` | Where session JSONLs, skill usage counters, and todo stores live. `maestroSessionsDir()` resolves to `<DATA_DIR>/sessions`. |
-| `MAESTRO_WORKSPACE_DIR` | `~/maestro-workspace` | Sandbox root for the builtin filesystem tools (`read`, `write`, `edit`, `bash`). |
-| `MAESTRO_COMPRESSION_MODEL` | `claude-haiku-4-5-20251001` | Cheap/fast model id used by the memory compressor. |
+
+Everything else is per-call: pass `cwd`, `model`, `effort`, etc. through
+`AIAgentConfig` / `AgentQueryOptions`. The memory compressor reuses the
+agent's configured `model` — no separate compression-model knob.
 
 For session housekeeping there's a helper that hosts can wire into their
 startup sweep:
@@ -141,7 +150,7 @@ console.log(`maestro sweep: removed ${removed}/${scanned}`);
 ```
 src/
 ├── core/         AIAgent class + run_conversation loop
-├── tools/        ToolRegistry + builtin tools + hooks (sandbox-fs)
+├── tools/        ToolRegistry + builtin tools + PreToolUse/PostToolUse hook surface
 ├── providers/    Provider adapters (anthropic, deepseek)
 ├── mcp/          MCP client pool (stdio + SSE)
 ├── skills/       SKILL.md loader, index builder, usage tracker, curator
@@ -186,7 +195,7 @@ cd maestro-agent-sdk
 npm install
 npm run typecheck   # tsc --noEmit
 npm run build       # tsc + tsc-alias → dist/
-npm test            # vitest, 343 tests
+npm test            # vitest, 330 tests
 ```
 
 ### Known gaps
@@ -200,4 +209,4 @@ They rely on host-side helpers (`appendConversationEvent`, `getConversationPath`
 
 ## License
 
-[MIT](./LICENSE) — same as the upstream [hermes-agent](https://github.com/NousResearch/hermes-agent) project this SDK is derived from. See [NOTICE](./NOTICE) for full attribution to Nous Research and a summary of the changes in this distribution.
+[MIT](./LICENSE). Design influenced by [Claude Code](https://www.anthropic.com/claude-code) and Nous Research's [`hermes-agent`](https://github.com/NousResearch/hermes-agent) (also MIT); see [NOTICE](./NOTICE) for attribution details.

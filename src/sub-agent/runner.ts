@@ -17,7 +17,6 @@ import { createSkillViewTool } from "@/tools/builtin/skill_view";
 import { webFetchTool } from "@/tools/builtin/web_fetch";
 import { createWriteTool } from "@/tools/builtin/write";
 import { getFileStateTracker } from "@/tools/file-state";
-import { createSandboxFsHook } from "@/tools/hooks/sandbox-fs";
 import { ToolRegistry } from "@/tools/registry";
 import { logger } from "@/platform/logger";
 import type { EffortLevel, TokenUsage } from "@/types";
@@ -122,8 +121,8 @@ function loadOverlay(kind: SubagentType): string {
  * `explore` — Read + WebFetch + skill_view only. NO bash, write, edit —
  *             the role is read-only by construction.
  *
- * Both types share the same sandbox-fs hook. Neither registers `Agent`
- * (recursion cap) or `todo_write` (sub-agents don't plan iteratively).
+ * Neither registers `Agent` (recursion cap) or `todo_write` (sub-agents
+ * don't plan iteratively).
  */
 function buildToolRegistry(
   kind: SubagentType,
@@ -133,7 +132,6 @@ function buildToolRegistry(
 ): ToolRegistry {
   void abortSignal; // reserved for future bash abort wiring
   const tools = new ToolRegistry();
-  tools.use(createSandboxFsHook());
 
   // Sub-agent's OWN file-state tracker — keyed off subSessionId, NOT the
   // parent's. Sharing would mean the parent's Read could let the sub-agent

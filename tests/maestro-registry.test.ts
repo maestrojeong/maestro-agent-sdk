@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, test } from "vitest";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { afterEach, beforeAll, describe, expect, test } from "vitest";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { maestroRegistry } from "@/registry";
 import {
@@ -11,9 +12,15 @@ import {
   MODEL_DEEPSEEK_V4_FLASH,
   MODEL_DEEPSEEK_V4_PRO,
   MODEL_SONNET,
-  WORKSPACE_DIR,
 } from "@/platform/config";
 import { appendConversationEvent, getConversationPath } from "@/storage/conversations";
+
+// Suite-local sandbox under the OS tmp dir. The SDK no longer surfaces a
+// workspace-root constant.
+const TEST_WORKSPACE_DIR = join(tmpdir(), "maestro-registry-tests");
+beforeAll(() => {
+  if (!existsSync(TEST_WORKSPACE_DIR)) mkdirSync(TEST_WORKSPACE_DIR, { recursive: true });
+});
 
 const tracked: string[] = [];
 
@@ -50,7 +57,7 @@ describe("maestroRegistry alias map", () => {
 
 describe("maestroRegistry.writeRollout", () => {
   test("encodes a conversation log into a maestro session file", () => {
-    const cwd = mkdtempSync(join(WORKSPACE_DIR, "test-maestro-reg-"));
+    const cwd = mkdtempSync(join(TEST_WORKSPACE_DIR, "test-maestro-reg-"));
     tracked.push(cwd);
 
     const userId = "777771";
@@ -85,7 +92,7 @@ describe("maestroRegistry.writeRollout", () => {
   });
 
   test("reuseSessionId keeps the path stable across rollout writes", () => {
-    const cwd = mkdtempSync(join(WORKSPACE_DIR, "test-maestro-reuse-"));
+    const cwd = mkdtempSync(join(TEST_WORKSPACE_DIR, "test-maestro-reuse-"));
     tracked.push(cwd);
     const first = maestroRegistry.writeRollout({
       cwd,
@@ -104,7 +111,7 @@ describe("maestroRegistry.writeRollout", () => {
 
 describe("maestroRegistry.forkSession", () => {
   test("synthesizes a fork from the topic's conversation log", async () => {
-    const cwd = mkdtempSync(join(WORKSPACE_DIR, "test-maestro-fork-"));
+    const cwd = mkdtempSync(join(TEST_WORKSPACE_DIR, "test-maestro-fork-"));
     tracked.push(cwd);
     // Unique userId per invocation so reruns don't pile up entries in a
     // shared `data/conversations/<userId>/<topic>.jsonl` (appendOnly).
@@ -144,7 +151,7 @@ describe("maestroRegistry.forkSession", () => {
 
 describe("maestroRegistry.cleanupRollouts", () => {
   test("removes each named session file and tolerates ENOENT", async () => {
-    const cwd = mkdtempSync(join(WORKSPACE_DIR, "test-maestro-clean-"));
+    const cwd = mkdtempSync(join(TEST_WORKSPACE_DIR, "test-maestro-clean-"));
     tracked.push(cwd);
     const a = writeMaestroRollout({
       cwd,
@@ -169,7 +176,7 @@ describe("maestroRegistry.cleanupRollouts", () => {
 
   test("empty list is a no-op", async () => {
     await expect(
-      maestroRegistry.cleanupRollouts({ cwd: WORKSPACE_DIR, sessionIds: [] }),
+      maestroRegistry.cleanupRollouts({ cwd: TEST_WORKSPACE_DIR, sessionIds: [] }),
     ).resolves.toBeUndefined();
   });
 });

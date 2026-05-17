@@ -74,7 +74,7 @@ export class FileStateTracker {
   /**
    * Check whether `absPath` may be Edit/Write'd. Returns null on allow,
    * or a string error on deny — callers stringify into `{error}` so the
-   * model sees the same shape as sandbox / arg-validation rejections.
+   * model sees the same shape as arg-validation rejections.
    *
    * Three reject paths:
    *   - "no_read": never Read this session. Forces the model to Read first.

@@ -2,16 +2,15 @@ import { ACTIVE_TASK_TEMPLATE, wrapCompactedSummary } from "@/memory/active-task
 import { pruneMessages } from "@/memory/prune";
 import { estimateTokens } from "@/memory/token-estimate";
 import type { Provider, ProviderContentBlock, ProviderMessage } from "@/providers/base";
-import { MODEL_HAIKU } from "@/platform/config";
 import { logger } from "@/platform/logger";
 
 /**
  * Maestro context auto-compaction.
  *
- * When estimated tokens exceed `triggerRatio` × `contextWindow`, dispatch a
- * cheap aux LLM (default `claude-haiku-4-5-...`) to summarize the middle
- * slice of the conversation into the Active Task template, then return a
- * new message array shaped as:
+ * When estimated tokens exceed `triggerRatio` × `contextWindow`, dispatch an
+ * aux LLM call — by default the agent's own configured model — to summarize
+ * the middle slice of the conversation into the Active Task template, then
+ * return a new message array shaped as:
  *
  *   [ ...head_protected, { role: "user", content: "<compacted-history>..." },
  *     ...tail_protected ]
@@ -62,7 +61,10 @@ export interface CompressOptions {
   /** Number of TAIL messages preserved verbatim. Default 6 (~ last 3 turns
    *  of user/assistant alternation). */
   tailProtect?: number;
-  /** Aux model id for the summarization call. Default `MODEL_HAIKU`. */
+  /** Aux model id for the summarization call. The agent loop wires the
+   *  agent's own configured model in by default, so callers usually don't
+   *  set this unless they want compaction to run on a different model than
+   *  the main turn. */
   auxModel?: string;
   /** Inject a different provider for tests. Defaults to a fresh
    *  `AnthropicProvider.fromEnv()` reuse-of-the-main-provider via DI. */
@@ -122,7 +124,7 @@ export async function compressIfNeeded(
   const triggerRatio = opts.triggerRatio ?? 0.8;
   const headProtect = opts.headProtect ?? 2;
   const tailProtect = opts.tailProtect ?? 6;
-  const auxModel = opts.auxModel ?? MODEL_HAIKU;
+  const auxModel = opts.auxModel;
 
   // Step 1: prune first. Cheap and often enough.
   const pruned = pruneMessages(messages);
@@ -166,11 +168,21 @@ export async function compressIfNeeded(
   // Step 3: aux LLM call.
   if (!opts.auxProvider) {
     // No provider supplied AND no factory available in production callers
-    // (maestroProvider passes its own AnthropicProvider). Without one we
-    // can't summarize — drop to pruned and log so the operator sees why.
+    // (the agent loop passes its own provider). Without one we can't
+    // summarize — drop to pruned and log so the operator sees why.
     logger.warn(
       { prunedTokens, threshold },
       "compressIfNeeded: over threshold but no auxProvider supplied — falling back to prune-only",
+    );
+    return pruned;
+  }
+  if (!auxModel) {
+    // No model id supplied. The agent loop wires `auxModel: agent.config.model`
+    // by default, so this branch only fires if a host calls compressIfNeeded
+    // directly without one. Same fallback as missing provider.
+    logger.warn(
+      { prunedTokens, threshold },
+      "compressIfNeeded: over threshold but no auxModel supplied — falling back to prune-only",
     );
     return pruned;
   }

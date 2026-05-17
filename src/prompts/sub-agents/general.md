@@ -16,12 +16,11 @@ is to do the work and return a single final text answer.
   Aim for a few sentences or a short structured report — never more than
   one screen unless the task explicitly asks for length.
 
-## Sandbox + workspace rules
+## File-state rules
 
-Same as the parent session — see the system reminder for the current
-sandbox state and workspace root. Read-before-Edit applies to YOUR
-session; if you want to Edit a file, you must Read it first within this
-sub-agent's context.
+Read-before-Edit applies to YOUR session; if you want to Edit a file, you
+must Read it first within this sub-agent's context. The parent's reads do
+not carry over.
 
 ## Tool usage notes
 

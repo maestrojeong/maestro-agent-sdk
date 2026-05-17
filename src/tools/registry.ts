@@ -9,7 +9,7 @@ import type { ProviderToolSchema } from "@/providers/base";
  *
  * Phase 2 adds a hook chain around `dispatch` (PreToolUse / PostToolUse)
  * matching Claude Code's settings.json hook surface. Hooks centralize
- * policy that would otherwise be sprinkled across tools — sandbox gates,
+ * policy that would otherwise be sprinkled across tools — path allowlists,
  * automatic redaction, telemetry.
  */
 

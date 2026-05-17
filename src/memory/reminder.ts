@@ -1,6 +1,4 @@
 import type { TodoEntry } from "@/state/todos";
-import { isSandboxEnabled } from "@/tools/builtin/sandbox";
-import { WORKSPACE_DIR } from "@/platform/config";
 
 /**
  * System-reminder builder.
@@ -8,9 +6,8 @@ import { WORKSPACE_DIR } from "@/platform/config";
  * Renders the `<system-reminder>…</system-reminder>` block that gets
  * attached to every new user message in `maestroProvider`. The reminder
  * carries invariants the model needs to keep in mind for the current turn
- * — sandbox state, workspace root, future: active task — and is what keeps
- * long sessions from forgetting the rules after the compactor evicts the
- * middle.
+ * — session id, todo list, caller-supplied extras — and is what keeps long
+ * sessions from forgetting the rules after the compactor evicts the middle.
  *
  * Why this lives outside `loop.ts`:
  *
@@ -54,28 +51,12 @@ export interface SystemReminderContext {
  * Build the `<system-reminder>` block. Returns a self-contained string that
  * callers attach verbatim as a `text` content block on a user message.
  *
- * Empty extras + sandbox-enabled (default) state renders to ~3 lines so
- * the per-turn token cost is bounded; the catalog of facts only grows as
- * later phases add semantic state (Phase 3.2 task list, etc.).
+ * Empty extras renders to ~2 lines so the per-turn token cost is bounded;
+ * the catalog of facts only grows as later phases add semantic state
+ * (Phase 3.2 task list, etc.).
  */
 export function buildSystemReminder(ctx: SystemReminderContext): string {
   const lines: string[] = ["<system-reminder>"];
-
-  // Sandbox state — the model needs to know whether file paths outside
-  // WORKSPACE_DIR will be rejected, so it can either prefix paths correctly
-  // or pre-emptively flag the limitation when the user asks for an
-  // out-of-workspace operation. Default is unsandboxed (parity with
-  // claude/codex providers); the operator opts in by exporting
-  // `MAESTRO_FS_SANDBOX_ENABLED=1`.
-  if (isSandboxEnabled()) {
-    lines.push(`Filesystem sandbox: enabled. Allowed root: ${WORKSPACE_DIR}`);
-    lines.push(
-      "  Paths outside this root will be rejected by Read/Write/Edit. " +
-        "Prefer relative-to-workspace paths.",
-    );
-  } else {
-    lines.push("Filesystem sandbox: disabled (any absolute path may be read/written).");
-  }
 
   // Session id — emitted so cross-session tools (ask_session, tell_session,
   // fork helpers) have a stable handle to reference without round-tripping.

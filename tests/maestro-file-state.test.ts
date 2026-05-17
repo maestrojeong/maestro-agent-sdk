@@ -13,13 +13,6 @@ import {
   getFileStateTracker,
 } from "@/tools/file-state";
 
-/**
- * Sandbox isolation for tests — the tracker tests write to tmp paths that
- * live outside WORKSPACE_DIR. Sandbox is opt-in (default disabled), so the
- * suite just guarantees the enable flag is unset.
- */
-const ENV_ENABLED = "MAESTRO_FS_SANDBOX_ENABLED";
-
 describe("FileStateTracker", () => {
   test("recordRead + has + size", () => {
     const t = new FileStateTracker();
@@ -67,19 +60,14 @@ describe("module-level tracker registry", () => {
 
 describe("Read → Edit gate (tracker wired)", () => {
   let dir: string;
-  let prevBypass: string | undefined;
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "maestro-fs-state-"));
-    prevBypass = process.env[ENV_ENABLED];
-    delete process.env[ENV_ENABLED];
     __resetAllTrackers();
   });
 
   afterEach(() => {
     rmSync(dir, { recursive: true, force: true });
-    if (prevBypass === undefined) delete process.env[ENV_ENABLED];
-    else process.env[ENV_ENABLED] = prevBypass;
     __resetAllTrackers();
   });
 

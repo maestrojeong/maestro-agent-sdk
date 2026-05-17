@@ -72,10 +72,10 @@ export async function* runConversation(
 
     // Two-stage context shrink before the provider call:
     //   1. compressIfNeeded — runs pruneMessages internally, then if still
-    //      over 80% of the context window dispatches the aux LLM (cheap
-    //      haiku) to summarize the middle into the Active Task template.
-    //      Returns the caller's array as-is when below threshold so the
-    //      common case is just a token-estimate pass.
+    //      over 80% of the context window dispatches the aux LLM to
+    //      summarize the middle into the Active Task template. Returns the
+    //      caller's array as-is when below threshold so the common case is
+    //      just a token-estimate pass.
     //   2. compressIfNeeded already prunes — no second pruneMessages call.
     //
     // Pure with respect to `messages` (canonical history kept intact for
@@ -83,12 +83,13 @@ export async function* runConversation(
     // array reference (both in prune.ts and compressor.ts) keeps back-to-
     // back iterations near-zero CPU once the conversation stabilizes.
     //
-    // Aux provider is the same Provider instance as the agent's main
-    // provider — Anthropic adapter accepts the haiku model id directly,
-    // so no second client needed. Fallback inside compressIfNeeded handles
-    // aux LLM failure by dropping to prune-only.
+    // Aux provider + model are reused from the agent's main config — one
+    // client, one model id, no separate env var. Hosts that want compaction
+    // to run on a cheaper model can call compressIfNeeded directly with an
+    // explicit `auxModel`; this default keeps the SDK self-contained.
     const wireMessages = await compressIfNeeded(messages, {
       auxProvider: agent.provider,
+      auxModel: agent.config.model,
       ...(agent.config.abortSignal ? { abortSignal: agent.config.abortSignal } : {}),
     });
 

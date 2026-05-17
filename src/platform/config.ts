@@ -5,13 +5,14 @@ import { resolve } from "node:path";
 /**
  * SDK runtime configuration — single source of truth for paths and model ids.
  *
- * Values are resolved once at module load. Hosts that need non-default paths
- * must set the corresponding env var (`MAESTRO_DATA_DIR`, `MAESTRO_WORKSPACE_DIR`,
- * `MAESTRO_COMPRESSION_MODEL`) **before** importing any SDK module that
- * depends on them.
+ * Values are resolved once at module load. Hosts that need a non-default
+ * data directory must set `MAESTRO_DATA_DIR` **before** importing any SDK
+ * module that depends on it.
  *
  * For per-call overrides, prefer `AgentQueryOptions.cwd` (filesystem root)
- * and `AIAgentConfig.model` (compression model is wired through there too).
+ * and `AIAgentConfig.model` — the memory compressor reuses the same model
+ * the agent is already configured with, so no separate compression-model
+ * knob exists.
  */
 
 const HOME = homedir();
@@ -25,13 +26,6 @@ export const DATA_DIR: string = process.env.MAESTRO_DATA_DIR
   ? resolve(process.env.MAESTRO_DATA_DIR)
   : resolve(HOME, ".maestro");
 
-export const WORKSPACE_DIR: string = process.env.MAESTRO_WORKSPACE_DIR
-  ? resolve(process.env.MAESTRO_WORKSPACE_DIR)
-  : resolve(HOME, "maestro-workspace");
-
-export const MODEL_HAIKU: string =
-  process.env.MAESTRO_COMPRESSION_MODEL ?? "claude-haiku-4-5-20251001";
-
 // Canonical model IDs used by the SDK's maestro registry. Hosts can pick a
 // different default per-query via `AgentQueryOptions.model`, so these are
 // just baseline references.
@@ -44,16 +38,11 @@ export const MODEL_DEEPSEEK_V4_FLASH: string = "deepseek-v4-flash";
 
 export const FILE_TAG_REGEX: RegExp = /\[FILE:(\/[^\]]+)\]/gi;
 
-// Make sure DATA_DIR and WORKSPACE_DIR exist before any tool/skill code tries
-// to mkdtemp/readdir into them. Idempotent and best-effort — hosts that point
-// these at read-only mount points should override before importing the SDK.
+// Make sure DATA_DIR exists before any tool/skill code tries to readdir into
+// it. Idempotent and best-effort — hosts that point this at a read-only
+// mount point should override before importing the SDK.
 try {
   mkdirSync(DATA_DIR, { recursive: true });
-} catch {
-  // ignore — host may have pre-created with stricter perms
-}
-try {
-  mkdirSync(WORKSPACE_DIR, { recursive: true });
 } catch {
   // ignore — host may have pre-created with stricter perms
 }

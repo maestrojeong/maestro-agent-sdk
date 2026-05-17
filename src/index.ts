@@ -7,7 +7,7 @@
  * Originally derived from Nous Research's hermes-agent (MIT); see NOTICE.
  */
 
-export const MAESTRO_SDK_VERSION = "0.1.3" as const;
+export const MAESTRO_SDK_VERSION = "0.1.4" as const;
 export const MAESTRO_UPSTREAM_SNAPSHOT = "v0.13.0 (2026-05-07)" as const;
 
 // ─── Core agent loop ─────────────────────────────────────────────────────────
@@ -35,8 +35,6 @@ export { createEditTool } from "@/tools/builtin/edit";
 export { createTodoWriteTool } from "@/tools/builtin/todo_write";
 export { createSkillViewTool } from "@/tools/builtin/skill_view";
 export { createAgentTool } from "@/tools/builtin/agent";
-export { isSandboxEnabled, checkFilesystemAccess } from "@/tools/builtin/sandbox";
-export { createSandboxFsHook } from "@/tools/hooks/sandbox-fs";
 export { getFileStateTracker, dropFileStateTracker } from "@/tools/file-state";
 
 // ─── Providers ───────────────────────────────────────────────────────────────
