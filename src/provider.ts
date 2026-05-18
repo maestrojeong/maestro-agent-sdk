@@ -255,6 +255,10 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
   // claude-provider hands effort to its SDK when the caller doesn't pin one.
   const resolvedEffort = opts.effort ?? maestroRegistry.defaultEffort;
   const maxIter = effortToMaxIter(resolvedEffort);
+  logger.info(
+    { effort: opts.effort, resolved: resolvedEffort, maxIter },
+    "maestroProvider: effort → maxIter resolution",
+  );
 
   // Pick provider by resolved model id prefix. DeepSeek models (`deepseek-*`)
   // route to DeepseekProvider; anything else falls through to Anthropic. If
