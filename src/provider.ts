@@ -4,8 +4,17 @@ import { AIAgent } from "@/core/agent";
 import { runConversation } from "@/core/loop";
 import { type MaestroMcpPool, registerMcpTools, startMcpPool } from "@/mcp/pool";
 import { buildSystemReminder } from "@/memory/reminder";
+import { bootstrapHostPath } from "@/platform/env-bootstrap";
 import { logger } from "@/platform/logger";
 import { getMcpServersForQuery } from "@/platform/mcp-config";
+
+// Merge the user's login-shell PATH into process.env.PATH on module load.
+// Hosts (PM2, launchd, `bun run`, …) often spawn the SDK with a stripped
+// PATH that doesn't include /opt/homebrew/bin, /usr/local/bin, … which
+// in turn breaks `Grep` (ripgrep) and any `bash`-spawned host binary.
+// One-shot at import time keeps the per-tool-call cost at zero. See
+// `platform/env-bootstrap.ts` for the full rationale and safety notes.
+bootstrapHostPath();
 import { AnthropicProvider, effortToMaxIter, effortToThinkingBudget } from "@/providers/anthropic";
 import type { Provider, ProviderContentBlock, ProviderMessage } from "@/providers/base";
 import { DeepseekProvider } from "@/providers/deepseek";
