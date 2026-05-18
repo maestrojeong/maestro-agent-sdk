@@ -15,17 +15,18 @@ Inspired by [Claude Code](https://www.anthropic.com/claude-code) and [`hermes-ag
 
 | | What you get |
 |---|---|
-| **vs [`@anthropic-ai/claude-agent-sdk`](https://github.com/anthropics/claude-agent-sdk-typescript)** | Multi-provider from day one (Anthropic + DeepSeek), with skills (`SKILL.md` indexing), memory (auto context compaction), and MCP client pool built in — not provided as separate add-ons. |
+| **vs [`@anthropic-ai/claude-agent-sdk`](https://github.com/anthropics/claude-agent-sdk-typescript)** | Multi-provider from day one (Anthropic + DeepSeek), with skills (`SKILL.md` / `skill.md` indexing), memory (auto context compaction), and MCP client pool built in — not provided as separate add-ons. |
 | **vs LangChain / LangGraph** | Thin loop, no DSL. A provider is one adapter file; a tool is `{ name, description, schema, run }`. You read the source in an afternoon. |
 
 ## What's in the box
 
 - **Agent loop** — provider-driven tool-calling loop with iteration cap, abort signal, and event stream.
 - **Pluggable providers** — first-class adapters for Anthropic (Claude) and DeepSeek V4; provider-neutral message schema so adding OpenAI / Gemini / Ollama is a thin file.
-- **Built-in tools** — `bash`, `read`, `write`, `edit`, `agent` (sub-agent delegation), `todo_write`, `skill_view`, `web_fetch`. Bring your own via `ToolRegistry`.
+- **Built-in tools** — `bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`, `Agent` (sub-agent delegation), `TaskCreate`/`TaskUpdate`/`TaskList`/`TaskGet`, `WebFetch`, `skill_view`, `skill_write`. Bring your own via `ToolRegistry`. Grep shells out to ripgrep (`rg`) so install it if you want the tool active; the SDK surfaces a structured error pointing to the install path when missing.
 - **MCP** — built-in client pool (stdio + SSE) so any MCP server (`@modelcontextprotocol/sdk`) shows up as tools.
-- **Skills** — Anthropic-style `SKILL.md` packages with FTS-style indexing and on-demand expansion.
+- **Skills** — per-workspace `.skills/<skillKey>/<name>/skill.md` packages with FTS-style indexing, on-demand body load (`skill_view`), and agent-autonomous authoring (`skill_write`).
 - **Memory** — automatic context compression (summarization + pruning) when the token budget is hit. Reuses the agent's own model for compaction — no separate model knob.
+- **Session persistence** — multi-turn resume via `~/.maestro/sessions/<sessionId>.jsonl`, with a `_meta` header capturing `cwd`, `skillKey`, `userId`, and host metadata for forensics.
 - **Host integration via DI** — `setLogger`, `setMcpResolver`, `setConversationReader` let you embed without inheriting any one host's opinions. FS policy (path allowlists, owner checks) is a host concern — register a `PreToolUseHook` via `ToolRegistry.use()`.
 
 ## Install
@@ -119,22 +120,143 @@ for await (const event of runConversation(agent, "Summarize today's news.")) {
 > | `max`   |         65 536  |           200 |
 
 More runnable scripts live under [`examples/`](./examples) — Anthropic, DeepSeek,
-and a custom-tool walkthrough.
+a custom-tool walkthrough, and a `skill_write` demo.
+
+## Skills — per-workspace, agent-autonomous
+
+Skill catalog routing is deterministic from `(opts.cwd, opts.skillKey)`:
+
+```
+  skillKey set    → <cwd>/.skills/<skillKey>/
+  skillKey unset  → <cwd>/.skills/default/   (uses MAESTRO_DEFAULT_SKILL_KEY)
+```
+
+Every skill lives under a **named key** subdirectory. The SDK never reads from
+`<cwd>/.skills/` directly, so a host can list "which profiles exist in this
+workspace?" with one `readdir`. One workspace can host multiple disjoint
+catalogs (e.g. `legal/`, `coding/`, `research/`) and each session selects its
+profile by passing `skillKey`.
+
+### On-disk layout
+
+```
+<cwd>/.skills/
+├── default/                          ← skillKey omitted
+│   └── general/note-template/skill.md
+├── legal/                            ← skillKey: "legal"
+│   └── general/
+│       ├── ocr/
+│       │   ├── skill.md
+│       │   ├── scripts/preprocess.py
+│       │   └── references/api.md
+│       └── hearing-report/skill.md
+└── coding/                           ← skillKey: "coding"
+    └── general/code-review/skill.md
+```
+
+### Manifest format (clawgram-style)
+
+Two filename conventions are accepted: `SKILL.md` (upstream v0.13.0 with YAML
+frontmatter) and `skill.md` (lowercase, body-based). For new skills the
+clawgram convention is recommended:
+
+```markdown
+# OCR 텍스트 추출 (English subtitle)
+
+> **Description**: OCR, 이미지 읽어줘, PDF 텍스트 추출 요청 시 트리거.
+
+## Required MCP
+- ocr
+- paddleocr
+
+## 트리거
+- ...
+
+## 프로세스
+### 1. 이미지 준비
+### 2. paddleocr 실행
+
+## Gotchas
+- 흐릿한 이미지는 deskew 필요
+```
+
+The first heading is the display title; the `> **Description**: ...` blockquote
+carries the trigger keywords (this drives system-prompt activation). The
+loader extracts the description from either YAML frontmatter or this
+blockquote — both styles can coexist in the same `.skills/<key>/` tree.
+
+### Authoring from inside the agent — `skill_write`
+
+The model can persist new skills mid-session, including adjacent assets
+(scripts, templates, references), in one transactional call:
+
+```ts
+skill_write({
+  name: "ocr",                       // kebab-case, becomes the folder name
+  content: "# OCR ...\n\n> **Description**: OCR, 이미지 읽어줘\n\n...",
+  files: {
+    "scripts/preprocess.py": "import cv2\n...",
+    "scripts/run.sh": "#!/bin/bash\n...",
+    "templates/report.html": "<!doctype html>...",
+    "references/paddleocr-api.md": "# PaddleOCR API\n...",
+  },
+  overwrite: false,                  // default: refuse to clobber
+});
+```
+
+Resulting layout under `<skillsDir>/ocr/`:
+
+```
+ocr/
+├── skill.md            ← from `content`
+├── scripts/
+│   ├── preprocess.py
+│   └── run.sh
+├── templates/report.html
+└── references/paddleocr-api.md
+```
+
+Safety:
+
+- kebab-case validation on `name`
+- relative-path validation on every `files` key (rejects `..` escapes,
+  absolute prefixes, backslashes, and the reserved `skill.md` name)
+- `overwrite=false` → batch aborts BEFORE any disk touch if any target
+  already exists (validate-all-then-write)
+- cache invalidation on success → the new skill appears in the NEXT turn's
+  `<available_skills>` catalog (intentionally not the current turn — would
+  break the prompt cache)
+
+### Reading from the model side — `skill_view`
+
+The system prompt only carries name + summary per skill (FTS-style index).
+When the model decides a skill is relevant it calls `skill_view(name)` and
+gets the full body back, with a `[Skill directory: ...]` hint so relative
+paths in the body resolve against the right cwd.
 
 ## Configuration
+
+Per-call options on `AgentQueryOptions`:
+
+| Option | Required | Purpose |
+|---|---|---|
+| `cwd` | ✓ | Workspace root. Drives `.skills/` location, rollout `_meta`, and the `mkdir` invariant. |
+| `skillKey` | — | Named skill profile within `<cwd>/.skills/`. Omit for `default`. |
+| `allowedSkills` | — | Per-call name whitelist applied before curation. |
+| `sessionMetadata` | — | Opaque host bag round-tripped via the rollout `_meta` header. |
 
 The SDK resolves its data directory at module load. Override via env var
 **before** importing any SDK module (the value is captured once):
 
 | Env var | Default | What it does |
 |---|---|---|
-| `MAESTRO_DATA_DIR` | `~/.maestro` | Where session JSONLs, skill usage counters, and todo stores live. `maestroSessionsDir()` resolves to `<DATA_DIR>/sessions`. |
+| `MAESTRO_DATA_DIR` | `~/.maestro` | Where session JSONLs and todo stores live. `maestroSessionsDir()` resolves to `<DATA_DIR>/sessions`. |
 
 Everything else is per-call: pass `cwd`, `model`, `effort`, etc. through
 `AIAgentConfig` / `AgentQueryOptions`. The memory compressor reuses the
 agent's configured `model` — no separate compression-model knob.
 
-For session housekeeping there's a helper that hosts can wire into their
+For session housekeeping there's a helper hosts can wire into their
 startup sweep:
 
 ```ts
@@ -145,6 +267,71 @@ const { scanned, removed } = cleanupStaleMaestroSessions();
 console.log(`maestro sweep: removed ${removed}/${scanned}`);
 ```
 
+## Tasks — granular CRUD via Claude-Code-style `Task*` family
+
+v0.1.5 replaced the v0.1.x `TodoWrite` snapshot-replace tool with the
+`Task*` family — `TaskCreate`, `TaskUpdate`, `TaskList`, `TaskGet`. The
+trade-off: per-call payloads are smaller (one task at a time vs the whole
+list every turn) and the model gets first-class dependency edges and
+per-task metadata.
+
+```ts
+// Bootstrap a multi-step plan.
+TaskCreate({ subject: "Read spec", activeForm: "Reading spec" });
+// → { ok: true, id: "1", subject: "Read spec" }
+
+TaskCreate({ subject: "Implement loader" });
+// → { ok: true, id: "2" }
+
+TaskCreate({ subject: "Write tests", owner: "general" });
+// → { ok: true, id: "3" }
+
+// Wire dependencies. Both sides update in sync.
+TaskUpdate({ taskId: "3", addBlockedBy: ["2"] });
+
+// Advance status. Setting in_progress demotes any other in-flight task.
+TaskUpdate({ taskId: "1", status: "in_progress" });
+TaskUpdate({ taskId: "1", status: "completed" });
+TaskUpdate({ taskId: "2", status: "in_progress" });
+// → { ok: true, task: {...}, demotedId: "1" }  // (was already completed, no-op)
+
+// Read side — the per-turn system reminder already renders a summary;
+// TaskList exists for programmatic refresh after batch updates.
+TaskList();
+// TaskGet({ taskId: "2" }) for the full entry with description + metadata.
+```
+
+Persistence: `~/.maestro/sessions/<sessionId>.tasks.json` (`version: 2`).
+Files written by SDK ≤ 0.1.4 land at `.todos.json` (`version: 1`); the
+v0.1.5 store auto-migrates on first hydrate so existing sessions keep their
+plan without manual conversion. The migration strips the `task-N` prefix
+to bare numeric ids and maps `content` → `subject`.
+
+The system reminder rendered every turn carries a compact view:
+
+```
+Tasks (1/3):
+  [✓] #1  Read spec
+  [→] #2  Implement loader
+  [ ] #3  Write tests (blocked by #2)
+```
+
+## Session rollout format (since v0.1.5)
+
+Each session JSONL at `~/.maestro/sessions/<sessionId>.jsonl` carries a
+`_meta` header line for forensics and host-side indexing:
+
+```jsonl
+{"_meta":{"version":1,"cwd":"/path","skillKey":"legal","userId":"...","createdAt":"2026-05-18T...","sdkVersion":"0.1.5","skillsDir":"...","metadata":{...}}}
+{"role":"user","content":"..."}
+{"role":"assistant","content":[...]}
+```
+
+Backward-compatible: files written by SDK ≤ 0.1.4 had no header — the loader
+treats their first line as a regular message. Hosts that want to inspect
+session metadata without reading the full message log can call
+`loadMaestroSessionMeta(sessionId)`.
+
 ## Architecture
 
 ```
@@ -153,11 +340,11 @@ src/
 ├── tools/        ToolRegistry + builtin tools + PreToolUse/PostToolUse hook surface
 ├── providers/    Provider adapters (anthropic, deepseek)
 ├── mcp/          MCP client pool (stdio + SSE)
-├── skills/       SKILL.md loader, index builder, usage tracker, curator
+├── skills/       Skill loader, index builder, usage tracker, curator
 ├── memory/       Context compressor, token estimator, reminders, scrubber
 ├── state/        Per-session todo store
-├── sub-agent/    Sub-agent runner for the `agent` tool
-├── platform/     Injectable host adapters (logger, lifecycle, config, jsonl, mcp-config)
+├── sub-agent/    Sub-agent runner for the `Agent` tool
+├── platform/     Injectable host adapters (logger, lifecycle, config, jsonl, version, mcp-config)
 ├── agents/       Cross-agent rollout helpers + per-agent registry contract
 ├── storage/      ConversationReader DI (host supplies past turns for cross-agent forks)
 └── media/        File-event extraction from inline `[FILE:/path]` tags
@@ -195,7 +382,7 @@ cd maestro-agent-sdk
 npm install
 npm run typecheck   # tsc --noEmit
 npm run build       # tsc + tsc-alias → dist/
-npm test            # vitest, 330 tests
+npm test            # vitest, 426 tests (+11 skipped without ripgrep)
 ```
 
 ### Known gaps

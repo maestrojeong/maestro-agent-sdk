@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { DATA_DIR } from "@/platform/config";
 import { AIAgent } from "@/core/agent";
 import { runConversation } from "@/core/loop";
 import { type MaestroMcpPool, registerMcpTools, startMcpPool } from "@/mcp/pool";
@@ -22,13 +21,21 @@ import {
 import { curateSkills } from "@/skills/curator";
 import { buildSkillsIndex } from "@/skills/index-builder";
 import { loadSkillsCached } from "@/skills/loader";
-import { getTodoStore } from "@/state/todos";
+import { getTaskStore } from "@/state/tasks";
 import { createAgentTool } from "@/tools/builtin/agent";
 import { bashTool } from "@/tools/builtin/bash";
 import { createEditTool } from "@/tools/builtin/edit";
+import { globTool } from "@/tools/builtin/glob";
+import { grepTool } from "@/tools/builtin/grep";
 import { createReadTool } from "@/tools/builtin/read";
 import { createSkillViewTool } from "@/tools/builtin/skill_view";
-import { createTodoWriteTool } from "@/tools/builtin/todo_write";
+import { createSkillWriteTool } from "@/tools/builtin/skill_write";
+import {
+  createTaskCreateTool,
+  createTaskGetTool,
+  createTaskListTool,
+  createTaskUpdateTool,
+} from "@/tools/builtin/tasks";
 import { webFetchTool } from "@/tools/builtin/web_fetch";
 import { createWriteTool } from "@/tools/builtin/write";
 import { getFileStateTracker } from "@/tools/file-state";
@@ -83,24 +90,36 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
   // turns so a Read in turn N is still recorded when an Edit fires in N+1.
   const fileTracker = getFileStateTracker(sessionId);
 
-  // Per-session TodoWrite store. Same module-level cache pattern — the
-  // store hydrates from `~/.maestro/sessions/<sid>.todos.json` on first
-  // access so a multi-turn plan survives across calls.
-  const todoStore = getTodoStore(sessionId);
+  // Per-session task store backing the TaskCreate/Update/List/Get family.
+  // Same module-level cache pattern as the file-state tracker — the store
+  // hydrates from `~/.maestro/sessions/<sid>.tasks.json` on first access
+  // (auto-migrating from the legacy `.todos.json` when present) so a
+  // multi-turn plan survives across calls.
+  const taskStore = getTaskStore(sessionId);
 
   const tools = new ToolRegistry();
 
   tools.register(bashTool);
-  // Read/Write/Edit/WebFetch — claude SDK parity builtins. Same name + schema
-  // so the model's pretrained instinct calls them with the right shape, and
-  // prompt cache keys line up across agents when a topic is bridged.
-  // Read/Write/Edit gate on the per-session file-state tracker so Edit can't
-  // mutate a path that hasn't been Read in this session.
+  // Read/Write/Edit/WebFetch/Glob/Grep — claude SDK parity builtins. Same
+  // names + schemas so the model's pretrained instinct calls them with the
+  // right shape, and prompt cache keys line up across agents when a topic
+  // is bridged. Read/Write/Edit gate on the per-session file-state tracker
+  // so Edit can't mutate a path that hasn't been Read in this session.
+  // Glob walks the filesystem in-process (no deps), Grep shells out to
+  // ripgrep — both are read-only and parallelSafe.
   tools.register(createReadTool({ tracker: fileTracker }));
   tools.register(createWriteTool({ tracker: fileTracker }));
   tools.register(createEditTool({ tracker: fileTracker }));
+  tools.register(globTool);
+  tools.register(grepTool);
   tools.register(webFetchTool);
-  tools.register(createTodoWriteTool({ store: todoStore }));
+  // Task family — granular CRUD replacing the v0.1.x TodoWrite. All four
+  // share the same per-session store; the system reminder renders the list
+  // every turn so the model rarely needs to call TaskList explicitly.
+  tools.register(createTaskCreateTool({ store: taskStore }));
+  tools.register(createTaskUpdateTool({ store: taskStore }));
+  tools.register(createTaskListTool({ store: taskStore }));
+  tools.register(createTaskGetTool({ store: taskStore }));
 
   // --- Skills: load SKILL.md catalog + register `skill_view` ---------------
   //
@@ -111,22 +130,48 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
   //     demand (progressive disclosure — saves the per-turn cost of inlining
   //     every skill body).
   //
-  // Source dir is picked from `MAESTRO_SKILL_DIR` first so hosts can point at
-  // their own catalog without code change; the default lives under
-  // `<DATA_DIR>/skills`, i.e. `~/.maestro/skills` unless `MAESTRO_DATA_DIR`
-  // overrides. SDK ships with no bundled SKILL.md files — an empty catalog
-  // is the expected state until a host populates one.
+  // Source-dir resolution is deterministic from `(opts.cwd, opts.skillKey)`:
+  //   - `opts.skillKey` set    → `<cwd>/.skills/<skillKey>/`
+  //   - `opts.skillKey` unset  → `<cwd>/.skills/default/`
+  //
+  // No env var, no explicit dir override — one workspace, one keyed
+  // profile, one catalog. Skills always live under a named key
+  // subdirectory; the root `.skills/` only ever holds key dirs. Skills
+  // live alongside the project the agent is working on; the SDK never
+  // writes into a global directory. Empty dir is the expected starting
+  // state — agents populate it autonomously (or a host seeds it from a
+  // template). Multiple disjoint skill sets in one cwd are partitioned
+  // by `skillKey` subdirectories.
+  //
+  // After loading we apply `opts.allowedSkills` (if provided) as a name
+  // whitelist BEFORE curation, so curator + index-builder + skill_view all
+  // see the same filtered set. Unknown names are silently ignored — a host
+  // can pass a superset of names that may or may not exist in the catalog.
   //
   // Failures (rootDir missing, unreadable, every file malformed) reduce to an
   // empty catalog — the loop still runs with just bash + MCP tools.
-  const skillsDir =
-    process.env.MAESTRO_SKILL_DIR ?? join(DATA_DIR, "skills");
+  const skillsDir = resolveSkillsDir(opts);
+
+  // skill_write: agent-autonomous skill authoring. Registered up front
+  // (independent of catalog state) so the agent can author the first skill
+  // into an empty `.skills/<key>/` directory — without this the cold-start
+  // "no skills yet, but the agent wants to bootstrap one" path would have
+  // no entry point. Writes land at `<skillsDir>/<name>/skill.md` so the
+  // resolved (cwd, skillKey) routing automatically scopes new skills to
+  // the current profile. Cache invalidation inside the tool means the
+  // next provider call picks up the write.
+  tools.register(createSkillWriteTool({ skillsDir }));
+
   let skillsBlock = "";
   // Hoisted to outer scope so the Agent tool (registered below, after
   // model/effort resolve) can pass the same skill catalog to sub-agents.
   let loadedSkills: ReturnType<typeof loadSkillsCached> = [];
   try {
-    const skills = loadSkillsCached(skillsDir);
+    const allSkills = loadSkillsCached(skillsDir);
+    // Apply per-call allowlist BEFORE the curator/index so every downstream
+    // consumer sees the same filtered set. Empty array would mean "no skills
+    // allowed" — we treat undefined as "all allowed" to keep backward compat.
+    const skills = applySkillAllowlist(allSkills, opts.allowedSkills);
     loadedSkills = skills;
     if (skills.length > 0) {
       // Curator filters the catalog: archived skills (agent-created, never
@@ -144,8 +189,10 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
           agent: "maestro",
           skillsDir,
           skillCount: skills.length,
+          totalCount: allSkills.length,
           visibleCount: visibleSkills.length,
           archivedCount: skills.length - visibleSkills.length,
+          filtered: opts.allowedSkills !== undefined,
         },
         "maestroProvider: skill catalog loaded (curated)",
       );
@@ -253,7 +300,7 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
   const buildIterReminder = (iterationsRemaining: number): string =>
     buildSystemReminder({
       sessionId,
-      todos: todoStore.list(),
+      tasks: taskStore.list(),
       extras: [iterationBudgetLine(iterationsRemaining, maxIter)],
     });
   const reminderText = buildIterReminder(maxIter);
@@ -382,7 +429,17 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
     try {
       const safePrefix = drained ? messages : trimToSafePrefix(messages);
       if (safePrefix.length > 0) {
-        saveMaestroSession(sessionId, safePrefix);
+        // Stamp the rollout `_meta` header (v0.1.5+) with the current cwd,
+        // userId, and any host-supplied `sessionMetadata`. The session-store
+        // preserves `createdAt` from any prior write so subsequent saves
+        // don't reset the "first write" timestamp.
+        saveMaestroSession(sessionId, safePrefix, {
+          cwd: opts.cwd,
+          skillsDir,
+          ...(opts.skillKey !== undefined ? { skillKey: opts.skillKey } : {}),
+          ...(opts.userId !== undefined ? { userId: opts.userId } : {}),
+          ...(opts.sessionMetadata !== undefined ? { metadata: opts.sessionMetadata } : {}),
+        });
         if (!drained && safePrefix.length < messages.length) {
           logger.info(
             {
@@ -444,6 +501,74 @@ export function iterationBudgetLine(remaining: number, max: number): string {
     tone = "finalize NOW. Stop tooling and write the final answer.";
   }
   return `Tool iterations remaining: ${remaining}/${max} — ${tone}`;
+}
+
+/**
+ * Skill profile name used when `AgentQueryOptions.skillKey` is omitted.
+ *
+ * Every skill the SDK loads lives under `<cwd>/.skills/<key>/` — there is
+ * no "uncategorized" slot directly beneath `.skills/`. When the caller
+ * doesn't specify a key, the SDK routes to this default subdirectory so
+ * the on-disk layout stays uniformly `key → catalog`. Hosts that want
+ * a different default name can pass `skillKey: "their-name"` explicitly
+ * on every call; the constant is exported so they can reference it
+ * symbolically rather than hard-coding the string.
+ */
+export const MAESTRO_DEFAULT_SKILL_KEY = "default" as const;
+
+/**
+ * Resolve the directory the skill catalog should be loaded from for this
+ * call. Deterministic from `(opts.cwd, opts.skillKey)`:
+ *
+ *   - `opts.skillKey` set    → `<cwd>/.skills/<skillKey>/`
+ *   - `opts.skillKey` unset  → `<cwd>/.skills/default/`
+ *
+ * Every loaded skill lives under a named key — the SDK never reads from
+ * `<cwd>/.skills/` directly. This keeps the layout uniform so a caller
+ * scanning the filesystem can answer "which profiles exist in this
+ * workspace?" with one `readdir`.
+ *
+ * The per-cwd `.skills/` convention treats every session's working
+ * directory as its own skill scope — agents create, edit, and consume
+ * SKILL.md files inside the workspace they're operating on, with no
+ * global side effects on `~/.maestro/skills/` or on a peer SDK like
+ * Claude Code's `~/.claude/skills/`. The result is project-local
+ * autonomy: a `.skills/` dir checks into source control with the project,
+ * ships with the repo, and sub-agents inherit the parent's catalog
+ * because they share the cwd.
+ *
+ * `skillKey` partitions the per-cwd catalog: one workspace can host
+ * multiple disjoint skill sets (e.g. "legal" topic vs "coding" topic
+ * sharing the same `cwd`), and each session selects its profile via the
+ * key. The keyed dir IS the loader's root, so any skill the agent writes
+ * during the session naturally lands in the same profile.
+ *
+ * Hosts can pre-create a keyed dir as a symlink to share skills across
+ * profiles. The SDK itself takes no opinion on cross-profile sharing.
+ *
+ * Exported so hosts can recompute the same value (e.g. for a pre-warm
+ * step that calls `loadSkillsCached` ahead of a provider invocation).
+ */
+export function resolveSkillsDir(opts: { cwd: string; skillKey?: string }): string {
+  return join(opts.cwd, ".skills", opts.skillKey ?? MAESTRO_DEFAULT_SKILL_KEY);
+}
+
+/**
+ * Filter a loaded SkillEntry catalog by an optional `allowedSkills` whitelist.
+ * `undefined` returns the input unchanged (default "all allowed" behavior for
+ * pre-v0.1.5 hosts); an empty array intentionally returns nothing (the host
+ * explicitly opted into "no skills"). Unknown names are silently ignored — a
+ * host can pass a superset of names that may or may not exist.
+ *
+ * Generic over the SkillEntry shape so sub-agents and tests can reuse it
+ * with their own narrowed types without `as SkillEntry` casts.
+ */
+export function applySkillAllowlist<T extends { name: string }>(
+  skills: T[],
+  allowedSkills?: string[],
+): T[] {
+  if (allowedSkills === undefined) return skills;
+  return skills.filter((s) => allowedSkills.includes(s.name));
 }
 
 /**

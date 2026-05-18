@@ -62,11 +62,16 @@ export const maestroRegistry: AgentRegistry = {
   // `reuseSessionId` (if any) keeps the same file path across set_agent
   // round-trips so prompt-cache continuity and the "one continuous
   // conversation" UX work the same way they do for claude/codex.
+  // `userId` / `metadata` (when supplied) ride into the rollout's `_meta`
+  // header so a later sweep can attribute the JSONL without re-reading the
+  // conversation log it was synthesized from.
   writeRollout(opts) {
     const { sessionId, rolloutPath } = writeMaestroRollout({
       cwd: opts.cwd,
       entries: opts.entries,
       ...(opts.reuseSessionId ? { sessionId: opts.reuseSessionId } : {}),
+      ...(opts.userId !== undefined ? { userId: opts.userId } : {}),
+      ...(opts.metadata !== undefined ? { metadata: opts.metadata } : {}),
     });
     return { sessionId, rolloutPath };
   },
@@ -77,9 +82,19 @@ export const maestroRegistry: AgentRegistry = {
   // tool_result into assistant text as `[Tool: ...]` annotations, so
   // structural tool history is lost. Acceptable trade-off — the fork starts
   // with text-level context and the model still sees what ran.
+  // The fork rollout's `_meta` header records the parent's `userId`,
+  // `topicName`, and `groupId` for later indexing.
   async forkSession({ cwd, userId, topicName, groupId }) {
     const entries = readConversation(userId, topicName, groupId);
-    const { sessionId, rolloutPath } = writeMaestroRollout({ cwd, entries });
+    const { sessionId, rolloutPath } = writeMaestroRollout({
+      cwd,
+      entries,
+      userId: String(userId),
+      metadata: {
+        topicName,
+        ...(groupId !== undefined ? { groupId } : {}),
+      },
+    });
     return { forkId: sessionId, rolloutPath };
   },
 

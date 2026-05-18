@@ -23,12 +23,14 @@ import { logger } from "@/platform/logger";
  *                it via skill_view if the user explicitly names it, but
  *                it stops costing tokens on every turn.
  *
- * The `bundled` vs `agent-created` provenance bit is approximated by the
- * SKILL.md's parent path: anything under the SDK's skill root
- * (`MAESTRO_SKILL_DIR` or its `<DATA_DIR>/skills` default) is `bundled`,
- * otherwise `agent-created`. Bundled skills are never archived — they're
- * shipped intentionally and removing them would silently break the next
- * user's expectation.
+ * The `bundled` vs `agent-created` provenance bit is no longer derivable
+ * from path under the `(cwd, skillKey)` model — every skill lives under
+ * `<cwd>/.skills/<skillKey>/` regardless of origin. `isBundled` returns
+ * true for everything, which protects project-shipped skills from
+ * archival; the side effect is that agent-created skills also persist
+ * indefinitely. If accumulation becomes a problem, a future release can
+ * re-introduce provenance via a frontmatter marker (e.g.
+ * `provenance: agent`).
  *
  * The state file lives at `${DATA_DIR}/agents/maestro/skills/state.json`.
  * Like the usage sidecar it's process-local + atomic-write — a host loop
@@ -117,13 +119,19 @@ function writeAtomic(path: string, contents: SkillStateFile): void {
   renameSync(tmp, path);
 }
 
-/** A skill is `bundled` if its file lives under the SDK's skill root —
- *  i.e. the directory `MAESTRO_SKILL_DIR` points at, or the default
- *  `<DATA_DIR>/skills` (`~/.maestro/skills` unless `MAESTRO_DATA_DIR`
- *  overrides). Anything outside that tree is treated as agent-created. */
-function isBundled(skill: SkillEntry): boolean {
-  const snapshotRoot = process.env.MAESTRO_SKILL_DIR ?? join(DATA_DIR, "skills");
-  return skill.skillDir.startsWith(snapshotRoot);
+/** A skill is `bundled` if the operator (or project) shipped it deliberately,
+ *  vs `agent-created` if it was synthesized at runtime by the model.
+ *
+ *  In the `(cwd, skillKey)` model every skill lives under
+ *  `<cwd>/.skills/<skillKey>/`, so path alone can't tell the two apart —
+ *  both end up in the same directory. We treat everything as bundled so
+ *  the curator never archives a project-shipped skill. Agent-created
+ *  skills also stop archiving as a side effect; if accumulation becomes
+ *  a problem, a future release can re-introduce provenance via a marker
+ *  in SKILL.md frontmatter (`provenance: agent` etc.) rather than by
+ *  path heuristics that the new layout doesn't support. */
+function isBundled(_skill: SkillEntry): boolean {
+  return true;
 }
 
 /**

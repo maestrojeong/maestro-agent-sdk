@@ -7,7 +7,7 @@
  * Originally derived from Nous Research's hermes-agent (MIT); see NOTICE.
  */
 
-export const MAESTRO_SDK_VERSION = "0.1.4" as const;
+export { MAESTRO_SDK_VERSION } from "@/platform/version";
 export const MAESTRO_UPSTREAM_SNAPSHOT = "v0.13.0 (2026-05-07)" as const;
 
 // ─── Core agent loop ─────────────────────────────────────────────────────────
@@ -32,8 +32,16 @@ export { bashTool } from "@/tools/builtin/bash";
 export { createReadTool } from "@/tools/builtin/read";
 export { createWriteTool } from "@/tools/builtin/write";
 export { createEditTool } from "@/tools/builtin/edit";
-export { createTodoWriteTool } from "@/tools/builtin/todo_write";
+export { globTool, compileGlob } from "@/tools/builtin/glob";
+export { grepTool } from "@/tools/builtin/grep";
+export {
+  createTaskCreateTool,
+  createTaskUpdateTool,
+  createTaskListTool,
+  createTaskGetTool,
+} from "@/tools/builtin/tasks";
 export { createSkillViewTool } from "@/tools/builtin/skill_view";
+export { createSkillWriteTool } from "@/tools/builtin/skill_write";
 export { createAgentTool } from "@/tools/builtin/agent";
 export { getFileStateTracker, dropFileStateTracker } from "@/tools/file-state";
 
@@ -66,7 +74,15 @@ export {
 
 // ─── Maestro registry + top-level provider entry point ───────────────────────
 export { maestroRegistry } from "@/registry";
-export { maestroProvider, providerForModel, isAbortError, iterationBudgetLine } from "@/provider";
+export {
+  maestroProvider,
+  providerForModel,
+  isAbortError,
+  iterationBudgetLine,
+  resolveSkillsDir,
+  applySkillAllowlist,
+  MAESTRO_DEFAULT_SKILL_KEY,
+} from "@/provider";
 
 // ─── Skills ──────────────────────────────────────────────────────────────────
 export { loadSkillsCached, findSkillByName, type SkillEntry } from "@/skills/loader";
@@ -82,7 +98,7 @@ export { hashToolContent } from "@/memory/hash";
 export { ACTIVE_TASK_TEMPLATE, wrapCompactedSummary } from "@/memory/active-task-template";
 
 // ─── State (todos) ───────────────────────────────────────────────────────────
-export { getTodoStore, dropTodoStore } from "@/state/todos";
+export { getTaskStore, dropTaskStore, type TaskEntry, type TaskStatus } from "@/state/tasks";
 
 // ─── MCP ─────────────────────────────────────────────────────────────────────
 export type { MaestroMcpServerSpec, MaestroMcpClient, MaestroMcpTool } from "@/mcp/client";
@@ -93,6 +109,8 @@ export {
   maestroSessionsDir,
   cleanupStaleMaestroSessions,
   DEFAULT_MAESTRO_SESSION_TTL_MS,
+  loadMaestroSessionMeta,
+  type MaestroSessionMeta,
 } from "@/session-store";
 
 // ─── Host integration points (dependency injection) ──────────────────────────
