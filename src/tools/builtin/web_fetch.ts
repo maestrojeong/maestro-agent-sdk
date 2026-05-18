@@ -1,4 +1,5 @@
 import * as cheerio from "cheerio";
+import type { AnyNode } from "domhandler";
 import type { ToolHandler } from "@/tools/registry";
 
 /**
@@ -115,11 +116,18 @@ export const webFetchTool: ToolHandler = {
       truncated = true;
     }
 
-    // HTML → text via cheerio: parse the DOM, remove script/style/head/no-
-    // script, then extract text. cheerio handles entity decoding and ignores
-    // comments; the output is clean prose with paragraph breaks preserved.
+    // HTML → markdown via cheerio: parse the DOM, drop noise nodes
+    // (script/style/head/noscript/iframe), then walk the remaining tree
+    // producing markdown for the structural elements the model relies on
+    // for context (headings, links, lists, code, emphasis). Falls back to
+    // the prose-only `htmlToText` if the markdown walker throws — defensive
+    // against pathological inputs, never breaks the fetch path.
     if (contentType.includes("html")) {
-      body = htmlToText(body);
+      try {
+        body = htmlToMarkdown(body);
+      } catch {
+        body = htmlToText(body);
+      }
     }
 
     const parts: string[] = [];
@@ -158,6 +166,203 @@ export function htmlToText(html: string): string {
   out = out.replace(/[ \t]+/g, " ");
   out = out.replace(/\n\s*\n+/g, "\n\n");
   return out.trim();
+}
+
+/**
+ * Convert HTML to markdown using cheerio. Walks the DOM emitting markdown
+ * for the structural elements the model uses for navigation and citation
+ * (headings, links, lists, code, emphasis, blockquotes, tables).
+ *
+ * Unknown / unhandled tags fall through to their text content, so any tag
+ * we forget still contributes the inner text rather than vanishing. This
+ * is the same defensive-default claude-SDK's WebFetch markdown converter
+ * adopts.
+ *
+ * Why this lives next to `htmlToText`: hosts may want plain text for
+ * downstream NLP (still exported), but the model gets a much better
+ * picture from markdown — headings preserve outline, link anchors stay
+ * resolvable, and code blocks aren't flattened into prose.
+ */
+export function htmlToMarkdown(html: string): string {
+  const $ = cheerio.load(html);
+  $("script, style, head, noscript, iframe, svg, canvas").remove();
+  // Prefer <main>/<article> as the root when present — same heuristic as
+  // reader-mode extractors. Falls back to <body> then the full document.
+  const root = $("main").first().length
+    ? $("main").first()
+    : $("article").first().length
+      ? $("article").first()
+      : $("body").length
+        ? $("body")
+        : $.root();
+
+  const out = renderNode($, root as cheerio.Cheerio<AnyNode>);
+  // Collapse runs of 3+ blank lines down to a single blank line break.
+  return out
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+/**
+ * Render a cheerio node + descendants to markdown. Top-level walker.
+ *
+ * Block-level elements emit double newlines around them so adjacent
+ * paragraphs / headings / list items don't run together. Inline elements
+ * emit their content verbatim with markdown markers wrapped around them.
+ */
+function renderNode(
+  $: cheerio.CheerioAPI,
+  $node: cheerio.Cheerio<AnyNode>,
+): string {
+  let buf = "";
+  $node.contents().each((_, el) => {
+    // text node
+    if (el.type === "text") {
+      buf += (el.data ?? "").replace(/\s+/g, " ");
+      return;
+    }
+    if (el.type !== "tag") return;
+    const tag = (el.tagName ?? "").toLowerCase();
+    const $el = $(el);
+
+    switch (tag) {
+      case "h1":
+      case "h2":
+      case "h3":
+      case "h4":
+      case "h5":
+      case "h6": {
+        const level = Number(tag[1]);
+        const hashes = "#".repeat(level);
+        const text = renderNode($, $el).trim();
+        buf += `\n\n${hashes} ${text}\n\n`;
+        break;
+      }
+      case "p":
+      case "div":
+      case "section":
+      case "article":
+      case "main":
+      case "header":
+      case "footer":
+      case "aside":
+      case "nav": {
+        const inner = renderNode($, $el).trim();
+        if (inner) buf += `\n\n${inner}\n\n`;
+        break;
+      }
+      case "br":
+        buf += "\n";
+        break;
+      case "hr":
+        buf += "\n\n---\n\n";
+        break;
+      case "strong":
+      case "b": {
+        const inner = renderNode($, $el).trim();
+        if (inner) buf += `**${inner}**`;
+        break;
+      }
+      case "em":
+      case "i": {
+        const inner = renderNode($, $el).trim();
+        if (inner) buf += `*${inner}*`;
+        break;
+      }
+      case "code": {
+        // Inline code only. Block-level <pre><code> is handled by <pre>.
+        const inner = $el.text();
+        if (inner) buf += `\`${inner}\``;
+        break;
+      }
+      case "pre": {
+        const inner = $el.text().replace(/\n+$/, "");
+        if (inner) buf += `\n\n\`\`\`\n${inner}\n\`\`\`\n\n`;
+        break;
+      }
+      case "a": {
+        const href = $el.attr("href")?.trim() ?? "";
+        const text = renderNode($, $el).trim() || href;
+        if (href && /^https?:\/\//i.test(href)) buf += `[${text}](${href})`;
+        else if (href) buf += `[${text}](${href})`;
+        else buf += text;
+        break;
+      }
+      case "img": {
+        const src = $el.attr("src")?.trim() ?? "";
+        const alt = $el.attr("alt")?.trim() ?? "";
+        if (src) buf += `![${alt}](${src})`;
+        else if (alt) buf += alt;
+        break;
+      }
+      case "ul":
+      case "ol": {
+        const ordered = tag === "ol";
+        let n = 1;
+        let listOut = "\n\n";
+        $el.children("li").each((_, li) => {
+          const inner = renderNode($, $(li)).trim();
+          const marker = ordered ? `${n}.` : "-";
+          // Indent continuation lines by two spaces so nested blocks
+          // render under the right bullet.
+          listOut += `${marker} ${inner.split("\n").join("\n  ")}\n`;
+          n += 1;
+        });
+        buf += `${listOut}\n`;
+        break;
+      }
+      case "li": {
+        // Reached only when an <li> appears outside a <ul>/<ol> — uncommon
+        // but defensive. Treat as a bullet.
+        const inner = renderNode($, $el).trim();
+        buf += `\n- ${inner}\n`;
+        break;
+      }
+      case "blockquote": {
+        const inner = renderNode($, $el).trim();
+        if (inner)
+          buf += `\n\n${inner
+            .split("\n")
+            .map((l) => `> ${l}`)
+            .join("\n")}\n\n`;
+        break;
+      }
+      case "table": {
+        // Markdown tables: header from first <tr>, body from the rest.
+        const rows: string[][] = [];
+        $el.find("tr").each((_, tr) => {
+          const cells: string[] = [];
+          $(tr)
+            .children("th,td")
+            .each((_, c) => {
+              cells.push(renderNode($, $(c)).trim().replace(/\n+/g, " "));
+            });
+          if (cells.length) rows.push(cells);
+        });
+        if (rows.length === 0) break;
+        const widths = rows.map((r) => r.length);
+        const cols = Math.max(...widths);
+        const header = rows[0];
+        // Pad header to column count.
+        while (header.length < cols) header.push("");
+        let tbl = `\n\n| ${header.join(" | ")} |\n| ${header.map(() => "---").join(" | ")} |\n`;
+        for (let i = 1; i < rows.length; i++) {
+          const row = rows[i];
+          while (row.length < cols) row.push("");
+          tbl += `| ${row.join(" | ")} |\n`;
+        }
+        buf += `${tbl}\n`;
+        break;
+      }
+      default: {
+        // Unknown / unhandled tag — fall through to inner content so we
+        // don't silently drop text.
+        buf += renderNode($, $el);
+      }
+    }
+  });
+  return buf;
 }
 
 // Internal exports for tests.
