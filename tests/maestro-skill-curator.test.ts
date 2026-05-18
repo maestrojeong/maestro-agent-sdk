@@ -165,19 +165,24 @@ describe("curateSkills — integration", () => {
     expect(existsSync(statePath)).toBe(true);
   });
 
-  test("agent-created skill never viewed + old → archived (dropped from output)", () => {
+  test("under (cwd, skillKey) model: never viewed + old stays active (isBundled === true)", () => {
+    // v0.1.5 simplification — the curator can no longer tell project-shipped
+    // from agent-created skills apart by path, so isBundled returns true for
+    // every skill. Net effect: nothing gets archived from the path heuristic.
+    // The `decideLifecycle` unit tests still cover the `bundled=false` branch
+    // for when a future provenance signal is added.
     writeUsage({
       "stale-old": { viewCount: 0, ageDays: ARCHIVE_AFTER_DAYS + 10 },
     });
     const skills = [mkSkill("stale-old", userRoot), mkSkill("fresh", userRoot)];
     const curated = curateSkills(skills);
-    expect(curated.map((c) => c.skill.name)).toEqual(["fresh"]);
-    // Persisted state still records the archived entry (for next-run continuity).
+    expect(curated.map((c) => c.skill.name).sort()).toEqual(["fresh", "stale-old"]);
     const state = loadState();
-    expect(state.states["stale-old"].lifecycle).toBe("archived");
+    expect(state.states["stale-old"].lifecycle).toBe("active");
+    expect(state.states["stale-old"].bundled).toBe(true);
   });
 
-  test("bundled skill never viewed + old → stays active (never archived)", () => {
+  test("any skill never viewed + old → stays active (everything treated as bundled)", () => {
     writeUsage({
       "bundled-stale": { viewCount: 0, ageDays: ARCHIVE_AFTER_DAYS + 10 },
     });

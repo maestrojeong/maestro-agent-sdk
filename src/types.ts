@@ -107,15 +107,23 @@ export interface AgentQueryOptions {
   isCron?: boolean;
   silent?: boolean;
   /**
-   * Per-call override for the skill catalog source directory. Takes
-   * precedence over the `MAESTRO_SKILL_DIR` env var, which in turn falls
-   * back to `<DATA_DIR>/skills`.
+   * Named skill profile within the per-cwd `.skills/` directory. The SDK
+   * resolves the skill catalog source as `<cwd>/.skills/<skillKey>/`
+   * when set, or `<cwd>/.skills/` when omitted.
    *
-   * Useful when a single host process serves multiple topics that each
-   * need their own skill set — env-var-only routing forces a process-wide
-   * choice, which can't disambiguate concurrent calls.
+   * Use case: one workspace, multiple disjoint skill sets. A topic /
+   * session passes a key (e.g. "legal", "coding"); the agent's catalog
+   * is whatever lives under that subdirectory. New skills the agent
+   * writes during the session naturally land in the same subdir — the
+   * keyed dir IS the loader root, so created skills stay scoped to the
+   * key without extra plumbing.
+   *
+   * This is the only knob the SDK exposes for skill-source routing —
+   * `(cwd, skillKey)` is a deterministic pair, so two sessions with the
+   * same pair load the same catalog and there's no env-var / explicit-
+   * dir precedence chain to reason about.
    */
-  skillsDir?: string;
+  skillKey?: string;
   /**
    * Whitelist of skill names this call may surface. When provided, the
    * loaded catalog is filtered down to entries whose `name` matches one

@@ -120,6 +120,41 @@ describe("v0.1.5 rollout meta header — save / load round-trip", () => {
     expect(second?.skillsDir).toBe("/proj/a/.skills");
   });
 
+  test("skillKey is recorded in meta and preserved across re-saves", () => {
+    const sid = uuid();
+    tracked.push(sid);
+    saveMaestroSession(sid, [{ role: "user", content: "v1" }], {
+      cwd: "/proj/a",
+      skillsDir: "/proj/a/.skills/legal",
+      skillKey: "legal",
+    });
+    expect(loadMaestroSessionMeta(sid)?.skillKey).toBe("legal");
+
+    // Re-save without skillKey: prior key persists.
+    saveMaestroSession(sid, [
+      { role: "user", content: "v1" },
+      { role: "assistant", content: [{ type: "text", text: "ack" }] },
+    ]);
+    expect(loadMaestroSessionMeta(sid)?.skillKey).toBe("legal");
+  });
+
+  test("skillKey can be updated to a new value on re-save", () => {
+    const sid = uuid();
+    tracked.push(sid);
+    saveMaestroSession(sid, [{ role: "user", content: "v1" }], {
+      cwd: "/proj/a",
+      skillKey: "legal",
+    });
+    expect(loadMaestroSessionMeta(sid)?.skillKey).toBe("legal");
+
+    // Caller explicitly hands a different key — meta updates.
+    saveMaestroSession(sid, [{ role: "user", content: "v2" }], {
+      cwd: "/proj/a",
+      skillKey: "coding",
+    });
+    expect(loadMaestroSessionMeta(sid)?.skillKey).toBe("coding");
+  });
+
   test("loadMaestroSessionMeta returns null for missing file", () => {
     expect(loadMaestroSessionMeta(uuid())).toBeNull();
   });

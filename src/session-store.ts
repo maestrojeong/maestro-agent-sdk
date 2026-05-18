@@ -97,10 +97,15 @@ export interface MaestroSessionMeta {
   /** `MAESTRO_SDK_VERSION` at write time. Useful for cross-version debugging. */
   sdkVersion: string;
   /** Resolved skills directory the live loop loaded from (per-call override,
-   *  env var, or `<cwd>/.skills` default). Recorded so a later forensic
-   *  sweep can answer "which catalog did this session see?" without
-   *  reconstructing the precedence chain. Updated on every save. */
+   *  env var, keyed profile, or `<cwd>/.skills` default). Recorded so a
+   *  later forensic sweep can answer "which catalog did this session see?"
+   *  without reconstructing the precedence chain. Updated on every save. */
   skillsDir?: string;
+  /** Named skill profile the session was created with (corresponds to
+   *  `AgentQueryOptions.skillKey`). Distinct from `skillsDir` because the
+   *  resolved path can change across calls (env var flip, explicit
+   *  override) while the conceptual profile identity stays constant. */
+  skillKey?: string;
   /** Opaque host-controlled bag (topicId, groupId, anything). Passed through
    *  verbatim. The SDK only writes / reads it as a JSON value. */
   metadata?: Record<string, unknown>;
@@ -197,6 +202,7 @@ export interface SaveSessionMetaInput {
   userId?: string;
   createdAt?: string;
   skillsDir?: string;
+  skillKey?: string;
   metadata?: Record<string, unknown>;
 }
 
@@ -219,6 +225,8 @@ function buildMeta(sessionId: string, input: SaveSessionMetaInput): MaestroSessi
   if (userId !== undefined) meta.userId = userId;
   const skillsDir = input.skillsDir ?? existing?.skillsDir;
   if (skillsDir !== undefined) meta.skillsDir = skillsDir;
+  const skillKey = input.skillKey ?? existing?.skillKey;
+  if (skillKey !== undefined) meta.skillKey = skillKey;
   const metadata = input.metadata ?? existing?.metadata;
   if (metadata !== undefined) meta.metadata = metadata;
   return meta;

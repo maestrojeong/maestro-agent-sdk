@@ -110,16 +110,16 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
   //     demand (progressive disclosure — saves the per-turn cost of inlining
   //     every skill body).
   //
-  // Source-dir resolution order (highest precedence first):
-  //   1. `opts.skillsDir` — per-call override, lets a host serve multiple
-  //      topics with disjoint skill sets in one process.
-  //   2. `MAESTRO_SKILL_DIR` env var — process-wide host opt-in (cross-
-  //      project shared catalog).
-  //   3. `<cwd>/.skills/` — per-workspace default. Skills live alongside
-  //      the project the agent is working on; the SDK never writes into a
-  //      global directory unless the host opts in via 1 or 2. Empty dir is
-  //      the expected starting state — agents populate it autonomously
-  //      (or a host seeds it from a template).
+  // Source-dir resolution is deterministic from `(opts.cwd, opts.skillKey)`:
+  //   - `opts.skillKey` set    → `<cwd>/.skills/<skillKey>/`
+  //   - `opts.skillKey` unset  → `<cwd>/.skills/`
+  //
+  // No env var, no explicit dir override — one workspace, one keyed
+  // profile, one catalog. Skills live alongside the project the agent is
+  // working on; the SDK never writes into a global directory. Empty dir
+  // is the expected starting state — agents populate it autonomously
+  // (or a host seeds it from a template). Multiple disjoint skill sets
+  // in one cwd are partitioned by `skillKey` subdirectories.
   //
   // After loading we apply `opts.allowedSkills` (if provided) as a name
   // whitelist BEFORE curation, so curator + index-builder + skill_view all
@@ -403,6 +403,7 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
         saveMaestroSession(sessionId, safePrefix, {
           cwd: opts.cwd,
           skillsDir,
+          ...(opts.skillKey !== undefined ? { skillKey: opts.skillKey } : {}),
           ...(opts.userId !== undefined ? { userId: opts.userId } : {}),
           ...(opts.sessionMetadata !== undefined ? { metadata: opts.sessionMetadata } : {}),
         });
@@ -471,28 +472,35 @@ export function iterationBudgetLine(remaining: number, max: number): string {
 
 /**
  * Resolve the directory the skill catalog should be loaded from for this
- * call. Precedence: per-call `opts.skillsDir` > `MAESTRO_SKILL_DIR` env >
- * `<cwd>/.skills` default.
+ * call. Deterministic from `(opts.cwd, opts.skillKey)`:
  *
- * The per-cwd `.skills/` default treats every session's working directory
- * as its own skill scope — agents create, edit, and consume SKILL.md files
- * inside the workspace they're operating on, with no global side effects
- * on `~/.maestro/skills/` or on a peer SDK like Claude Code's
- * `~/.claude/skills/`. The result is project-local autonomy: a `.skills/`
- * dir checks into source control with the project, ships with the repo, and
- * sub-agents inherit the parent's catalog because they share the cwd.
+ *   - `opts.skillKey` set    → `<cwd>/.skills/<skillKey>/`
+ *   - `opts.skillKey` unset  → `<cwd>/.skills/`
  *
- * To opt back into a shared / global catalog, set `MAESTRO_SKILL_DIR` or
- * pass an explicit `opts.skillsDir` — both override the per-cwd default.
- * No automatic fallback from `.skills/` to a global directory: the SDK
- * treats "empty per-cwd catalog" as the intended state until the host or
- * agent populates it.
+ * The per-cwd `.skills/` convention treats every session's working
+ * directory as its own skill scope — agents create, edit, and consume
+ * SKILL.md files inside the workspace they're operating on, with no
+ * global side effects on `~/.maestro/skills/` or on a peer SDK like
+ * Claude Code's `~/.claude/skills/`. The result is project-local
+ * autonomy: a `.skills/` dir checks into source control with the project,
+ * ships with the repo, and sub-agents inherit the parent's catalog
+ * because they share the cwd.
+ *
+ * `skillKey` partitions the per-cwd catalog: one workspace can host
+ * multiple disjoint skill sets (e.g. "legal" topic vs "coding" topic
+ * sharing the same `cwd`), and each session selects its profile via the
+ * key. The keyed dir IS the loader's root, so any skill the agent writes
+ * during the session naturally lands in the same profile.
+ *
+ * Hosts can pre-create a keyed dir as a symlink to share skills across
+ * profiles. The SDK itself takes no opinion on cross-profile sharing.
  *
  * Exported so hosts can recompute the same value (e.g. for a pre-warm
  * step that calls `loadSkillsCached` ahead of a provider invocation).
  */
-export function resolveSkillsDir(opts: { skillsDir?: string; cwd: string }): string {
-  return opts.skillsDir ?? process.env.MAESTRO_SKILL_DIR ?? join(opts.cwd, ".skills");
+export function resolveSkillsDir(opts: { cwd: string; skillKey?: string }): string {
+  const root = join(opts.cwd, ".skills");
+  return opts.skillKey ? join(root, opts.skillKey) : root;
 }
 
 /**

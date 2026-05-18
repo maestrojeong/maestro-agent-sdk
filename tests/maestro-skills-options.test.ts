@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,33 +6,28 @@ import { applySkillAllowlist, resolveSkillsDir } from "@/provider";
 import { invalidateSkillsCache, loadSkills, type SkillEntry } from "@/skills/loader";
 
 /**
- * Coverage for the v0.1.5 `skillsDir` + `allowedSkills` AgentQueryOptions
- * additions, exercised via the two helpers `provider.ts` factored out:
+ * Coverage for the v0.1.5 skill-source routing and per-call filter.
  *
- *   - `resolveSkillsDir` — precedence: opts.skillsDir > MAESTRO_SKILL_DIR env >
- *     DATA_DIR/skills default.
- *   - `applySkillAllowlist` — name-based filter applied before curation /
- *     index-build / skill_view registration.
+ * Routing model: deterministic from `(opts.cwd, opts.skillKey)`.
+ *   - `skillKey` set    → `<cwd>/.skills/<skillKey>/`
+ *   - `skillKey` unset  → `<cwd>/.skills/`
  *
- * Helpers are intentionally side-effect free (no global state, no I/O) so
- * they're trivially testable. The end-to-end "filter is applied inside
- * maestroProvider" path is exercised in the provider integration suite — here
- * we just lock the contract of the helpers themselves.
+ * No env var, no explicit dir override. The simplification trades
+ * configurability for "one workspace, one keyed profile, one catalog"
+ * predictability — every reader of the SDK can answer "where does this
+ * call load skills from?" by looking at two fields.
+ *
+ * `applySkillAllowlist` is a name-based filter applied to the loaded
+ * catalog before curation / index-build / skill_view registration.
+ * Helpers are side-effect free so they're trivially testable; the
+ * end-to-end "filter is applied inside maestroProvider" path is exercised
+ * in the provider integration suite — here we just lock the contract of
+ * the helpers themselves.
  */
 
 const tracked: string[] = [];
-let originalEnv: string | undefined;
-
-beforeEach(() => {
-  originalEnv = process.env.MAESTRO_SKILL_DIR;
-});
 
 afterEach(() => {
-  if (originalEnv === undefined) {
-    delete process.env.MAESTRO_SKILL_DIR;
-  } else {
-    process.env.MAESTRO_SKILL_DIR = originalEnv;
-  }
   for (const p of tracked.splice(0)) {
     try {
       rmSync(p, { force: true, recursive: true });
@@ -41,37 +36,43 @@ afterEach(() => {
   invalidateSkillsCache();
 });
 
-describe("resolveSkillsDir precedence", () => {
-  test("opts.skillsDir wins over env and per-cwd default", () => {
-    process.env.MAESTRO_SKILL_DIR = "/env/value";
-    expect(resolveSkillsDir({ skillsDir: "/per/call", cwd: "/proj/x" })).toBe("/per/call");
-  });
-
-  test("env var wins over per-cwd default when opts.skillsDir is omitted", () => {
-    process.env.MAESTRO_SKILL_DIR = "/env/value";
-    expect(resolveSkillsDir({ cwd: "/proj/x" })).toBe("/env/value");
-  });
-
-  test("falls back to <cwd>/.skills when neither opts nor env is set", () => {
-    delete process.env.MAESTRO_SKILL_DIR;
+describe("resolveSkillsDir — deterministic (cwd, skillKey) routing", () => {
+  test("no skillKey → <cwd>/.skills/ root", () => {
     expect(resolveSkillsDir({ cwd: "/proj/x" })).toBe("/proj/x/.skills");
   });
 
-  test("per-cwd default tracks the cwd value (different cwd → different skills dir)", () => {
-    delete process.env.MAESTRO_SKILL_DIR;
-    expect(resolveSkillsDir({ cwd: "/a" })).toBe("/a/.skills");
-    expect(resolveSkillsDir({ cwd: "/b" })).toBe("/b/.skills");
+  test("skillKey set → <cwd>/.skills/<key>/", () => {
+    expect(resolveSkillsDir({ cwd: "/proj/x", skillKey: "legal" })).toBe(
+      "/proj/x/.skills/legal",
+    );
   });
 
-  test("explicit empty-string opts.skillsDir falls through to env (truthiness)", () => {
-    // Empty string is falsy under `??` semantics — verify the helper still
-    // routes to env / default so a host that accidentally passes `""` doesn't
-    // end up loading from `/` (which would be a real footgun).
-    process.env.MAESTRO_SKILL_DIR = "/env/value";
-    // We treat "" as "not set" via the `??` operator, which keeps empty
-    // strings; that's a known quirk. The test asserts current behavior so a
-    // future refactor that swaps to `||` is a conscious choice.
-    expect(resolveSkillsDir({ skillsDir: "", cwd: "/proj/x" })).toBe(""); // `??` keeps ""
+  test("different keys under same cwd resolve to disjoint dirs", () => {
+    const cwd = "/proj/multi";
+    expect(resolveSkillsDir({ cwd, skillKey: "legal" })).toBe("/proj/multi/.skills/legal");
+    expect(resolveSkillsDir({ cwd, skillKey: "coding" })).toBe("/proj/multi/.skills/coding");
+  });
+
+  test("same key under different cwds resolves to disjoint dirs", () => {
+    expect(resolveSkillsDir({ cwd: "/a", skillKey: "shared" })).toBe("/a/.skills/shared");
+    expect(resolveSkillsDir({ cwd: "/b", skillKey: "shared" })).toBe("/b/.skills/shared");
+  });
+
+  test("env var MAESTRO_SKILL_DIR has no effect (intentional — removed in v0.1.5)", () => {
+    // Lock the simplification: the routing function ignores env entirely.
+    // A future contributor who reintroduces env routing must consciously
+    // update this assertion.
+    const original = process.env.MAESTRO_SKILL_DIR;
+    process.env.MAESTRO_SKILL_DIR = "/env/should/be/ignored";
+    try {
+      expect(resolveSkillsDir({ cwd: "/proj/x" })).toBe("/proj/x/.skills");
+      expect(resolveSkillsDir({ cwd: "/proj/x", skillKey: "k" })).toBe(
+        "/proj/x/.skills/k",
+      );
+    } finally {
+      if (original === undefined) delete process.env.MAESTRO_SKILL_DIR;
+      else process.env.MAESTRO_SKILL_DIR = original;
+    }
   });
 });
 
@@ -119,10 +120,8 @@ describe("applySkillAllowlist filter shape", () => {
   });
 });
 
-describe("end-to-end skillsDir routing via loader", () => {
-  // Verifies that a custom skillsDir actually loads the SKILL.md files inside
-  // it — the helper just hands the dir to `loadSkills`, but a regression
-  // could break that wiring without showing up in the helper unit tests.
+describe("end-to-end skill loading from resolved dir", () => {
+  // Verifies that the dir resolveSkillsDir returns actually feeds the loader.
 
   function writeSkill(root: string, category: string, name: string): void {
     const dir = join(root, category, name);
@@ -133,40 +132,60 @@ describe("end-to-end skillsDir routing via loader", () => {
     );
   }
 
-  test("loadSkills reads from the dir resolveSkillsDir returns", () => {
-    const skillsRoot = mkdtempSync(join(tmpdir(), "maestro-skills-dir-test-"));
-    tracked.push(skillsRoot);
-    writeSkill(skillsRoot, "general", "alpha");
-    writeSkill(skillsRoot, "general", "beta");
-
-    const dir = resolveSkillsDir({ skillsDir: skillsRoot, cwd: "/unused-when-explicit" });
-    expect(dir).toBe(skillsRoot);
-    const skills = loadSkills(dir);
-    const names = skills.map((s) => s.name).sort();
-    expect(names).toEqual(["alpha", "beta"]);
-  });
-
-  test("per-cwd default: <cwd>/.skills resolves and loads when populated", () => {
-    delete process.env.MAESTRO_SKILL_DIR;
-    const cwd = mkdtempSync(join(tmpdir(), "maestro-cwd-skills-test-"));
+  test("no skillKey: loads from <cwd>/.skills/", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "maestro-skills-noKey-"));
     tracked.push(cwd);
     const dotSkills = join(cwd, ".skills");
-    writeSkill(dotSkills, "general", "from-cwd");
+    writeSkill(dotSkills, "general", "from-root");
 
     const resolved = resolveSkillsDir({ cwd });
     expect(resolved).toBe(dotSkills);
     const skills = loadSkills(resolved);
-    expect(skills.map((s) => s.name)).toEqual(["from-cwd"]);
+    expect(skills.map((s) => s.name)).toEqual(["from-root"]);
   });
 
-  test("filter + load round-trip — only allowlisted survive", () => {
-    const skillsRoot = mkdtempSync(join(tmpdir(), "maestro-skills-filter-test-"));
-    tracked.push(skillsRoot);
-    writeSkill(skillsRoot, "general", "alpha");
-    writeSkill(skillsRoot, "general", "beta");
-    writeSkill(skillsRoot, "general", "gamma");
+  test("keyed: loads only from <cwd>/.skills/<key>/, peer keys invisible", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "maestro-skills-keyed-"));
+    tracked.push(cwd);
+    const legalDir = join(cwd, ".skills", "legal");
+    const codingDir = join(cwd, ".skills", "coding");
+    writeSkill(legalDir, "general", "ocr");
+    writeSkill(legalDir, "general", "hearing");
+    writeSkill(codingDir, "general", "review");
 
-    const all = loadSkills(skillsRoot);
+    const legalResolved = resolveSkillsDir({ cwd, skillKey: "legal" });
+    expect(legalResolved).toBe(legalDir);
+    const legalSkills = loadSkills(legalResolved);
+    expect(legalSkills.map((s) => s.name).sort()).toEqual(["hearing", "ocr"]);
+
+    const codingResolved = resolveSkillsDir({ cwd, skillKey: "coding" });
+    const codingSkills = loadSkills(codingResolved);
+    expect(codingSkills.map((s) => s.name)).toEqual(["review"]);
+  });
+
+  test("missing keyed dir loads empty catalog (no auto-fallback to root)", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "maestro-skills-missing-"));
+    tracked.push(cwd);
+    // Populate root .skills/ but request a key that doesn't exist.
+    writeSkill(join(cwd, ".skills"), "general", "root-only");
+
+    const resolved = resolveSkillsDir({ cwd, skillKey: "no-such-key" });
+    expect(resolved).toBe(join(cwd, ".skills", "no-such-key"));
+    const skills = loadSkills(resolved);
+    // Loader returns empty when rootDir is missing — no implicit fallback to
+    // `.skills/` root means a typo'd key cleanly yields zero skills.
+    expect(skills).toEqual([]);
+  });
+
+  test("filter + keyed load round-trip — only allowlisted survive", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "maestro-skills-filter-keyed-"));
+    tracked.push(cwd);
+    const dir = join(cwd, ".skills", "tools");
+    writeSkill(dir, "general", "alpha");
+    writeSkill(dir, "general", "beta");
+    writeSkill(dir, "general", "gamma");
+
+    const all = loadSkills(resolveSkillsDir({ cwd, skillKey: "tools" }));
     expect(all).toHaveLength(3);
     const filtered = applySkillAllowlist(all, ["alpha", "gamma"]);
     expect(filtered.map((s) => s.name).sort()).toEqual(["alpha", "gamma"]);
