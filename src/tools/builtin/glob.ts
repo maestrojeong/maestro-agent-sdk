@@ -58,26 +58,33 @@ export const globTool: ToolHandler = {
           type: "string",
           description:
             "Glob pattern. Examples: `**/*.ts`, `src/**/*.tsx`, `README.md`, " +
-            "`config/*.json`. Matched against paths relative to `path`.",
+            "`config/*.json`. May also embed the absolute root (e.g. " +
+            "`/abs/path/**/*.ts`) — in that case `path` is auto-derived from " +
+            "the fixed prefix and the trailing portion becomes the matcher.",
         },
         path: {
           type: "string",
           description:
             "Optional absolute directory to search in. Defaults to the SDK's process cwd. " +
-            "Relative paths are rejected.",
+            "If omitted and `pattern` is absolute, the walk root is auto-extracted " +
+            "from `pattern`. Relative paths are rejected.",
         },
       },
       required: ["pattern"],
     },
   },
   async execute(input) {
-    const pattern = typeof input.pattern === "string" ? input.pattern : "";
-    if (!pattern) {
+    const rawPattern = typeof input.pattern === "string" ? input.pattern : "";
+    if (!rawPattern) {
       return JSON.stringify({ error: "Glob: missing 'pattern' argument" });
     }
 
     const rawPath = typeof input.path === "string" ? input.path : undefined;
     let root: string;
+    // `pattern` is what compileGlob() consumes. We may rewrite it below when
+    // the caller passed an absolute path inside `pattern` (claude SDK parity).
+    let pattern = rawPattern;
+
     if (rawPath !== undefined) {
       if (!isAbsolute(rawPath)) {
         return JSON.stringify({
@@ -85,6 +92,16 @@ export const globTool: ToolHandler = {
         });
       }
       root = rawPath;
+    } else if (isAbsolute(rawPattern)) {
+      // claude-SDK parity: when the caller embeds the absolute root inside
+      // `pattern` (e.g. `/Users/foo/proj/**/*.ts`) and omits `path`, we split
+      // off the longest fixed prefix and use that as the walk root. Without
+      // this the regex compiled from the absolute pattern matches against
+      // *relative* paths and returns zero — a footgun we hit often when the
+      // model copy-pastes absolute paths it just got from Read/Grep.
+      const split = splitAbsolutePattern(rawPattern);
+      root = split.root;
+      pattern = split.pattern;
     } else {
       root = process.cwd();
     }
@@ -235,3 +252,48 @@ export function compileGlob(pattern: string): RegExp {
 }
 
 const REGEX_META = ".+^$()[]{}|\\";
+
+/**
+ * Split an absolute glob pattern into (root, relativePattern).
+ *
+ * claude-SDK accepts patterns like `/Users/foo/proj/**\/*.ts` directly —
+ * its implementation pulls out the longest fixed-segment prefix as the
+ * walk root and uses the rest as the matcher. We mirror that here so the
+ * model's pretrained instinct works without forcing the caller to split
+ * `path` and `pattern` manually.
+ *
+ * Algorithm:
+ *   - Split the pattern by `/`. The leading `/` produces an empty first
+ *     segment.
+ *   - Find the first segment that contains a wildcard meta (`*` or `?`).
+ *   - Everything strictly before it forms the root (rejoined with `/`).
+ *     Everything from that segment onward is the new pattern (relative
+ *     to root).
+ *   - If no segment contains a wildcard the pattern is a literal absolute
+ *     path; treat dirname as the root and basename as the pattern so
+ *     `Glob({pattern: "/etc/hosts"})` still matches the single file.
+ *   - Empty root collapses to "/" (POSIX absolute root).
+ */
+export function splitAbsolutePattern(p: string): { root: string; pattern: string } {
+  const segs = p.split("/");
+  let wildAt = -1;
+  for (let i = 0; i < segs.length; i++) {
+    if (segs[i].includes("*") || segs[i].includes("?")) {
+      wildAt = i;
+      break;
+    }
+  }
+  if (wildAt === -1) {
+    // No wildcard — split dirname/basename so literal absolute paths still
+    // match. `Glob({pattern: "/etc/hosts"})` → root "/etc", pattern "hosts".
+    const parts = segs.slice();
+    const last = parts.pop() ?? "";
+    const root = parts.join("/") || "/";
+    return { root, pattern: last };
+  }
+  const rootJoined = segs.slice(0, wildAt).join("/");
+  return {
+    root: rootJoined || "/",
+    pattern: segs.slice(wildAt).join("/"),
+  };
+}
