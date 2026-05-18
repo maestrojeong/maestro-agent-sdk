@@ -32,6 +32,8 @@ export { bashTool } from "@/tools/builtin/bash";
 export { createReadTool } from "@/tools/builtin/read";
 export { createWriteTool } from "@/tools/builtin/write";
 export { createEditTool } from "@/tools/builtin/edit";
+export { globTool, compileGlob } from "@/tools/builtin/glob";
+export { grepTool } from "@/tools/builtin/grep";
 export {
   createTaskCreateTool,
   createTaskUpdateTool,

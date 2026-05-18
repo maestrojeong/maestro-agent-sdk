@@ -25,6 +25,8 @@ import { getTaskStore } from "@/state/tasks";
 import { createAgentTool } from "@/tools/builtin/agent";
 import { bashTool } from "@/tools/builtin/bash";
 import { createEditTool } from "@/tools/builtin/edit";
+import { globTool } from "@/tools/builtin/glob";
+import { grepTool } from "@/tools/builtin/grep";
 import { createReadTool } from "@/tools/builtin/read";
 import { createSkillViewTool } from "@/tools/builtin/skill_view";
 import { createSkillWriteTool } from "@/tools/builtin/skill_write";
@@ -98,14 +100,18 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
   const tools = new ToolRegistry();
 
   tools.register(bashTool);
-  // Read/Write/Edit/WebFetch — claude SDK parity builtins. Same name + schema
-  // so the model's pretrained instinct calls them with the right shape, and
-  // prompt cache keys line up across agents when a topic is bridged.
-  // Read/Write/Edit gate on the per-session file-state tracker so Edit can't
-  // mutate a path that hasn't been Read in this session.
+  // Read/Write/Edit/WebFetch/Glob/Grep — claude SDK parity builtins. Same
+  // names + schemas so the model's pretrained instinct calls them with the
+  // right shape, and prompt cache keys line up across agents when a topic
+  // is bridged. Read/Write/Edit gate on the per-session file-state tracker
+  // so Edit can't mutate a path that hasn't been Read in this session.
+  // Glob walks the filesystem in-process (no deps), Grep shells out to
+  // ripgrep — both are read-only and parallelSafe.
   tools.register(createReadTool({ tracker: fileTracker }));
   tools.register(createWriteTool({ tracker: fileTracker }));
   tools.register(createEditTool({ tracker: fileTracker }));
+  tools.register(globTool);
+  tools.register(grepTool);
   tools.register(webFetchTool);
   // Task family — granular CRUD replacing the v0.1.x TodoWrite. All four
   // share the same per-session store; the system reminder renders the list
