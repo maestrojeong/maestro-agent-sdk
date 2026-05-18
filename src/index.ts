@@ -7,7 +7,7 @@
  * Originally derived from Nous Research's hermes-agent (MIT); see NOTICE.
  */
 
-export const MAESTRO_SDK_VERSION = "0.1.4" as const;
+export { MAESTRO_SDK_VERSION } from "@/platform/version";
 export const MAESTRO_UPSTREAM_SNAPSHOT = "v0.13.0 (2026-05-07)" as const;
 
 // ─── Core agent loop ─────────────────────────────────────────────────────────
@@ -66,7 +66,14 @@ export {
 
 // ─── Maestro registry + top-level provider entry point ───────────────────────
 export { maestroRegistry } from "@/registry";
-export { maestroProvider, providerForModel, isAbortError, iterationBudgetLine } from "@/provider";
+export {
+  maestroProvider,
+  providerForModel,
+  isAbortError,
+  iterationBudgetLine,
+  resolveSkillsDir,
+  applySkillAllowlist,
+} from "@/provider";
 
 // ─── Skills ──────────────────────────────────────────────────────────────────
 export { loadSkillsCached, findSkillByName, type SkillEntry } from "@/skills/loader";
@@ -93,6 +100,8 @@ export {
   maestroSessionsDir,
   cleanupStaleMaestroSessions,
   DEFAULT_MAESTRO_SESSION_TTL_MS,
+  loadMaestroSessionMeta,
+  type MaestroSessionMeta,
 } from "@/session-store";
 
 // ─── Host integration points (dependency injection) ──────────────────────────

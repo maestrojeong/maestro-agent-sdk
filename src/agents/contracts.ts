@@ -14,6 +14,16 @@ export interface WriteRolloutOptions {
   cwd: string;
   entries: ConversationEntry[];
   reuseSessionId?: string;
+  /** Optional host-side identifier carried into the rollout `_meta` header
+   *  (since v0.1.5). Hosts that orchestrate multiple users can pass their
+   *  user id here so a later sweep can attribute the JSONL without opening
+   *  the conversation log it was synthesized from. */
+  userId?: string;
+  /** Opaque host-supplied bag persisted with the rollout. The registry
+   *  passes it through to `writeMaestroRollout` verbatim; the SDK never
+   *  reads the shape. Useful for `topicId`, `groupId`, or any other host
+   *  identifier the meta header should round-trip. */
+  metadata?: Record<string, unknown>;
 }
 
 export interface WriteRolloutResult {

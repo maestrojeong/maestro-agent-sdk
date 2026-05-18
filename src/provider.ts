@@ -111,22 +111,32 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
   //     demand (progressive disclosure — saves the per-turn cost of inlining
   //     every skill body).
   //
-  // Source dir is picked from `MAESTRO_SKILL_DIR` first so hosts can point at
-  // their own catalog without code change; the default lives under
-  // `<DATA_DIR>/skills`, i.e. `~/.maestro/skills` unless `MAESTRO_DATA_DIR`
-  // overrides. SDK ships with no bundled SKILL.md files — an empty catalog
-  // is the expected state until a host populates one.
+  // Source-dir resolution order (highest precedence first):
+  //   1. `opts.skillsDir` — per-call override, lets a host serve multiple
+  //      topics with disjoint skill sets in one process.
+  //   2. `MAESTRO_SKILL_DIR` env var — process-wide host opt-in.
+  //   3. `<DATA_DIR>/skills` — built-in default, typically `~/.maestro/skills`.
+  // SDK ships with no bundled SKILL.md files — an empty catalog is the
+  // expected state until a host populates one.
+  //
+  // After loading we apply `opts.allowedSkills` (if provided) as a name
+  // whitelist BEFORE curation, so curator + index-builder + skill_view all
+  // see the same filtered set. Unknown names are silently ignored — a host
+  // can pass a superset of names that may or may not exist in the catalog.
   //
   // Failures (rootDir missing, unreadable, every file malformed) reduce to an
   // empty catalog — the loop still runs with just bash + MCP tools.
-  const skillsDir =
-    process.env.MAESTRO_SKILL_DIR ?? join(DATA_DIR, "skills");
+  const skillsDir = resolveSkillsDir(opts);
   let skillsBlock = "";
   // Hoisted to outer scope so the Agent tool (registered below, after
   // model/effort resolve) can pass the same skill catalog to sub-agents.
   let loadedSkills: ReturnType<typeof loadSkillsCached> = [];
   try {
-    const skills = loadSkillsCached(skillsDir);
+    const allSkills = loadSkillsCached(skillsDir);
+    // Apply per-call allowlist BEFORE the curator/index so every downstream
+    // consumer sees the same filtered set. Empty array would mean "no skills
+    // allowed" — we treat undefined as "all allowed" to keep backward compat.
+    const skills = applySkillAllowlist(allSkills, opts.allowedSkills);
     loadedSkills = skills;
     if (skills.length > 0) {
       // Curator filters the catalog: archived skills (agent-created, never
@@ -144,8 +154,10 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
           agent: "maestro",
           skillsDir,
           skillCount: skills.length,
+          totalCount: allSkills.length,
           visibleCount: visibleSkills.length,
           archivedCount: skills.length - visibleSkills.length,
+          filtered: opts.allowedSkills !== undefined,
         },
         "maestroProvider: skill catalog loaded (curated)",
       );
@@ -382,7 +394,15 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
     try {
       const safePrefix = drained ? messages : trimToSafePrefix(messages);
       if (safePrefix.length > 0) {
-        saveMaestroSession(sessionId, safePrefix);
+        // Stamp the rollout `_meta` header (v0.1.5+) with the current cwd,
+        // userId, and any host-supplied `sessionMetadata`. The session-store
+        // preserves `createdAt` from any prior write so subsequent saves
+        // don't reset the "first write" timestamp.
+        saveMaestroSession(sessionId, safePrefix, {
+          cwd: opts.cwd,
+          ...(opts.userId !== undefined ? { userId: opts.userId } : {}),
+          ...(opts.sessionMetadata !== undefined ? { metadata: opts.sessionMetadata } : {}),
+        });
         if (!drained && safePrefix.length < messages.length) {
           logger.info(
             {
@@ -444,6 +464,35 @@ export function iterationBudgetLine(remaining: number, max: number): string {
     tone = "finalize NOW. Stop tooling and write the final answer.";
   }
   return `Tool iterations remaining: ${remaining}/${max} — ${tone}`;
+}
+
+/**
+ * Resolve the directory the skill catalog should be loaded from for this
+ * call. Precedence: per-call `opts.skillsDir` > `MAESTRO_SKILL_DIR` env >
+ * `<DATA_DIR>/skills` default. Exported so hosts can recompute the same
+ * value (e.g. for a pre-warm step that calls `loadSkillsCached` ahead of a
+ * provider invocation).
+ */
+export function resolveSkillsDir(opts: { skillsDir?: string }): string {
+  return opts.skillsDir ?? process.env.MAESTRO_SKILL_DIR ?? join(DATA_DIR, "skills");
+}
+
+/**
+ * Filter a loaded SkillEntry catalog by an optional `allowedSkills` whitelist.
+ * `undefined` returns the input unchanged (default "all allowed" behavior for
+ * pre-v0.1.5 hosts); an empty array intentionally returns nothing (the host
+ * explicitly opted into "no skills"). Unknown names are silently ignored — a
+ * host can pass a superset of names that may or may not exist.
+ *
+ * Generic over the SkillEntry shape so sub-agents and tests can reuse it
+ * with their own narrowed types without `as SkillEntry` casts.
+ */
+export function applySkillAllowlist<T extends { name: string }>(
+  skills: T[],
+  allowedSkills?: string[],
+): T[] {
+  if (allowedSkills === undefined) return skills;
+  return skills.filter((s) => allowedSkills.includes(s.name));
 }
 
 /**

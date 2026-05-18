@@ -63,6 +63,24 @@ export interface AgentQueryOptions {
   agent: AgentKind;
   prompt: string;
   sessionId?: string | null;
+  /**
+   * Working-directory hint for this session.
+   *
+   * The SDK uses this for two narrow purposes:
+   *  1. `mkdir -p` so the path exists when subsequent host code stats it
+   *     (e.g. resume flows that read files from the session's expected root).
+   *  2. Stamp it into the rollout `_meta` header (since v0.1.5) so a future
+   *     indexer / forensic sweep can attribute the on-disk JSONL to a project.
+   *
+   * Note: the SDK loop itself does **not** chdir, and the built-in tools
+   * (Read/Write/Edit) require absolute paths regardless of this value. The
+   * Bash tool's `cwd` is per-call input from the model, NOT auto-injected
+   * from this field. Future minor versions may evolve tools to respect this
+   * hint, but today it is treated as metadata.
+   *
+   * Pass the canonical project / workspace path the host wants associated
+   * with this session.
+   */
   cwd: string;
   systemPrompt: string;
   userId?: string;
@@ -88,4 +106,33 @@ export interface AgentQueryOptions {
   mcpExtra?: Record<string, unknown>;
   isCron?: boolean;
   silent?: boolean;
+  /**
+   * Per-call override for the skill catalog source directory. Takes
+   * precedence over the `MAESTRO_SKILL_DIR` env var, which in turn falls
+   * back to `<DATA_DIR>/skills`.
+   *
+   * Useful when a single host process serves multiple topics that each
+   * need their own skill set — env-var-only routing forces a process-wide
+   * choice, which can't disambiguate concurrent calls.
+   */
+  skillsDir?: string;
+  /**
+   * Whitelist of skill names this call may surface. When provided, the
+   * loaded catalog is filtered down to entries whose `name` matches one
+   * of the listed values BEFORE curation, index rendering, and
+   * `skill_view` registration. Unknown names in the list are silently
+   * ignored (no error) so a host can safely pass a superset.
+   *
+   * Omit (or pass `undefined`) to allow every loaded skill — the default
+   * pre-0.1.5 behavior.
+   */
+  allowedSkills?: string[];
+  /**
+   * Opaque host-controlled bag persisted alongside the session as part of
+   * the rollout `_meta` header. The SDK reads and writes this verbatim and
+   * never interprets its shape — useful for round-tripping `topicId`,
+   * `groupId`, or any other host-side identifiers that should follow the
+   * session across persistence.
+   */
+  sessionMetadata?: Record<string, unknown>;
 }

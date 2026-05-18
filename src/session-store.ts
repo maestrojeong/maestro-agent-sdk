@@ -15,6 +15,17 @@
  * `[Tool: ...]` text annotations (those only happen on cross-agent rollouts,
  * which by definition came from another provider's log).
  *
+ * File layout (since v0.1.5):
+ *   line 1   — `{"_meta": {...}}` header (cwd, userId, createdAt, sdkVersion,
+ *              and any host-supplied `metadata`). Optional — files written by
+ *              older SDK versions skip this line, and the loader treats them
+ *              as meta-less without error.
+ *   line 2…N — ProviderMessage per line (one user/assistant turn each).
+ *
+ * The meta header lets a future per-cwd indexer / forensic sweep recover
+ * locality without changing the on-disk directory structure (flat
+ * `<sessionId>.jsonl` stays). Hosts that don't care can ignore it.
+ *
  * Two writer paths share the same file format:
  *   - `saveMaestroSession` — verbatim dump from the live loop.
  *   - `writeMaestroRollout` — synthesized from a provider-agnostic
@@ -32,6 +43,7 @@ import {
   ensureCwdExists,
   extractChatPairs,
 } from "@/agents/rollout/shared";
+import { MAESTRO_SDK_VERSION } from "@/platform/version";
 import type { ProviderContentBlock, ProviderMessage } from "@/providers/base";
 import { dropTodoStore } from "@/state/todos";
 import { dropFileStateTracker } from "@/tools/file-state";
@@ -61,17 +73,80 @@ export function maestroSessionPath(sessionId: string): string {
 }
 
 /**
+ * Metadata stamped on the first line of every v0.1.5+ rollout JSONL.
+ *
+ * Captured at write time so a future indexer / forensic sweep can recover
+ * locality (which project, which user, when, which SDK version) without
+ * relying on the directory structure. Hosts pass an opaque
+ * `metadata: Record<string, unknown>` (e.g. `topicId`, `groupId`) which the
+ * SDK preserves verbatim — the SDK itself never reads it back.
+ *
+ * Format is stable across patch versions of v0.1.x; if a future major adds
+ * required fields, bump `version` and gate the loader behind it.
+ */
+export interface MaestroSessionMeta {
+  /** Schema version of the meta header itself (NOT the SDK version). */
+  version: 1;
+  /** Working directory the host associated with this session. */
+  cwd: string;
+  /** Optional host-supplied user identifier (string or numeric — see `AgentQueryOptions.userId`). */
+  userId?: string;
+  /** ISO-8601 timestamp captured at first write. Preserved across overwrites
+   *  by the writer when a previous meta is read off disk. */
+  createdAt: string;
+  /** `MAESTRO_SDK_VERSION` at write time. Useful for cross-version debugging. */
+  sdkVersion: string;
+  /** Opaque host-controlled bag (topicId, groupId, anything). Passed through
+   *  verbatim. The SDK only writes / reads it as a JSON value. */
+  metadata?: Record<string, unknown>;
+}
+
+/** Discriminator key — the first line of a v0.1.5+ rollout starts with this. */
+const META_KEY = "_meta";
+
+/** Type guard for a parsed first-line object that carries the meta header. */
+function isMetaLine(value: unknown): value is { [META_KEY]: MaestroSessionMeta } {
+  if (!value || typeof value !== "object") return false;
+  const obj = value as Record<string, unknown>;
+  const m = obj[META_KEY];
+  return Boolean(m) && typeof m === "object" && (m as Record<string, unknown>).version === 1;
+}
+
+/** Parse one JSONL line tolerantly; returns null on parse error. */
+function tryParseLine(line: string): unknown {
+  try {
+    return JSON.parse(line);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Load the persisted ProviderMessage[] for a sessionId, or `null` if no
  * file exists (i.e. this is a fresh session). Malformed lines are skipped
  * with a warning rather than crashing the loop — a corrupt entry in the
  * middle of history is better than losing a working session entirely.
+ *
+ * Backward-compat: files written by SDK <= 0.1.4 had no `_meta` header — the
+ * loader treats their first line as a regular message. Files written by v0.1.5+
+ * carry the meta header on line 1; we skip it here so callers only see real
+ * messages. Use `loadMaestroSessionMeta` for the meta payload.
  */
 export function loadMaestroSession(sessionId: string): ProviderMessage[] | null {
   const path = maestroSessionPath(sessionId);
   if (!existsSync(path)) return null;
   try {
     const raw = readFileSync(path, "utf8");
-    return parseJsonlText<ProviderMessage>(raw);
+    const lines = raw.trim().split("\n").filter(Boolean);
+    if (lines.length === 0) return [];
+    const first = tryParseLine(lines[0]);
+    const startIdx = isMetaLine(first) ? 1 : 0;
+    const out: ProviderMessage[] = [];
+    for (let i = startIdx; i < lines.length; i++) {
+      const parsed = tryParseLine(lines[i]);
+      if (parsed !== null) out.push(parsed as ProviderMessage);
+    }
+    return out;
   } catch (err) {
     logger.warn(
       { err, sessionId, path },
@@ -82,13 +157,93 @@ export function loadMaestroSession(sessionId: string): ProviderMessage[] | null 
 }
 
 /**
+ * Read just the `_meta` header for a sessionId, or `null` if the file is
+ * missing or has no meta header (pre-0.1.5 file). Useful for host-side
+ * indexers that want to attribute a session to its cwd / userId without
+ * loading the full message history.
+ */
+export function loadMaestroSessionMeta(sessionId: string): MaestroSessionMeta | null {
+  const path = maestroSessionPath(sessionId);
+  if (!existsSync(path)) return null;
+  try {
+    // Read just enough bytes to cover a reasonably sized meta line. 16KB is
+    // generous — meta is typically <1KB. Falls through to a full read if the
+    // newline isn't found in the first chunk (degenerate single-line files).
+    const raw = readFileSync(path, "utf8");
+    const newline = raw.indexOf("\n");
+    const firstLine = newline >= 0 ? raw.slice(0, newline) : raw;
+    const parsed = tryParseLine(firstLine.trim());
+    if (!isMetaLine(parsed)) return null;
+    return parsed[META_KEY];
+  } catch (err) {
+    logger.warn({ err, sessionId, path }, "loadMaestroSessionMeta: read/parse failed");
+    return null;
+  }
+}
+
+/**
+ * Inputs the writer accepts to build a `MaestroSessionMeta`. `createdAt` and
+ * `sdkVersion` are auto-populated when omitted. `version` is implicit — the
+ * writer always stamps `1` so callers can't accidentally claim a future
+ * schema number.
+ */
+export interface SaveSessionMetaInput {
+  cwd?: string;
+  userId?: string;
+  createdAt?: string;
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * Build a complete `MaestroSessionMeta` from a partial input. If an existing
+ * meta is found on disk, its `createdAt` is preserved (the "first write"
+ * timestamp shouldn't drift across subsequent overwrites). All other fields
+ * come from the live input so a session that moves cwd / changes metadata
+ * mid-flight gets its current state recorded.
+ */
+function buildMeta(sessionId: string, input: SaveSessionMetaInput): MaestroSessionMeta {
+  const existing = loadMaestroSessionMeta(sessionId);
+  const meta: MaestroSessionMeta = {
+    version: 1,
+    cwd: input.cwd ?? existing?.cwd ?? "",
+    createdAt: existing?.createdAt ?? input.createdAt ?? new Date().toISOString(),
+    sdkVersion: MAESTRO_SDK_VERSION,
+  };
+  const userId = input.userId ?? existing?.userId;
+  if (userId !== undefined) meta.userId = userId;
+  const metadata = input.metadata ?? existing?.metadata;
+  if (metadata !== undefined) meta.metadata = metadata;
+  return meta;
+}
+
+/**
  * Overwrite (or create) the persisted session file with the provided
  * messages. Each turn's final state is written atomically — partial-history
  * writes can leave the next resume looking at a stale prefix.
+ *
+ * The optional `meta` input is merged with any existing on-disk meta header
+ * (preserving `createdAt`) and re-stamped on every save. Omitting `meta`
+ * still preserves a previously-written meta header — the SDK will re-read
+ * and re-write it transparently so a host that doesn't supply meta doesn't
+ * lose the one a previous turn wrote.
  */
-export function saveMaestroSession(sessionId: string, messages: ProviderMessage[]): void {
+export function saveMaestroSession(
+  sessionId: string,
+  messages: ProviderMessage[],
+  meta?: SaveSessionMetaInput,
+): void {
   assertUuidLike("sessionId", sessionId);
-  writeJsonlFile(maestroSessionPath(sessionId), messages);
+  const existing = loadMaestroSessionMeta(sessionId);
+  // Skip the meta line entirely only when: caller didn't pass one AND no
+  // meta was previously written. Pre-0.1.5 files with no header stay that
+  // way unless the caller opts in by passing meta on the first save.
+  if (!meta && !existing) {
+    writeJsonlFile(maestroSessionPath(sessionId), messages);
+    return;
+  }
+  const built = buildMeta(sessionId, meta ?? {});
+  const lines: unknown[] = [{ [META_KEY]: built }, ...messages];
+  writeJsonlFile(maestroSessionPath(sessionId), lines);
 }
 
 /**
@@ -133,8 +288,9 @@ function pairsToMessages(pairs: ChatPair[]): ProviderMessage[] {
 }
 
 export interface MaestroRolloutOptions {
-  /** Working directory the resumed Maestro session will report. Validated
-   *  against the workspace roots so callers can't smuggle arbitrary cwds. */
+  /** Working directory the resumed Maestro session will report. The SDK
+   *  `mkdir -p`s this path so subsequent loop operations can rely on it,
+   *  and stamps it into the rollout's `_meta` header for later indexing. */
   cwd: string;
   /** Optional override; default = freshly generated UUIDv4. */
   sessionId?: string;
@@ -142,6 +298,10 @@ export interface MaestroRolloutOptions {
   pairs?: ChatPair[];
   /** When `pairs` is omitted, the source UnifiedEvent log to digest. */
   entries?: ConversationEntry[];
+  /** Optional host-side identifiers to fold into the rollout `_meta` header.
+   *  Passed verbatim — the SDK does not interpret `metadata`'s shape. */
+  userId?: string;
+  metadata?: Record<string, unknown>;
 }
 
 export interface MaestroRolloutResult {
@@ -157,6 +317,11 @@ export interface MaestroRolloutResult {
  *
  * Used by `set_agent` cross-agent bridging (X → maestro) and by
  * `maestroRegistry.forkSession`.
+ *
+ * Always writes a `_meta` header (v0.1.5+) — the rollout is the first line
+ * to disk for the new session, so there's nothing to preserve from a prior
+ * write. The meta carries `cwd`, optional `userId`/`metadata`, and the SDK
+ * version stamp.
  */
 export function writeMaestroRollout(opts: MaestroRolloutOptions): MaestroRolloutResult {
   const sessionId = opts.sessionId ?? randomUUID();
@@ -165,7 +330,11 @@ export function writeMaestroRollout(opts: MaestroRolloutOptions): MaestroRollout
   const pairs = opts.pairs ?? extractChatPairs(opts.entries ?? []);
   const messages = pairsToMessages(pairs);
   const path = maestroSessionPath(sessionId);
-  writeJsonlFile(path, messages);
+  const metaInput: SaveSessionMetaInput = { cwd: opts.cwd };
+  if (opts.userId !== undefined) metaInput.userId = opts.userId;
+  if (opts.metadata !== undefined) metaInput.metadata = opts.metadata;
+  const meta = buildMeta(sessionId, metaInput);
+  writeJsonlFile(path, [{ [META_KEY]: meta }, ...messages]);
   logger.info(
     { sessionId, path, pairs: pairs.length },
     "writeMaestroRollout: synthetic session placed",
