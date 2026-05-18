@@ -124,6 +124,7 @@ export type {
   TokenUsage,
   EffortLevel,
   AgentKind,
+  AgentHooks,
   AgentQueryOptions,
   UnifiedEvent,
 } from "@/types";
