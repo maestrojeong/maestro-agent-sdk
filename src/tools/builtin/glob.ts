@@ -47,20 +47,22 @@ export const globTool: ToolHandler = {
     name: "Glob",
     description:
       "Fast file pattern matching. Supports `*` (within-segment wildcard), " +
-      "`**` (cross-segment wildcard), `?` (one char). Returns absolute paths " +
-      "sorted by modification time descending — recently-touched files first. " +
-      "Does NOT skip dotfiles or build dirs; the model's pattern is authoritative. " +
-      "Caps results at 10,000 entries (truncates with a note when exceeded).",
+      "`**` (cross-segment wildcard), `?` (one char), `[abc]` / `[a-z]` / `[!abc]` " +
+      "character classes, and `{a,b}` brace expansion (nestable). Returns " +
+      "absolute paths sorted by modification time descending — recently-touched " +
+      "files first. Does NOT skip dotfiles or build dirs; the model's pattern is " +
+      "authoritative. Caps results at 10,000 entries (truncates with a note when exceeded).",
     input_schema: {
       type: "object",
       properties: {
         pattern: {
           type: "string",
           description:
-            "Glob pattern. Examples: `**/*.ts`, `src/**/*.tsx`, `README.md`, " +
-            "`config/*.json`. May also embed the absolute root (e.g. " +
-            "`/abs/path/**/*.ts`) — in that case `path` is auto-derived from " +
-            "the fixed prefix and the trailing portion becomes the matcher.",
+            "Glob pattern. Examples: `**/*.ts`, `src/**/*.{js,ts,tsx}`, " +
+            "`file[0-9].log`, `README.md`, `config/*.json`. May also embed " +
+            "the absolute root (e.g. `/abs/path/**/*.ts`) — in that case " +
+            "`path` is auto-derived from the fixed prefix and the trailing " +
+            "portion becomes the matcher.",
         },
         path: {
           type: "string",
@@ -210,15 +212,24 @@ export const globTool: ToolHandler = {
  * path (anchored at both ends).
  *
  * Handled tokens:
- *   `**\/`  → `(?:.*\/)?` — zero or more path segments (greedy across `/`)
- *   `**`    → `.*`        — anything including `/`
- *   `*`     → `[^/]*`     — anything except `/` within one segment
- *   `?`     → `[^/]`      — single char within one segment
+ *   `**\/`     → `(?:.*\/)?` — zero or more path segments (greedy across `/`)
+ *   `**`       → `.*`        — anything including `/`
+ *   `*`        → `[^/]*`     — anything except `/` within one segment
+ *   `?`        → `[^/]`      — single char within one segment
+ *   `[abc]`    → `[abc]`     — character class (POSIX `[!abc]` → `[^abc]`)
+ *   `{a,b}`    → `(?:a|b)`   — brace expansion (nestable, body recursively
+ *                              compiled so wildcards / classes inside each
+ *                              alternative still work)
  *
  * Other regex metacharacters are escaped so literals like `.` in `foo.ts`
  * don't accidentally turn into "any char".
  */
 export function compileGlob(pattern: string): RegExp {
+  return new RegExp(`^${compileGlobBody(pattern)}$`);
+}
+
+/** Build the regex body (no anchors) so brace alternatives can recurse. */
+function compileGlobBody(pattern: string): string {
   let s = "";
   let i = 0;
   while (i < pattern.length) {
@@ -240,6 +251,36 @@ export function compileGlob(pattern: string): RegExp {
     } else if (c === "?") {
       s += "[^/]";
       i += 1;
+    } else if (c === "[") {
+      // Character class `[abc]`, `[a-z]`, `[!abc]`. Find the closing `]`;
+      // if missing, treat the `[` as a literal (matches bash defensively).
+      const end = pattern.indexOf("]", i + 1);
+      if (end === -1) {
+        s += "\\[";
+        i += 1;
+      } else {
+        let cls = pattern.slice(i + 1, end);
+        if (cls.startsWith("!")) cls = `^${cls.slice(1)}`; // POSIX negation
+        s += `[${cls}]`;
+        i = end + 1;
+      }
+    } else if (c === "{") {
+      // Brace expansion `{a,b,c}`. Find the matching `}` accounting for
+      // nesting (`{a,{b,c}}`). On unbalanced braces we treat the `{` as a
+      // literal — bash does the same.
+      const close = matchingBraceClose(pattern, i);
+      if (close === -1) {
+        s += "\\{";
+        i += 1;
+      } else {
+        const body = pattern.slice(i + 1, close);
+        const parts = splitTopLevel(body, ",");
+        // Recursively compile each alternative so a brace can carry full
+        // glob syntax inside (`{*.ts,src/**/*.tsx}` works).
+        const alts = parts.map((p) => compileGlobBody(p));
+        s += `(?:${alts.join("|")})`;
+        i = close + 1;
+      }
     } else if (REGEX_META.includes(c)) {
       s += `\\${c}`;
       i += 1;
@@ -248,10 +289,49 @@ export function compileGlob(pattern: string): RegExp {
       i += 1;
     }
   }
-  return new RegExp(`^${s}$`);
+  return s;
 }
 
-const REGEX_META = ".+^$()[]{}|\\";
+/**
+ * Locate the `}` that closes the `{` at `openIdx`, respecting nesting.
+ * Returns -1 if the brace is unbalanced (caller falls back to literal).
+ */
+function matchingBraceClose(pattern: string, openIdx: number): number {
+  let depth = 1;
+  for (let j = openIdx + 1; j < pattern.length; j++) {
+    const ch = pattern[j];
+    if (ch === "{") depth++;
+    else if (ch === "}") {
+      depth--;
+      if (depth === 0) return j;
+    }
+  }
+  return -1;
+}
+
+/**
+ * Split `body` by `sep` only when the separator appears at the top level
+ * (depth-0 with respect to `{}` nesting). `{a,{b,c}}` splits into
+ * `["a", "{b,c}"]` — not `["a", "{b", "c}"]`.
+ */
+function splitTopLevel(body: string, sep: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let k = 0; k < body.length; k++) {
+    const ch = body[k];
+    if (ch === "{") depth++;
+    else if (ch === "}") depth--;
+    else if (ch === sep && depth === 0) {
+      parts.push(body.slice(start, k));
+      start = k + 1;
+    }
+  }
+  parts.push(body.slice(start));
+  return parts;
+}
+
+const REGEX_META = ".+^$()|\\";
 
 /**
  * Split an absolute glob pattern into (root, relativePattern).
