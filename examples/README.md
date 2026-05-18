@@ -13,3 +13,4 @@ npx tsx examples/01-basic-anthropic.ts "list /tmp"
 | `01-basic-anthropic.ts` | Anthropic provider + bash/read/write builtins + event stream printing |
 | `02-deepseek.ts` | Same loop but on DeepSeek V4 |
 | `03-custom-tool.ts` | Register a user-defined tool alongside builtins |
+| `04-skill-write.ts` | Agent-autonomous skill authoring — model creates `skill.md` + adjacent scripts/templates/references via `skill_write` in one transactional call |
