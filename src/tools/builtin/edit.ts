@@ -79,12 +79,18 @@ export function createEditTool(opts: EditToolOptions = {}): ToolHandler {
       },
     },
     async execute(input) {
-      // normalize() collapses `..` segments (e.g. /safe/../etc → /etc) so
-      // that the isAbsolute check cannot be bypassed by path traversal.
-      const filePath = normalize(typeof input.file_path === "string" ? input.file_path : "");
-      if (!filePath) {
+      // Validate presence/type BEFORE normalize() — Node's `normalize("")`
+      // returns `"."` (not ""), so a missing/empty `file_path` would silently
+      // become `.` and fall through to the absolute-path branch with a
+      // misleading "file_path must be absolute, got '.'" error instead of
+      // the intended "missing 'file_path'" diagnostic.
+      const rawFilePath = input.file_path;
+      if (typeof rawFilePath !== "string" || rawFilePath.length === 0) {
         return JSON.stringify({ error: "Edit: missing 'file_path' argument" });
       }
+      // normalize() collapses `..` segments (e.g. /safe/../etc → /etc) so
+      // that the isAbsolute check cannot be bypassed by path traversal.
+      const filePath = normalize(rawFilePath);
       if (!isAbsolute(filePath)) {
         return JSON.stringify({
           error: `Edit: file_path must be absolute, got '${filePath}'`,
