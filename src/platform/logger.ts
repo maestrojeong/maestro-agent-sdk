@@ -8,6 +8,14 @@
  *
  * The interface mirrors pino's call shape — `(meta, msg)` or just `(msg)` —
  * so a host plugging in pino directly is the zero-friction path.
+ *
+ * # stdout vs stderr
+ *
+ * The default console logger writes **every level to stderr**.
+ * This is deliberate: stdout is the host's primary channel (JSON-RPC for
+ * MCP stdio servers, structured output streams, etc.). A library logger
+ * must never poison stdout — otherwise module-load bootstrap messages leak
+ * into the JSON-RPC stream and break protocol parsers.
  */
 
 export interface Logger {
@@ -25,22 +33,26 @@ export interface LogFn {
 }
 
 function makeConsoleLogger(): Logger {
-  const emit =
-    (level: "log" | "info" | "warn" | "error") =>
+  // All levels go through console.error so they land on stderr.
+  // stdout is reserved for the host (JSON-RPC, structured output, etc.).
+  // Warn/error/fatal already went to stderr via console.warn / console.error;
+  // the critical fix here is trace/debug/info which previously used
+  // console.log / console.info (stdout) and broke MCP stdio transports.
+  const emit = (label: string) =>
     (objOrMsg: Record<string, unknown> | string, msg?: string) => {
       if (typeof objOrMsg === "string") {
-        console[level](`[${level}] ${objOrMsg}`);
+        console.error(`[${label}] ${objOrMsg}`);
       } else {
-        console[level](`[${level}] ${msg ?? ""}`, objOrMsg);
+        console.error(`[${label}] ${msg ?? ""}`, objOrMsg);
       }
     };
   return {
-    trace: emit("log") as LogFn,
-    debug: emit("log") as LogFn,
+    trace: emit("trace") as LogFn,
+    debug: emit("debug") as LogFn,
     info: emit("info") as LogFn,
     warn: emit("warn") as LogFn,
     error: emit("error") as LogFn,
-    fatal: emit("error") as LogFn,
+    fatal: emit("fatal") as LogFn,
   };
 }
 

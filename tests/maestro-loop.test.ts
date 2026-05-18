@@ -344,7 +344,7 @@ describe("runConversation", () => {
     expect(events.some((e) => e.type === "file")).toBe(false);
   });
 
-  test("max_iterations cap surfaces as error", async () => {
+  test("max_iterations cap yields result with effort upgrade hint", async () => {
     // Always return a tool_use → loop can never resolve
     const responses: ProviderResponse[] = Array(5)
       .fill(null)
@@ -372,8 +372,9 @@ describe("runConversation", () => {
     });
     const events = await collect(runConversation(agent, initialMessages("loop")));
     const last = events[events.length - 1];
-    expect(last.type).toBe("error");
-    expect(last.type === "error" && last.content).toMatch(/max_iterations/);
+    expect(last.type).toBe("result");
+    expect(last.type === "result" && last.stopReason).toBe("max_iterations");
+    expect(last.type === "result" && last.content).toMatch(/turn budget|effort/);
   });
 });
 
