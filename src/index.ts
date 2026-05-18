@@ -23,6 +23,7 @@ export { AIAgent, type AIAgentConfig } from "@/core/agent";
 export { runConversation } from "@/core/loop";
 // ─── MCP ─────────────────────────────────────────────────────────────────────
 export type { MaestroMcpClient, MaestroMcpServerSpec, MaestroMcpTool } from "@/mcp/client";
+export { setMcpCacheIgnoreEnvKeys } from "@/mcp/pool-cache";
 export { ACTIVE_TASK_TEMPLATE, wrapCompactedSummary } from "@/memory/active-task-template";
 // ─── Memory / compression ────────────────────────────────────────────────────
 export { compressIfNeeded } from "@/memory/compressor";
@@ -94,6 +95,7 @@ export { bashTool } from "@/tools/builtin/bash";
 export { createEditTool } from "@/tools/builtin/edit";
 export { compileGlob, globTool } from "@/tools/builtin/glob";
 export { grepTool } from "@/tools/builtin/grep";
+export { createMultiEditTool } from "@/tools/builtin/multi_edit";
 export { createReadTool } from "@/tools/builtin/read";
 export { createSkillViewTool } from "@/tools/builtin/skill_view";
 export { createSkillWriteTool } from "@/tools/builtin/skill_write";
@@ -103,6 +105,11 @@ export {
   createTaskListTool,
   createTaskUpdateTool,
 } from "@/tools/builtin/tasks";
+export {
+  createWebFetchTool,
+  type WebFetchToolOptions,
+  webFetchTool,
+} from "@/tools/builtin/web_fetch";
 export { createWriteTool } from "@/tools/builtin/write";
 export { dropFileStateTracker, getFileStateTracker } from "@/tools/file-state";
 // ─── Tool registry + hook surface ────────────────────────────────────────────
@@ -114,6 +121,7 @@ export {
   type PreToolUseContext,
   type PreToolUseDecision,
   type PreToolUseHook,
+  type ToolDispatchStatus,
   type ToolHandler,
   ToolRegistry,
 } from "@/tools/registry";

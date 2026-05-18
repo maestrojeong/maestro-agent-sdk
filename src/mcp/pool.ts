@@ -53,7 +53,7 @@ export interface MaestroMcpPool {
  * scoping by context keeps the invariant even when specs happen to match).
  */
 export async function startMcpPool(
-  servers: Record<string, unknown>,
+  servers: Record<string, MaestroMcpServerSpec>,
   ctx: CacheKeyContext = {},
 ): Promise<MaestroMcpPool> {
   const clients: MaestroMcpClient[] = [];
@@ -62,7 +62,7 @@ export async function startMcpPool(
   const entries = Object.entries(servers ?? {});
   const results = await Promise.allSettled(
     entries.map(async ([name, spec]) => {
-      const client = await getOrStartClient(ctx, name, spec as MaestroMcpServerSpec);
+      const client = await getOrStartClient(ctx, name, spec);
       const ts = await client.listTools();
       return { client, tools: ts };
     }),

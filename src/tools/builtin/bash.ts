@@ -155,7 +155,6 @@ async function executeBash(
   });
 }
 
-
 /** Default wall-clock cap. The model can override via the `timeout` input
  *  field — useful for slow tests, builds, installs — capped at `BASH_TIMEOUT_MAX_MS`
  *  so a runaway can't pin the runtime indefinitely. */

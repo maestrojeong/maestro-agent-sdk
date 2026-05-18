@@ -1,8 +1,8 @@
 import { existsSync, readFileSync, type Stats, statSync, writeFileSync } from "node:fs";
 import { isAbsolute, normalize } from "node:path";
 import { countOccurrences } from "@/tools/builtin/edit";
-import { checkBlockedPath } from "@/tools/path-guard";
 import type { FileStateTracker } from "@/tools/file-state";
+import { checkBlockedPath } from "@/tools/path-guard";
 import type { ToolHandler } from "@/tools/registry";
 
 /**

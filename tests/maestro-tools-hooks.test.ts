@@ -73,10 +73,11 @@ describe("ToolRegistry hook chain", () => {
     expect(JSON.parse(out)).toEqual({ echoed: { v: 99 } });
   });
 
-  test("pre block short-circuits the chain and skips post hooks", async () => {
+  test("pre block short-circuits remaining pre hooks but still runs post hooks", async () => {
     const r = new ToolRegistry();
     r.register(makeEcho());
     const events: string[] = [];
+    const seenStatus: string[] = [];
     r.use({
       pre() {
         events.push("preA");
@@ -88,8 +89,9 @@ describe("ToolRegistry hook chain", () => {
         events.push("preB");
         return { decision: "allow" };
       },
-      post() {
+      post(ctx) {
         events.push("postB");
+        seenStatus.push(ctx.status);
         return {};
       },
     });
@@ -97,8 +99,10 @@ describe("ToolRegistry hook chain", () => {
     const out = await r.dispatch("echo", { v: 1 });
     const parsed = JSON.parse(out) as { error: string };
     expect(parsed.error).toBe("denied by A");
-    // Only the blocker ran — B's pre + post never fire.
-    expect(events).toEqual(["preA"]);
+    // B's pre never fires (block short-circuits the pre chain), but post hooks
+    // ALWAYS run so audit/telemetry can observe the blocked call.
+    expect(events).toEqual(["preA", "postB"]);
+    expect(seenStatus).toEqual(["blocked"]);
   });
 
   test("post hooks can mutate output (last-writer wins)", async () => {
@@ -167,9 +171,10 @@ describe("ToolRegistry hook chain", () => {
     expect(preFired).toBe(false);
   });
 
-  test("tool execute throwing is caught and pre hooks still ran", async () => {
+  test("tool execute throwing surfaces to post hooks with status=error", async () => {
     const r = new ToolRegistry();
     let preFired = false;
+    let postCtx: { status: string; error?: string; output: string } | null = null;
     r.register({
       schema: {
         name: "explode",
@@ -185,17 +190,39 @@ describe("ToolRegistry hook chain", () => {
         preFired = true;
         return { decision: "allow" };
       },
-      post() {
-        // Post should NOT fire on execute-throw — there's no clean result
-        // to post-process. Test passes via the absence of mutation.
-        return { output: "shouldnt-replace" };
+      post(ctx) {
+        postCtx = { status: ctx.status, error: ctx.error, output: ctx.output };
+        // Post hooks run on failure too. They can mutate the output (e.g.
+        // redact stack traces) — assert we DO see the override.
+        return { output: JSON.stringify({ error: "redacted" }) };
       },
     });
 
     const out = await r.dispatch("explode", {});
     const parsed = JSON.parse(out) as { error: string };
-    expect(parsed.error).toBe("boom");
+    expect(parsed.error).toBe("redacted");
     expect(preFired).toBe(true);
+    expect(postCtx).not.toBeNull();
+    expect(postCtx!.status).toBe("error");
+    expect(postCtx!.error).toBe("boom");
+    // Pre-redaction output still carried the original boom message.
+    expect(postCtx!.output).toBe(JSON.stringify({ error: "boom" }));
+  });
+
+  test("unknown tool still fires post hooks with status=error", async () => {
+    const r = new ToolRegistry();
+    let postStatus: string | null = null;
+    r.use({
+      post(ctx) {
+        postStatus = ctx.status;
+        return {};
+      },
+    });
+
+    const out = await r.dispatch("nope-tool", {});
+    const parsed = JSON.parse(out) as { error: string };
+    expect(parsed.error).toContain("unknown tool");
+    expect(postStatus).toBe("error");
   });
 
   test("__hookCount reports registration count", () => {

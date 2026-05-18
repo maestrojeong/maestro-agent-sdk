@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { htmlToText, webFetchTool } from "@/tools/builtin/web_fetch";
+import { createWebFetchTool, htmlToText, webFetchTool } from "@/tools/builtin/web_fetch";
 
 const ORIGINAL_FETCH = globalThis.fetch;
 
@@ -157,5 +157,99 @@ describe("htmlToText", () => {
 
   test("drops HTML comments", () => {
     expect(htmlToText("<!-- secret --><p>visible</p>")).not.toContain("secret");
+  });
+});
+
+describe("createWebFetchTool — SSRF policy", () => {
+  test("denyPrivateNetworks blocks localhost hostname", async () => {
+    const calls: string[] = [];
+    globalThis.fetch = vi.fn(async (u: unknown) => {
+      calls.push(String(u));
+      return new Response("hi", { status: 200, headers: { "content-type": "text/plain" } });
+    }) as unknown as typeof fetch;
+
+    const tool = createWebFetchTool({ denyPrivateNetworks: true });
+    const out = await tool.execute({ url: "http://localhost:9999/admin" });
+    const parsed = JSON.parse(out) as { error: string; host?: string };
+    expect(parsed.error).toMatch(/private|loopback/i);
+    expect(parsed.host).toBe("localhost");
+    expect(calls).toEqual([]); // never reached fetch
+  });
+
+  test("denyPrivateNetworks blocks AWS metadata IP", async () => {
+    const calls: string[] = [];
+    globalThis.fetch = vi.fn(async (u: unknown) => {
+      calls.push(String(u));
+      return new Response("", { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const tool = createWebFetchTool({ denyPrivateNetworks: true });
+    const out = await tool.execute({ url: "http://169.254.169.254/latest/meta-data/" });
+    const parsed = JSON.parse(out) as { error: string };
+    expect(parsed.error).toMatch(/private|loopback|link-local/i);
+    expect(calls).toEqual([]);
+  });
+
+  test("denyPrivateNetworks blocks RFC1918 ranges", async () => {
+    const tool = createWebFetchTool({ denyPrivateNetworks: true });
+    for (const u of ["http://10.0.0.1/", "http://192.168.1.1/", "http://172.16.0.1/"]) {
+      const out = await tool.execute({ url: u });
+      expect(JSON.parse(out)).toHaveProperty("error");
+    }
+  });
+
+  test("denyPrivateNetworks allows public hosts through", async () => {
+    globalThis.fetch = vi.fn(async () => {
+      return new Response("ok", { status: 200, headers: { "content-type": "text/plain" } });
+    }) as unknown as typeof fetch;
+    const tool = createWebFetchTool({ denyPrivateNetworks: true });
+    const out = await tool.execute({ url: "https://example.com/x" });
+    expect(out).toContain("ok");
+  });
+
+  test("allowUrl predicate runs and can block", async () => {
+    let seenStage: string | null = null;
+    const tool = createWebFetchTool({
+      allowUrl(_u, stage) {
+        seenStage = stage;
+        return false;
+      },
+    });
+    const out = await tool.execute({ url: "https://example.com/x" });
+    expect(JSON.parse(out)).toHaveProperty("error");
+    expect(seenStage).toBe("request");
+  });
+
+  test("redirect to a private network is blocked even when public start is allowed", async () => {
+    let hops = 0;
+    globalThis.fetch = vi.fn(async (u: unknown) => {
+      hops++;
+      const href = String(u);
+      if (href.includes("example.com")) {
+        return new Response("", {
+          status: 302,
+          headers: { location: "http://127.0.0.1/admin" },
+        });
+      }
+      return new Response("should-not-reach", { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const tool = createWebFetchTool({ denyPrivateNetworks: true });
+    const out = await tool.execute({ url: "https://example.com/start" });
+    const parsed = JSON.parse(out) as { error: string };
+    expect(parsed.error).toMatch(/redirect blocked/i);
+    expect(hops).toBe(1); // first request happened, second blocked before fetch
+  });
+
+  test("maxBytes truncates body to the configured cap", async () => {
+    globalThis.fetch = vi.fn(async () => {
+      return new Response("x".repeat(1000), {
+        status: 200,
+        headers: { "content-type": "text/plain" },
+      });
+    }) as unknown as typeof fetch;
+    const tool = createWebFetchTool({ maxBytes: 100 });
+    const out = await tool.execute({ url: "https://example.com/big" });
+    expect(out).toMatch(/Length: 100 \(truncated/);
   });
 });

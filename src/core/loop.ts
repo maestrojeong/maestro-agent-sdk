@@ -6,7 +6,14 @@ import { logger } from "@/platform/logger";
 import type { ProviderContentBlock, ProviderMessage, ProviderResponse } from "@/providers/base";
 import type { EffortLevel, TokenUsage, UnifiedEvent } from "@/types";
 
-const EFFORT_LEVELS: readonly EffortLevel[] = ["minimal", "low", "medium", "high", "xhigh", "max"] as const;
+const EFFORT_LEVELS: readonly EffortLevel[] = [
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+] as const;
 
 function nextEffortLevel(current: EffortLevel | undefined): string | null {
   const idx = EFFORT_LEVELS.indexOf(current ?? "medium");
@@ -387,8 +394,12 @@ export async function* runConversation(
     usage: {
       inputTokens: usageAcc.inputTokens,
       outputTokens: usageAcc.outputTokens,
-      ...(usageAcc.cacheCreationInputTokens ? { cacheCreationInputTokens: usageAcc.cacheCreationInputTokens } : {}),
-      ...(usageAcc.cacheReadInputTokens ? { cacheReadInputTokens: usageAcc.cacheReadInputTokens } : {}),
+      ...(usageAcc.cacheCreationInputTokens
+        ? { cacheCreationInputTokens: usageAcc.cacheCreationInputTokens }
+        : {}),
+      ...(usageAcc.cacheReadInputTokens
+        ? { cacheReadInputTokens: usageAcc.cacheReadInputTokens }
+        : {}),
     },
   };
 }

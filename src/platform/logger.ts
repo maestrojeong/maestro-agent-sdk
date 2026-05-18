@@ -38,14 +38,13 @@ function makeConsoleLogger(): Logger {
   // Warn/error/fatal already went to stderr via console.warn / console.error;
   // the critical fix here is trace/debug/info which previously used
   // console.log / console.info (stdout) and broke MCP stdio transports.
-  const emit = (label: string) =>
-    (objOrMsg: Record<string, unknown> | string, msg?: string) => {
-      if (typeof objOrMsg === "string") {
-        console.error(`[${label}] ${objOrMsg}`);
-      } else {
-        console.error(`[${label}] ${msg ?? ""}`, objOrMsg);
-      }
-    };
+  const emit = (label: string) => (objOrMsg: Record<string, unknown> | string, msg?: string) => {
+    if (typeof objOrMsg === "string") {
+      console.error(`[${label}] ${objOrMsg}`);
+    } else {
+      console.error(`[${label}] ${msg ?? ""}`, objOrMsg);
+    }
+  };
   return {
     trace: emit("trace") as LogFn,
     debug: emit("debug") as LogFn,

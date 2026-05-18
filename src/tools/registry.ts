@@ -30,12 +30,29 @@ export interface PreToolUseContext {
   input: Record<string, unknown>;
 }
 
+/**
+ * Outcome category surfaced to Post hooks.
+ *   - `"ok"`      — `execute()` returned normally.
+ *   - `"blocked"` — a Pre hook short-circuited with `{ decision: "block" }`.
+ *   - `"error"`   — `execute()` threw (or a Pre hook itself threw, which is
+ *                   treated as an error so audit hooks see it).
+ */
+export type ToolDispatchStatus = "ok" | "blocked" | "error";
+
 export interface PostToolUseContext {
   toolName: string;
   /** The input the tool actually saw — already mutated if a Pre hook modified. */
   input: Record<string, unknown>;
-  /** The string returned by `execute()` (or by an upstream Post hook). */
+  /** The string returned by `execute()`, the synthesized `{error}` payload for
+   *  a block/throw, or the value left by an upstream Post hook. Post hooks
+   *  ALWAYS run, including on `blocked`/`error`, so telemetry/audit can
+   *  observe failure cases. */
   output: string;
+  /** Outcome category; `"ok"` for normal success. */
+  status: ToolDispatchStatus;
+  /** Original error message when `status` is `"blocked"` or `"error"`. Absent
+   *  on success. */
+  error?: string;
 }
 
 /**
@@ -114,23 +131,43 @@ export class ToolRegistry {
   /**
    * Dispatch through the full hook chain:
    *   1. Pre hooks in order. First `block` wins → wrapped as {error}; skip
-   *      execute() and skip every Post hook (no clean result to process).
-   *   2. `execute()`. Thrown errors → {error}; Post hooks skipped.
+   *      `execute()` but still run Post hooks with `status: "blocked"` so
+   *      audit / telemetry hooks observe denied calls.
+   *   2. `execute()`. Thrown errors → wrapped as {error} with
+   *      `status: "error"`; Post hooks still run.
    *   3. Post hooks in order; each may mutate output and/or emit a log.
    *      A Post hook that throws is swallowed so it can't poison the result.
+   *
+   * Why Post hooks run on failure too: typical use cases (audit logging,
+   * redaction, metrics) need to see blocked/errored calls — that's where
+   * the interesting signal lives. The previous behaviour silently dropped
+   * those events.
    */
   async dispatch(name: string, input: Record<string, unknown>): Promise<string> {
     const handler = this.tools.get(name);
     if (!handler) {
-      return JSON.stringify({ error: `unknown tool: ${name}` });
+      const output = JSON.stringify({ error: `unknown tool: ${name}` });
+      await this.runPostHooks(name, input, output, "error", `unknown tool: ${name}`);
+      return output;
     }
 
     let currentInput = input;
     for (const hook of this.hooks) {
       if (!hook.pre) continue;
-      const decision = await hook.pre({ toolName: name, input: currentInput });
+      let decision: PreToolUseDecision;
+      try {
+        decision = await hook.pre({ toolName: name, input: currentInput });
+      } catch (e) {
+        // A Pre hook that throws is treated as an error outcome. Surfaces to
+        // Post hooks (audit) and to the model (so it can react to the
+        // failure instead of looping).
+        const msg = e instanceof Error ? e.message : String(e);
+        const output = JSON.stringify({ error: `pre-hook error: ${msg}` });
+        return await this.runPostHooks(name, currentInput, output, "error", msg);
+      }
       if (decision.decision === "block") {
-        return JSON.stringify({ error: decision.error });
+        const output = JSON.stringify({ error: decision.error });
+        return await this.runPostHooks(name, currentInput, output, "blocked", decision.error);
       }
       if (decision.decision === "modify") {
         currentInput = decision.input;
@@ -138,17 +175,43 @@ export class ToolRegistry {
     }
 
     let output: string;
+    let status: ToolDispatchStatus = "ok";
+    let error: string | undefined;
     try {
       output = await handler.execute(currentInput);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      return JSON.stringify({ error: msg });
+      output = JSON.stringify({ error: msg });
+      status = "error";
+      error = msg;
     }
 
+    return await this.runPostHooks(name, currentInput, output, status, error);
+  }
+
+  /**
+   * Run every Post hook against a fixed input/output pair and return the
+   * (possibly mutated) output. Hooks that throw are swallowed so a buggy
+   * telemetry sink can't corrupt the user-visible result.
+   */
+  private async runPostHooks(
+    name: string,
+    input: Record<string, unknown>,
+    initialOutput: string,
+    status: ToolDispatchStatus,
+    error?: string,
+  ): Promise<string> {
+    let output = initialOutput;
     for (const hook of this.hooks) {
       if (!hook.post) continue;
       try {
-        const result = await hook.post({ toolName: name, input: currentInput, output });
+        const result = await hook.post({
+          toolName: name,
+          input,
+          output,
+          status,
+          ...(error !== undefined ? { error } : {}),
+        });
         if (typeof result.output === "string") {
           output = result.output;
         }
@@ -160,7 +223,6 @@ export class ToolRegistry {
         void e;
       }
     }
-
     return output;
   }
 

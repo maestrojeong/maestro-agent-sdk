@@ -65,9 +65,9 @@ let bootstrapped = false;
 
 const _silent = process.env.MAESTRO_SDK_SILENT_BOOTSTRAP === "1";
 const _log = {
-  debug: _silent ? (() => {}) as typeof logger.debug : logger.debug.bind(logger),
-  info: _silent ? (() => {}) as typeof logger.info : logger.info.bind(logger),
-  warn: _silent ? (() => {}) as typeof logger.warn : logger.warn.bind(logger),
+  debug: _silent ? ((() => {}) as typeof logger.debug) : logger.debug.bind(logger),
+  info: _silent ? ((() => {}) as typeof logger.info) : logger.info.bind(logger),
+  warn: _silent ? ((() => {}) as typeof logger.warn) : logger.warn.bind(logger),
 };
 
 export function bootstrapHostPath(): void {
@@ -95,10 +95,7 @@ export function bootstrapHostPath(): void {
   }
 
   if (result.error) {
-    _log.warn(
-      { err: result.error, shell },
-      "env-bootstrap: login shell invocation failed",
-    );
+    _log.warn({ err: result.error, shell }, "env-bootstrap: login shell invocation failed");
     return;
   }
   if (result.status !== 0) {
@@ -112,7 +109,10 @@ export function bootstrapHostPath(): void {
   const stdout = String(result.stdout ?? "");
   // Use the last non-empty line — defends against rc-file greetings and
   // any other startup output that lands above our `echo $PATH`.
-  const lines = stdout.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
+  const lines = stdout
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
   const loginPath = lines[lines.length - 1] ?? "";
   if (!loginPath) {
     _log.warn({}, "env-bootstrap: login shell returned empty PATH");
