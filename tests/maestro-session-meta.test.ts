@@ -78,7 +78,12 @@ describe("v0.1.5 rollout meta header — save / load round-trip", () => {
         { role: "user", content: "hi" },
         { role: "assistant", content: [{ type: "text", text: "yo" }] },
       ],
-      { cwd: "/some/path", userId: "u-42", metadata: { topicId: "topic-x" } },
+      {
+        cwd: "/some/path",
+        userId: "u-42",
+        skillsDir: "/some/path/.skills",
+        metadata: { topicId: "topic-x" },
+      },
     );
     const lines = readLines(sid);
     expect(lines).toHaveLength(3);
@@ -87,6 +92,7 @@ describe("v0.1.5 rollout meta header — save / load round-trip", () => {
     expect(head._meta.version).toBe(1);
     expect(head._meta.cwd).toBe("/some/path");
     expect(head._meta.userId).toBe("u-42");
+    expect(head._meta.skillsDir).toBe("/some/path/.skills");
     expect(head._meta.metadata).toEqual({ topicId: "topic-x" });
     expect(head._meta.sdkVersion).toBe(MAESTRO_SDK_VERSION);
     expect(typeof head._meta.createdAt).toBe("string");
@@ -94,6 +100,24 @@ describe("v0.1.5 rollout meta header — save / load round-trip", () => {
 
     const first = JSON.parse(lines[1]);
     expect(first.role).toBe("user");
+  });
+
+  test("skillsDir is preserved across re-saves like other meta fields", () => {
+    const sid = uuid();
+    tracked.push(sid);
+    saveMaestroSession(sid, [{ role: "user", content: "v1" }], {
+      cwd: "/proj/a",
+      skillsDir: "/proj/a/.skills",
+    });
+    const first = loadMaestroSessionMeta(sid);
+    expect(first?.skillsDir).toBe("/proj/a/.skills");
+    // Re-save without meta — prior skillsDir should ride along.
+    saveMaestroSession(sid, [
+      { role: "user", content: "v1" },
+      { role: "assistant", content: [{ type: "text", text: "ack" }] },
+    ]);
+    const second = loadMaestroSessionMeta(sid);
+    expect(second?.skillsDir).toBe("/proj/a/.skills");
   });
 
   test("loadMaestroSessionMeta returns null for missing file", () => {

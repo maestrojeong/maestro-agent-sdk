@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { DATA_DIR } from "@/platform/config";
 import { AIAgent } from "@/core/agent";
 import { runConversation } from "@/core/loop";
 import { type MaestroMcpPool, registerMcpTools, startMcpPool } from "@/mcp/pool";
@@ -114,10 +113,13 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
   // Source-dir resolution order (highest precedence first):
   //   1. `opts.skillsDir` — per-call override, lets a host serve multiple
   //      topics with disjoint skill sets in one process.
-  //   2. `MAESTRO_SKILL_DIR` env var — process-wide host opt-in.
-  //   3. `<DATA_DIR>/skills` — built-in default, typically `~/.maestro/skills`.
-  // SDK ships with no bundled SKILL.md files — an empty catalog is the
-  // expected state until a host populates one.
+  //   2. `MAESTRO_SKILL_DIR` env var — process-wide host opt-in (cross-
+  //      project shared catalog).
+  //   3. `<cwd>/.skills/` — per-workspace default. Skills live alongside
+  //      the project the agent is working on; the SDK never writes into a
+  //      global directory unless the host opts in via 1 or 2. Empty dir is
+  //      the expected starting state — agents populate it autonomously
+  //      (or a host seeds it from a template).
   //
   // After loading we apply `opts.allowedSkills` (if provided) as a name
   // whitelist BEFORE curation, so curator + index-builder + skill_view all
@@ -400,6 +402,7 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
         // don't reset the "first write" timestamp.
         saveMaestroSession(sessionId, safePrefix, {
           cwd: opts.cwd,
+          skillsDir,
           ...(opts.userId !== undefined ? { userId: opts.userId } : {}),
           ...(opts.sessionMetadata !== undefined ? { metadata: opts.sessionMetadata } : {}),
         });
@@ -469,12 +472,27 @@ export function iterationBudgetLine(remaining: number, max: number): string {
 /**
  * Resolve the directory the skill catalog should be loaded from for this
  * call. Precedence: per-call `opts.skillsDir` > `MAESTRO_SKILL_DIR` env >
- * `<DATA_DIR>/skills` default. Exported so hosts can recompute the same
- * value (e.g. for a pre-warm step that calls `loadSkillsCached` ahead of a
- * provider invocation).
+ * `<cwd>/.skills` default.
+ *
+ * The per-cwd `.skills/` default treats every session's working directory
+ * as its own skill scope — agents create, edit, and consume SKILL.md files
+ * inside the workspace they're operating on, with no global side effects
+ * on `~/.maestro/skills/` or on a peer SDK like Claude Code's
+ * `~/.claude/skills/`. The result is project-local autonomy: a `.skills/`
+ * dir checks into source control with the project, ships with the repo, and
+ * sub-agents inherit the parent's catalog because they share the cwd.
+ *
+ * To opt back into a shared / global catalog, set `MAESTRO_SKILL_DIR` or
+ * pass an explicit `opts.skillsDir` — both override the per-cwd default.
+ * No automatic fallback from `.skills/` to a global directory: the SDK
+ * treats "empty per-cwd catalog" as the intended state until the host or
+ * agent populates it.
+ *
+ * Exported so hosts can recompute the same value (e.g. for a pre-warm
+ * step that calls `loadSkillsCached` ahead of a provider invocation).
  */
-export function resolveSkillsDir(opts: { skillsDir?: string }): string {
-  return opts.skillsDir ?? process.env.MAESTRO_SKILL_DIR ?? join(DATA_DIR, "skills");
+export function resolveSkillsDir(opts: { skillsDir?: string; cwd: string }): string {
+  return opts.skillsDir ?? process.env.MAESTRO_SKILL_DIR ?? join(opts.cwd, ".skills");
 }
 
 /**

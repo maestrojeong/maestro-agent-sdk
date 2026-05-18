@@ -96,6 +96,11 @@ export interface MaestroSessionMeta {
   createdAt: string;
   /** `MAESTRO_SDK_VERSION` at write time. Useful for cross-version debugging. */
   sdkVersion: string;
+  /** Resolved skills directory the live loop loaded from (per-call override,
+   *  env var, or `<cwd>/.skills` default). Recorded so a later forensic
+   *  sweep can answer "which catalog did this session see?" without
+   *  reconstructing the precedence chain. Updated on every save. */
+  skillsDir?: string;
   /** Opaque host-controlled bag (topicId, groupId, anything). Passed through
    *  verbatim. The SDK only writes / reads it as a JSON value. */
   metadata?: Record<string, unknown>;
@@ -191,6 +196,7 @@ export interface SaveSessionMetaInput {
   cwd?: string;
   userId?: string;
   createdAt?: string;
+  skillsDir?: string;
   metadata?: Record<string, unknown>;
 }
 
@@ -211,6 +217,8 @@ function buildMeta(sessionId: string, input: SaveSessionMetaInput): MaestroSessi
   };
   const userId = input.userId ?? existing?.userId;
   if (userId !== undefined) meta.userId = userId;
+  const skillsDir = input.skillsDir ?? existing?.skillsDir;
+  if (skillsDir !== undefined) meta.skillsDir = skillsDir;
   const metadata = input.metadata ?? existing?.metadata;
   if (metadata !== undefined) meta.metadata = metadata;
   return meta;

@@ -42,23 +42,25 @@ afterEach(() => {
 });
 
 describe("resolveSkillsDir precedence", () => {
-  test("opts.skillsDir wins over env and default", () => {
+  test("opts.skillsDir wins over env and per-cwd default", () => {
     process.env.MAESTRO_SKILL_DIR = "/env/value";
-    expect(resolveSkillsDir({ skillsDir: "/per/call" })).toBe("/per/call");
+    expect(resolveSkillsDir({ skillsDir: "/per/call", cwd: "/proj/x" })).toBe("/per/call");
   });
 
-  test("env var wins when opts.skillsDir is omitted", () => {
+  test("env var wins over per-cwd default when opts.skillsDir is omitted", () => {
     process.env.MAESTRO_SKILL_DIR = "/env/value";
-    expect(resolveSkillsDir({})).toBe("/env/value");
+    expect(resolveSkillsDir({ cwd: "/proj/x" })).toBe("/env/value");
   });
 
-  test("falls back to DATA_DIR/skills when neither opts nor env is set", () => {
+  test("falls back to <cwd>/.skills when neither opts nor env is set", () => {
     delete process.env.MAESTRO_SKILL_DIR;
-    const resolved = resolveSkillsDir({});
-    // Default is always under DATA_DIR; we don't pin the absolute root because
-    // DATA_DIR resolves at module load and the host may have overridden it
-    // before the test process boots. Just lock the suffix.
-    expect(resolved.endsWith(`${require("node:path").sep}skills`)).toBe(true);
+    expect(resolveSkillsDir({ cwd: "/proj/x" })).toBe("/proj/x/.skills");
+  });
+
+  test("per-cwd default tracks the cwd value (different cwd → different skills dir)", () => {
+    delete process.env.MAESTRO_SKILL_DIR;
+    expect(resolveSkillsDir({ cwd: "/a" })).toBe("/a/.skills");
+    expect(resolveSkillsDir({ cwd: "/b" })).toBe("/b/.skills");
   });
 
   test("explicit empty-string opts.skillsDir falls through to env (truthiness)", () => {
@@ -69,7 +71,7 @@ describe("resolveSkillsDir precedence", () => {
     // We treat "" as "not set" via the `??` operator, which keeps empty
     // strings; that's a known quirk. The test asserts current behavior so a
     // future refactor that swaps to `||` is a conscious choice.
-    expect(resolveSkillsDir({ skillsDir: "" })).toBe(""); // `??` keeps ""
+    expect(resolveSkillsDir({ skillsDir: "", cwd: "/proj/x" })).toBe(""); // `??` keeps ""
   });
 });
 
@@ -137,11 +139,24 @@ describe("end-to-end skillsDir routing via loader", () => {
     writeSkill(skillsRoot, "general", "alpha");
     writeSkill(skillsRoot, "general", "beta");
 
-    const dir = resolveSkillsDir({ skillsDir: skillsRoot });
+    const dir = resolveSkillsDir({ skillsDir: skillsRoot, cwd: "/unused-when-explicit" });
     expect(dir).toBe(skillsRoot);
     const skills = loadSkills(dir);
     const names = skills.map((s) => s.name).sort();
     expect(names).toEqual(["alpha", "beta"]);
+  });
+
+  test("per-cwd default: <cwd>/.skills resolves and loads when populated", () => {
+    delete process.env.MAESTRO_SKILL_DIR;
+    const cwd = mkdtempSync(join(tmpdir(), "maestro-cwd-skills-test-"));
+    tracked.push(cwd);
+    const dotSkills = join(cwd, ".skills");
+    writeSkill(dotSkills, "general", "from-cwd");
+
+    const resolved = resolveSkillsDir({ cwd });
+    expect(resolved).toBe(dotSkills);
+    const skills = loadSkills(resolved);
+    expect(skills.map((s) => s.name)).toEqual(["from-cwd"]);
   });
 
   test("filter + load round-trip — only allowlisted survive", () => {
