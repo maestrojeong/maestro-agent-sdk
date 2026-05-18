@@ -195,6 +195,203 @@ describe("skill_write — content lint warnings", () => {
   });
 });
 
+describe("skill_write — files map (progressive-disclosure assets)", () => {
+  test("writes manifest + adjacent assets in one call", async () => {
+    const skillsDir = makeSkillsRoot();
+    const tool = createSkillWriteTool({ skillsDir });
+    const out = JSON.parse(
+      await tool.execute({
+        name: "ocr-bundle",
+        content: clawgramBody("OCR Bundle", "트리거 키워드"),
+        files: {
+          "scripts/run.sh": "#!/bin/bash\necho hi\n",
+          "templates/report.html": "<!doctype html><html></html>",
+          "references/api.md": "# API\n",
+        },
+      }),
+    );
+    expect(out.ok).toBe(true);
+    expect(existsSync(out.path)).toBe(true);
+    expect(existsSync(join(skillsDir, "ocr-bundle", "scripts", "run.sh"))).toBe(true);
+    expect(existsSync(join(skillsDir, "ocr-bundle", "templates", "report.html"))).toBe(true);
+    expect(existsSync(join(skillsDir, "ocr-bundle", "references", "api.md"))).toBe(true);
+    expect(out.files).toHaveLength(3);
+    // Total bytes reflects manifest + every file.
+    expect(out.bytes).toBeGreaterThan(0);
+    // Contents preserved verbatim (no trailing-newline normalization on
+    // adjacent assets — agent decides format).
+    expect(readFileSync(join(skillsDir, "ocr-bundle", "scripts", "run.sh"), "utf8")).toBe(
+      "#!/bin/bash\necho hi\n",
+    );
+    expect(readFileSync(join(skillsDir, "ocr-bundle", "templates", "report.html"), "utf8")).toBe(
+      "<!doctype html><html></html>",
+    );
+  });
+
+  test("empty files map is fine (acts like manifest-only write)", async () => {
+    const tool = createSkillWriteTool({ skillsDir: makeSkillsRoot() });
+    const out = JSON.parse(
+      await tool.execute({
+        name: "no-files",
+        content: clawgramBody("T", "trigger"),
+        files: {},
+      }),
+    );
+    expect(out.ok).toBe(true);
+    expect(out.files).toBeUndefined();
+  });
+
+  test("creates nested asset directories automatically", async () => {
+    const skillsDir = makeSkillsRoot();
+    const tool = createSkillWriteTool({ skillsDir });
+    const out = JSON.parse(
+      await tool.execute({
+        name: "deep",
+        content: clawgramBody("T", "trigger"),
+        files: {
+          "a/b/c/d/leaf.txt": "deep",
+        },
+      }),
+    );
+    expect(out.ok).toBe(true);
+    expect(readFileSync(join(skillsDir, "deep", "a", "b", "c", "d", "leaf.txt"), "utf8")).toBe(
+      "deep",
+    );
+  });
+
+  test("relative path validation rejects '..' traversal", async () => {
+    const tool = createSkillWriteTool({ skillsDir: makeSkillsRoot() });
+    const out = JSON.parse(
+      await tool.execute({
+        name: "escape",
+        content: clawgramBody("T", "trigger"),
+        files: {
+          "../escape.txt": "should not write",
+        },
+      }),
+    );
+    expect(out.error).toMatch(/escapes the skill folder/);
+  });
+
+  test("relative path validation rejects mid-path '..'", async () => {
+    const tool = createSkillWriteTool({ skillsDir: makeSkillsRoot() });
+    const out = JSON.parse(
+      await tool.execute({
+        name: "escape2",
+        content: clawgramBody("T", "trigger"),
+        files: {
+          "scripts/../../../etc/passwd": "should not write",
+        },
+      }),
+    );
+    expect(out.error).toMatch(/escapes the skill folder/);
+  });
+
+  test("rejects absolute paths in files map", async () => {
+    const tool = createSkillWriteTool({ skillsDir: makeSkillsRoot() });
+    const out = JSON.parse(
+      await tool.execute({
+        name: "abs",
+        content: clawgramBody("T", "trigger"),
+        files: {
+          "/tmp/leaked": "nope",
+        },
+      }),
+    );
+    expect(out.error).toMatch(/must be relative/);
+  });
+
+  test("rejects backslash paths (forward-slash discipline)", async () => {
+    const tool = createSkillWriteTool({ skillsDir: makeSkillsRoot() });
+    const out = JSON.parse(
+      await tool.execute({
+        name: "bs",
+        content: clawgramBody("T", "trigger"),
+        files: {
+          "scripts\\foo.sh": "nope",
+        },
+      }),
+    );
+    expect(out.error).toMatch(/forward slashes/);
+  });
+
+  test("rejects 'skill.md' in files (reserved for manifest)", async () => {
+    const tool = createSkillWriteTool({ skillsDir: makeSkillsRoot() });
+    const out = JSON.parse(
+      await tool.execute({
+        name: "reserved",
+        content: clawgramBody("T", "trigger"),
+        files: {
+          "skill.md": "should pass via content, not files",
+        },
+      }),
+    );
+    expect(out.error).toMatch(/may not include 'skill.md'/);
+  });
+
+  test("rejects non-string file body", async () => {
+    const tool = createSkillWriteTool({ skillsDir: makeSkillsRoot() });
+    const out = JSON.parse(
+      await tool.execute({
+        name: "badbody",
+        content: clawgramBody("T", "trigger"),
+        files: {
+          "ok.txt": 42 as unknown as string,
+        },
+      }),
+    );
+    expect(out.error).toMatch(/must be a string/);
+  });
+
+  test("collision in adjacent file aborts entire batch when overwrite=false", async () => {
+    const skillsDir = makeSkillsRoot();
+    const tool = createSkillWriteTool({ skillsDir });
+    // Pre-create one of the targets.
+    const skillFolder = join(skillsDir, "collide");
+    mkdirSync(join(skillFolder, "scripts"), { recursive: true });
+    writeFileSync(join(skillFolder, "scripts", "existing.sh"), "old");
+
+    const out = JSON.parse(
+      await tool.execute({
+        name: "collide",
+        content: clawgramBody("T", "trigger"),
+        files: {
+          "scripts/new.sh": "new",
+          "scripts/existing.sh": "should not overwrite",
+        },
+      }),
+    );
+    expect(out.error).toMatch(/already exists/);
+    // Neither sibling was written (atomic abort BEFORE any disk touch in
+    // Phase 2 — manifest itself doesn't get created either).
+    expect(existsSync(join(skillFolder, "scripts", "new.sh"))).toBe(false);
+    expect(readFileSync(join(skillFolder, "scripts", "existing.sh"), "utf8")).toBe("old");
+  });
+
+  test("overwrite=true replaces both manifest and adjacent files", async () => {
+    const skillsDir = makeSkillsRoot();
+    const tool = createSkillWriteTool({ skillsDir });
+    await tool.execute({
+      name: "rewrite",
+      content: clawgramBody("T1", "old"),
+      files: { "scripts/run.sh": "old script" },
+    });
+    const out = JSON.parse(
+      await tool.execute({
+        name: "rewrite",
+        content: clawgramBody("T2", "new"),
+        files: { "scripts/run.sh": "new script" },
+        overwrite: true,
+      }),
+    );
+    expect(out.ok).toBe(true);
+    expect(out.action).toBe("overwritten");
+    expect(readFileSync(join(skillsDir, "rewrite", "scripts", "run.sh"), "utf8")).toBe(
+      "new script",
+    );
+  });
+});
+
 describe("skill_write + loader round-trip", () => {
   test("written skill surfaces in loadSkills with the right name + description", async () => {
     const skillsDir = makeSkillsRoot();
