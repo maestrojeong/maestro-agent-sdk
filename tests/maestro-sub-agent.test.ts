@@ -39,14 +39,18 @@ describe("Agent tool — schema + validation", () => {
     });
   }
 
-  test("schema exposes only subagent_type + prompt (no description field)", () => {
+  test("schema requires subagent_type + prompt, accepts optional description", () => {
+    // `description` was added in v0.1.8 for claude-SDK parity — it surfaces
+    // to logs / permission UIs but does NOT affect execution and is NOT in
+    // `required`. The schema declares all three properties; only
+    // subagent_type + prompt are required.
     const tool = makeTool();
     expect(tool.schema.name).toBe("Agent");
     expect(tool.schema.input_schema.required).toEqual(["subagent_type", "prompt"]);
     const props = tool.schema.input_schema.properties as Record<string, unknown>;
     expect(props.subagent_type).toBeDefined();
     expect(props.prompt).toBeDefined();
-    expect(props.description).toBeUndefined();
+    expect(props.description).toBeDefined();
   });
 
   test("parallelSafe is false", () => {
