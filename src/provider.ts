@@ -27,6 +27,7 @@ import { bashTool } from "@/tools/builtin/bash";
 import { createEditTool } from "@/tools/builtin/edit";
 import { createReadTool } from "@/tools/builtin/read";
 import { createSkillViewTool } from "@/tools/builtin/skill_view";
+import { createSkillWriteTool } from "@/tools/builtin/skill_write";
 import { createTodoWriteTool } from "@/tools/builtin/todo_write";
 import { webFetchTool } from "@/tools/builtin/web_fetch";
 import { createWriteTool } from "@/tools/builtin/write";
@@ -131,6 +132,17 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
   // Failures (rootDir missing, unreadable, every file malformed) reduce to an
   // empty catalog — the loop still runs with just bash + MCP tools.
   const skillsDir = resolveSkillsDir(opts);
+
+  // skill_write: agent-autonomous skill authoring. Registered up front
+  // (independent of catalog state) so the agent can author the first skill
+  // into an empty `.skills/<key>/` directory — without this the cold-start
+  // "no skills yet, but the agent wants to bootstrap one" path would have
+  // no entry point. Writes land at `<skillsDir>/<name>/skill.md` so the
+  // resolved (cwd, skillKey) routing automatically scopes new skills to
+  // the current profile. Cache invalidation inside the tool means the
+  // next provider call picks up the write.
+  tools.register(createSkillWriteTool({ skillsDir }));
+
   let skillsBlock = "";
   // Hoisted to outer scope so the Agent tool (registered below, after
   // model/effort resolve) can pass the same skill catalog to sub-agents.

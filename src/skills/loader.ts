@@ -3,25 +3,31 @@ import { basename, join, sep } from "node:path";
 import { logger } from "@/platform/logger";
 
 /**
- * SKILL.md frontmatter loader for the Maestro TS port.
+ * Skill loader for the Maestro TS port — accepts two on-disk conventions:
  *
- * Mirrors the v0.13.0 `agent/skill_utils.py::parse_frontmatter` contract: a
- * SKILL.md file starts with a `---` fenced YAML block containing at least
- * `name` + `description`, optionally `platforms`, then a markdown body the
- * model consumes via `skill_view`.
+ *   1. **Upstream v0.13.0** — `SKILL.md` (UPPERCASE) with a leading
+ *      `---\nYAML\n---\n` frontmatter block carrying `name` + `description`
+ *      and an optional `platforms` filter.
  *
- * We don't pull in a full YAML dep (gray-matter / yaml) — SKILL.md
- * frontmatter is small and stable in shape (top-level scalars + a flat
- * `platforms: [...]` list), and the upstream `parse_frontmatter` already
- * ships a minimal fallback for malformed YAML. We use that same fallback
- * shape exclusively, which keeps the surface area zero-dep and covers every
- * real-world SKILL.md in the v0.13.0 snapshot.
+ *   2. **Clawgram body-based** — `skill.md` (lowercase) with no YAML
+ *      block; the first `# Heading` is treated as the display title and
+ *      a `> **Description**: ...` blockquote on a single line carries the
+ *      trigger keywords / summary. Canonical `name` falls back to the
+ *      parent directory's kebab-case identifier so the rest of the
+ *      pipeline (index, skill_view, usage counters) is convention-agnostic.
  *
- * Directory layout follows upstream:
- *     <root>/<category>/<skill-name>/SKILL.md
+ * Both filename casings and both metadata sources are merged transparently
+ * — a SKILL.md with frontmatter wins on conflicting fields, and a project
+ * can mix the two styles in the same `.skills/<key>/` tree without
+ * configuration. The full YAML parser is still avoided; the minimal
+ * fallback parser (top-level scalars + flat `platforms: [...]` list)
+ * covers every real-world frontmatter we've seen.
+ *
+ * Directory layout (both styles):
+ *     <root>/<category>/<skill-name>/{SKILL.md|skill.md}
  * The penultimate path segment is treated as `category` (used for the
- * Skills index grouping); a SKILL.md at the root level is bucketed under
- * "general".
+ * Skills index grouping); a skill file at the root level is bucketed
+ * under "general".
  *
  * Filters:
  *   - Hidden / build dirs (`.git`, `.github`, `.archive`, `.hub`) are
@@ -56,11 +62,16 @@ export interface SkillEntry {
  *  `scan_skill_commands` skip set. */
 const SKIP_DIRS = new Set([".git", ".github", ".hub", ".archive", "node_modules"]);
 
-/** Description length cap for the rendered index. Upstream uses 80; the SDK
- *  empirically settled on 60 to keep the system-prompt block tight
- *  (~6K tokens hard ceiling once the catalog has 60+ skills). The full
- *  description survives in `frontmatter.description` for skill_view. */
-export const SKILL_INDEX_DESCRIPTION_CAP = 60;
+/** Description length cap for the rendered index. Raised from 60 → 300 in
+ *  v0.1.5 because the original 60-char ceiling truncated the "trigger
+ *  keywords" line that clawgram-style skills rely on for activation —
+ *  hosts intentionally pack a comma-separated list of search terms into
+ *  the description, and chopping it at 60 chars regularly lost half the
+ *  keywords. 300 is generous enough that every real-world description we
+ *  audited fits intact, while still keeping the per-skill system-prompt
+ *  footprint bounded if a runaway author writes a 5KB description. The
+ *  full description still ships with `skill_view` for the body view. */
+export const SKILL_INDEX_DESCRIPTION_CAP = 300;
 
 /**
  * Walk `rootDir` recursively and return one `SkillEntry` per SKILL.md found,
@@ -88,6 +99,13 @@ export function loadSkills(rootDir: string): SkillEntry[] {
   return out;
 }
 
+/** Filenames recognized as skill manifests. SKILL.md is upstream v0.13.0;
+ *  skill.md is the clawgram convention. Both are accepted at the same
+ *  layout position, and if a directory somehow contains both (mixed-style
+ *  hand-edit), SKILL.md wins because it's the original format and we
+ *  don't want a silent semantic shift if a host migrates incrementally. */
+const SKILL_FILENAMES = ["SKILL.md", "skill.md"] as const;
+
 function walk(root: string, dir: string, out: SkillEntry[], seenNames: Set<string>): void {
   let entries: string[];
   try {
@@ -109,7 +127,9 @@ function walk(root: string, dir: string, out: SkillEntry[], seenNames: Set<strin
       walk(root, path, out, seenNames);
       continue;
     }
-    if (!stat.isFile() || basename(path) !== "SKILL.md") continue;
+    if (!stat.isFile()) continue;
+    const base = basename(path);
+    if (!SKILL_FILENAMES.includes(base as (typeof SKILL_FILENAMES)[number])) continue;
 
     const entry = parseSkillFile(root, path);
     if (!entry) continue;
@@ -133,7 +153,9 @@ function parseSkillFile(root: string, mdPath: string): SkillEntry | null {
   }
   const { frontmatter, body } = parseFrontmatter(raw);
 
-  const skillDir = mdPath.slice(0, -"/SKILL.md".length);
+  // Strip the trailing skill-file basename to recover the skill's directory,
+  // regardless of which casing was used (SKILL.md vs skill.md).
+  const skillDir = mdPath.slice(0, -("/" + basename(mdPath)).length);
   const dirName = basename(skillDir);
   const name = (frontmatter.name ?? dirName).trim();
   if (!name) return null;
@@ -144,14 +166,21 @@ function parseSkillFile(root: string, mdPath: string): SkillEntry | null {
   const parts = rel.split(sep).filter(Boolean);
   const category = parts.length > 1 ? parts.slice(0, -1).join("/") : "general";
 
-  // Description: prefer frontmatter, fall back to the first non-blank,
-  // non-heading line of the body (upstream same fallback). Empty string is
-  // valid — index-builder renders it without the `: ...` suffix.
+  // Description resolution order:
+  //   1. YAML frontmatter `description:` (upstream v0.13.0 convention)
+  //   2. `> **Description**: ...` blockquote anywhere in the body
+  //      (clawgram body-based convention — single line, optional bold,
+  //      case-insensitive label)
+  //   3. First non-blank, non-heading, non-blockquote line of the body
+  //      (last-resort fallback so a SKILL.md without either still surfaces
+  //      something useful in the index)
+  // Empty string is valid — index-builder renders without the `: ...` suffix.
   let description = (frontmatter.description ?? "").trim();
+  if (!description) description = extractBlockquoteDescription(body);
   if (!description) {
     for (const line of body.split("\n")) {
       const t = line.trim();
-      if (!t || t.startsWith("#")) continue;
+      if (!t || t.startsWith("#") || t.startsWith(">")) continue;
       description = t;
       break;
     }
@@ -168,6 +197,27 @@ function parseSkillFile(root: string, mdPath: string): SkillEntry | null {
     raw,
     frontmatter,
   };
+}
+
+/**
+ * Pull a `> **Description**: ...` (or `> Description: ...`) blockquote out
+ * of a markdown body. Matches the clawgram convention where a single-line
+ * blockquote near the top of the file carries the trigger keywords.
+ *
+ * Case-insensitive on the label, tolerant of either `**Description**` or
+ * plain `Description`. Only the first match is returned — multi-line
+ * blockquotes get joined into one line by trimming trailing whitespace and
+ * collapsing inner newlines.
+ *
+ * Returns "" when no blockquote matches, so the caller can decide whether
+ * to fall back to a different source.
+ */
+export function extractBlockquoteDescription(body: string): string {
+  // ^> +(\*\*)?Description(\*\*)?:?\s*(rest of line)
+  const re = /^[ \t]*>[ \t]*(?:\*\*)?\s*description\s*(?:\*\*)?[ \t]*:?[ \t]*(.+)$/im;
+  const m = re.exec(body);
+  if (!m) return "";
+  return m[1].replace(/\s+/g, " ").trim();
 }
 
 /**

@@ -34,6 +34,7 @@ export { createWriteTool } from "@/tools/builtin/write";
 export { createEditTool } from "@/tools/builtin/edit";
 export { createTodoWriteTool } from "@/tools/builtin/todo_write";
 export { createSkillViewTool } from "@/tools/builtin/skill_view";
+export { createSkillWriteTool } from "@/tools/builtin/skill_write";
 export { createAgentTool } from "@/tools/builtin/agent";
 export { getFileStateTracker, dropFileStateTracker } from "@/tools/file-state";
 
