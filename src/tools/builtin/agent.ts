@@ -8,12 +8,15 @@ import type { ToolHandler } from "@/tools/registry";
  * intermediate text, and the sub-agent's own session id are not surfaced
  * mid-stream. This is the same contract Claude Code's Task tool exposes.
  *
- * Two scoped types in v1:
+ * Three scoped types:
  *   - `general` — full builtin toolkit (bash + Read + Write + Edit + MultiEdit +
  *     Glob + Grep + WebFetch + skill_view). Use for self-contained units of work.
  *   - `explore` — read-only (Read + Glob + Grep + WebFetch + skill_view). Use for
  *     finding / surveying / reporting tasks where you don't want the
  *     sub-agent mutating files by accident.
+ *   - `plan`    — architect mode (bash [read-only] + Read + Glob + Grep + WebFetch +
+ *     skill_view). Use BEFORE implementing: produces a structured plan document
+ *     (goal / affected files / step-by-step / trade-offs / risks). No write/edit.
  *
  * `parallelSafe: false` — sub-agent invocation spawns a child loop with
  * side effects (file writes for `general`, MCP-less Anthropic API calls
@@ -49,7 +52,7 @@ export interface AgentToolFactoryOptions {
   >;
 }
 
-const VALID_TYPES = new Set<SubagentType>(["general", "explore"]);
+const VALID_TYPES = new Set<SubagentType>(["general", "explore", "plan"]);
 
 export function createAgentTool(opts: AgentToolFactoryOptions): ToolHandler {
   return {
@@ -60,7 +63,8 @@ export function createAgentTool(opts: AgentToolFactoryOptions): ToolHandler {
         "Spawn a focused sub-agent to do ONE delegated task and return its final text. " +
         "The sub-agent has its own context — your tool calls, files-Read state, and todo list " +
         "are NOT shared with it. Use `general` for self-contained work that may need bash/Write/Edit, " +
-        "and `explore` for read-only surveys (Read/Glob/Grep/WebFetch/skill_view only). " +
+        "and `explore` for read-only surveys (Read/Glob/Grep/WebFetch/skill_view only), " +
+        "and `plan` for pre-implementation architecture planning (bash[read-only]/Read/Glob/Grep/WebFetch/skill_view — no write/edit). " +
         "The sub-agent cannot spawn its own sub-agents (no recursion). Pass a self-contained " +
         "prompt — the sub-agent sees ONLY that prompt and the inherited system context.",
       input_schema: {
@@ -77,7 +81,8 @@ export function createAgentTool(opts: AgentToolFactoryOptions): ToolHandler {
             type: "string",
             description:
               "Sub-agent role. 'general' = full builtin toolkit (bash/Read/Write/Edit/MultiEdit/Glob/Grep/WebFetch/skill_view). " +
-              "'explore' = read-only (Read/Glob/Grep/WebFetch/skill_view — no bash, no write, no edit).",
+              "'explore' = read-only (Read/Glob/Grep/WebFetch/skill_view — no bash, no write, no edit). " +
+              "'plan' = architect mode (bash[read-only]/Read/Glob/Grep/WebFetch/skill_view — no write, no edit); outputs a structured plan document.",
           },
           prompt: {
             type: "string",

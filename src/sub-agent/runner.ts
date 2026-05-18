@@ -49,7 +49,7 @@ import type { EffortLevel, TokenUsage } from "@/types";
  *     No recursion. Grandchildren require the parent to re-delegate.
  */
 
-export type SubagentType = "general" | "explore";
+export type SubagentType = "general" | "explore" | "plan";
 
 export interface RunSubAgentOptions {
   subagentType: SubagentType;
@@ -123,13 +123,15 @@ function loadOverlay(kind: SubagentType): string {
  * `general` — bash + Read + Write + Edit + MultiEdit + Glob + Grep + WebFetch + skill_view.
  * `explore` — Read + Glob + Grep + WebFetch + skill_view only. NO bash, write, edit —
  *             the role is read-only by construction.
+ * `plan`    — bash (read-only usage: ls/tree/git log/etc.) + Read + Glob + Grep +
+ *             WebFetch + skill_view. NO Write/Edit/MultiEdit — the role is to
+ *             produce a plan document, not to implement it.
  *
  * Neither registers `Agent` (recursion cap) or the Task* family
- * (sub-agents don't plan iteratively).
+ * (sub-agents don't plan iteratively — the plan is handed back to the parent).
  *
- * Glob and Grep are registered for BOTH types: they are read-only filesystem
- * tools that carry no mutation risk and dramatically expand what `explore`
- * sub-agents can search without falling back to bash.
+ * Glob and Grep are registered for ALL types: they are read-only filesystem
+ * tools that carry no mutation risk.
  *
  * MultiEdit is registered for `general` only (it batches Edit calls, so it
  * belongs wherever Edit is available).
@@ -167,7 +169,15 @@ function buildToolRegistry(
     // atomically — registered wherever Edit is available.
     tools.register(createMultiEditTool({ tracker: fileTracker }));
   }
-  // `explore` stops here — read-only (Glob + Grep registered above).
+
+  if (kind === "plan") {
+    // bash is useful for read-only structural queries (ls, tree, git log,
+    // cargo tree, npm ls, …) that help the planner understand the codebase.
+    // Write/Edit/MultiEdit are intentionally excluded — the plan sub-agent
+    // produces a plan document, not implementation code.
+    tools.register(bashTool);
+  }
+  // `explore` and `plan` stop here — no write/edit tools.
 
   return tools;
 }
