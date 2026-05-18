@@ -51,9 +51,24 @@ import { logger } from "@/platform/logger";
  *   - We deliberately don't run with `-i` (interactive) — that pulls in
  *     prompt setup, history, completion, and other slow paths, and on
  *     some shells will hang without a TTY.
+ *
+ * # Silent mode
+ *
+ * Set `MAESTRO_SDK_SILENT_BOOTSTRAP=1` to suppress all bootstrap logs.
+ * This is useful when the SDK is loaded inside an MCP stdio server — even
+ * though all logs now go to stderr (v0.1.13+), silent mode avoids any
+ * diagnostic noise on stderr when the host prefers complete silence during
+ * module load.
  */
 
 let bootstrapped = false;
+
+const _silent = process.env.MAESTRO_SDK_SILENT_BOOTSTRAP === "1";
+const _log = {
+  debug: _silent ? (() => {}) as typeof logger.debug : logger.debug.bind(logger),
+  info: _silent ? (() => {}) as typeof logger.info : logger.info.bind(logger),
+  warn: _silent ? (() => {}) as typeof logger.warn : logger.warn.bind(logger),
+};
 
 export function bootstrapHostPath(): void {
   if (bootstrapped) return;
@@ -61,7 +76,7 @@ export function bootstrapHostPath(): void {
 
   const shell = process.env.SHELL;
   if (!shell) {
-    logger.debug({}, "env-bootstrap: $SHELL not set, skipping login PATH merge");
+    _log.debug({}, "env-bootstrap: $SHELL not set, skipping login PATH merge");
     return;
   }
 
@@ -75,19 +90,19 @@ export function bootstrapHostPath(): void {
       stdio: ["ignore", "pipe", "pipe"],
     });
   } catch (err) {
-    logger.warn({ err, shell }, "env-bootstrap: spawnSync threw");
+    _log.warn({ err, shell }, "env-bootstrap: spawnSync threw");
     return;
   }
 
   if (result.error) {
-    logger.warn(
+    _log.warn(
       { err: result.error, shell },
       "env-bootstrap: login shell invocation failed",
     );
     return;
   }
   if (result.status !== 0) {
-    logger.warn(
+    _log.warn(
       { status: result.status, stderr: String(result.stderr ?? "").slice(0, 500) },
       "env-bootstrap: login shell exited non-zero",
     );
@@ -100,7 +115,7 @@ export function bootstrapHostPath(): void {
   const lines = stdout.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
   const loginPath = lines[lines.length - 1] ?? "";
   if (!loginPath) {
-    logger.warn({}, "env-bootstrap: login shell returned empty PATH");
+    _log.warn({}, "env-bootstrap: login shell returned empty PATH");
     return;
   }
 
@@ -115,12 +130,12 @@ export function bootstrapHostPath(): void {
   }
 
   if (additions.length === 0) {
-    logger.debug({}, "env-bootstrap: login PATH already a subset of process PATH");
+    _log.debug({}, "env-bootstrap: login PATH already a subset of process PATH");
     return;
   }
 
   process.env.PATH = current ? `${current}:${additions.join(":")}` : additions.join(":");
-  logger.info(
+  _log.info(
     { added: additions.length, dirs: additions, shell },
     "env-bootstrap: merged login shell PATH",
   );
