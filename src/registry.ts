@@ -9,11 +9,11 @@ import { type EffortLevel, MAESTRO_EFFORT_VALUES } from "@/types";
 /**
  * Maestro registry — wired for multi-turn sessions + cross-agent bridging.
  *
- * Default model stays `sonnet` (Anthropic adapter is the original surface).
- * `deepseek` family aliases land on V4-Flash by default — same model as the
- * default `deepseek-chat` (V3.2-Exp non-thinking) successor, but cheap and
- * fast for general use. Switch via `set_model deepseek-pro` per topic when
- * heavier reasoning is wanted.
+ * Default model is `deepseek-pro` → V4-Pro (heavier reasoning, default for
+ * general use). `deepseek` / `deepseek-flash` aliases land on V4-Flash for
+ * the cheap-and-fast path. `sonnet` (Anthropic adapter) is the original
+ * surface but ships behind an explicit opt-in because Anthropic's
+ * extended-thinking blocks require strict preservation across turns.
  *
  * Session persistence lives at `~/.maestro/sessions/<sessionId>.jsonl` —
  * one ProviderMessage per line. Unlike claude/codex (which delegate
@@ -35,7 +35,7 @@ const VALID_EFFORTS = new Set<EffortLevel>(MAESTRO_EFFORT_VALUES);
 
 export const maestroRegistry: AgentRegistry = {
   kind: "maestro",
-  defaultModel: "sonnet",
+  defaultModel: "deepseek-pro",
   defaultEffort: "medium",
 
   expandModelAlias(s) {

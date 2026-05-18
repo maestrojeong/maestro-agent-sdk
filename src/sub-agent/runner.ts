@@ -11,7 +11,7 @@ import { effortToThinkingBudget } from "@/providers/anthropic";
 import type { Provider, ProviderContentBlock, ProviderMessage } from "@/providers/base";
 import { deleteMaestroSession } from "@/session-store";
 import { loadSkillsCached, type SkillEntry } from "@/skills/loader";
-import { bashTool } from "@/tools/builtin/bash";
+import { createBashTool } from "@/tools/builtin/bash";
 import { createEditTool } from "@/tools/builtin/edit";
 import { globTool } from "@/tools/builtin/glob";
 import { grepTool } from "@/tools/builtin/grep";
@@ -143,7 +143,6 @@ function buildToolRegistry(
   skills: SkillEntry[],
   abortSignal?: AbortSignal,
 ): ToolRegistry {
-  void abortSignal; // reserved for future bash abort wiring
   const tools = new ToolRegistry();
 
   // Sub-agent's OWN file-state tracker — keyed off subSessionId, NOT the
@@ -163,7 +162,7 @@ function buildToolRegistry(
   }
 
   if (kind === "general") {
-    tools.register(bashTool);
+    tools.register(createBashTool({ signal: abortSignal }));
     tools.register(createWriteTool({ tracker: fileTracker }));
     tools.register(createEditTool({ tracker: fileTracker }));
     // MultiEdit: same Read-before-Edit gate as Edit, batches N replacements
@@ -176,7 +175,7 @@ function buildToolRegistry(
     // cargo tree, npm ls, …) that help the planner understand the codebase.
     // Write/Edit/MultiEdit are intentionally excluded — the plan sub-agent
     // produces a plan document, not implementation code.
-    tools.register(bashTool);
+    tools.register(createBashTool({ signal: abortSignal }));
   }
   // `explore` and `plan` stop here — no write/edit tools.
 

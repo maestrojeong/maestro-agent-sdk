@@ -171,8 +171,25 @@ export async function* runConversation(
       // Reconstruct the text block(s) once at the end — the loop only
       // needs a single concatenated block to push back into history, which
       // matches what Anthropic's non-streaming response would have given us.
+      //
+      // CRITICAL: text must be inserted AFTER any thinking/redacted_thinking
+      // blocks but BEFORE tool_use blocks, mirroring the original wire order
+      // `[thinking, text, tool_use]`. A naive `unshift` would move thinking
+      // out of its original index; on the next turn Anthropic rejects the
+      // message with "thinking or redacted_thinking blocks in the latest
+      // assistant message cannot be modified" because the signed thinking
+      // block no longer sits where the API originally placed it.
       if (assistantText.length > 0) {
-        assistantBlocks.unshift({ type: "text", text: assistantText });
+        let insertAt = 0;
+        for (let i = 0; i < assistantBlocks.length; i++) {
+          const t = assistantBlocks[i].type;
+          if (t === "thinking" || t === "redacted_thinking") {
+            insertAt = i + 1;
+          } else {
+            break;
+          }
+        }
+        assistantBlocks.splice(insertAt, 0, { type: "text", text: assistantText });
       }
       response = { content: assistantBlocks, stopReason: streamStopReason, usage: streamUsage };
     } else {
