@@ -35,6 +35,6 @@ is to point at things, not to repeat them.
 
 Same as the general sub-agent prompt:
 
-- No `todo_write`, no `Agent`, no MCP.
+- No `Agent`, no MCP.
 - Final assistant turn is your return value — don't ask questions.
 - Be terse.

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { AIAgent } from "@/core/agent";
+import { isAbortError } from "@/core/is-abort-error";
 import { runConversation } from "@/core/loop";
 import { type MaestroMcpPool, registerMcpTools, startMcpPool } from "@/mcp/pool";
 import { buildSystemReminder } from "@/memory/reminder";
@@ -630,10 +631,4 @@ export function providerForModel(resolvedModel: string): Provider {
  * Exported for unit coverage — used internally by `maestroProvider`'s catch
  * branch to distinguish a user-initiated abort from a real provider crash.
  */
-export function isAbortError(err: unknown): boolean {
-  if (!err || typeof err !== "object") return false;
-  const e = err as { name?: unknown; code?: unknown };
-  if (e.name === "AbortError") return true;
-  if (e.code === 20 || e.code === "ABORT_ERR") return true;
-  return false;
-}
+export { isAbortError };

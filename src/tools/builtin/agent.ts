@@ -52,7 +52,8 @@ export interface AgentToolFactoryOptions {
   >;
 }
 
-const VALID_TYPES = new Set<SubagentType>(["general", "explore", "plan"]);
+const ALL_SUBAGENT_TYPES: SubagentType[] = ["general", "explore", "plan"] satisfies SubagentType[];
+const VALID_TYPES = new Set<SubagentType>(ALL_SUBAGENT_TYPES);
 
 export function createAgentTool(opts: AgentToolFactoryOptions): ToolHandler {
   return {

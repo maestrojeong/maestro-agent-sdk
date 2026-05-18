@@ -22,6 +22,7 @@ import { webFetchTool } from "@/tools/builtin/web_fetch";
 import { createWriteTool } from "@/tools/builtin/write";
 import { getFileStateTracker } from "@/tools/file-state";
 import { ToolRegistry } from "@/tools/registry";
+import { isAbortError } from "@/core/is-abort-error";
 import type { EffortLevel, TokenUsage } from "@/types";
 
 /**
@@ -305,20 +306,6 @@ export async function runSubAgent(opts: RunSubAgentOptions): Promise<RunSubAgent
   }
 
   return { text: finalText, usage, subSessionId, aborted };
-}
-
-/**
- * Mirror of `maestroProvider`'s `isAbortError`. Inlined to avoid an extra
- * import path and keep this module self-contained for the sub-agent
- * boundary — the abort-shape detection is small and the runner is the
- * only sub-agent caller in v1.
- */
-function isAbortError(err: unknown): boolean {
-  if (!err || typeof err !== "object") return false;
-  const e = err as { name?: unknown; code?: unknown };
-  if (e.name === "AbortError") return true;
-  if (e.code === 20 || e.code === "ABORT_ERR") return true;
-  return false;
 }
 
 /** Convenience re-export for test setup — lets tests prime the loaded
