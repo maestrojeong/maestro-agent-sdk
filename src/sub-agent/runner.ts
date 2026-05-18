@@ -13,6 +13,9 @@ import { deleteMaestroSession } from "@/session-store";
 import { loadSkillsCached, type SkillEntry } from "@/skills/loader";
 import { bashTool } from "@/tools/builtin/bash";
 import { createEditTool } from "@/tools/builtin/edit";
+import { globTool } from "@/tools/builtin/glob";
+import { grepTool } from "@/tools/builtin/grep";
+import { createMultiEditTool } from "@/tools/builtin/multi_edit";
 import { createReadTool } from "@/tools/builtin/read";
 import { createSkillViewTool } from "@/tools/builtin/skill_view";
 import { webFetchTool } from "@/tools/builtin/web_fetch";
@@ -117,12 +120,19 @@ function loadOverlay(kind: SubagentType): string {
 /**
  * Build the per-subagent-type tool registry.
  *
- * `general` — bash + Read + Write + Edit + WebFetch + skill_view.
- * `explore` — Read + WebFetch + skill_view only. NO bash, write, edit —
+ * `general` — bash + Read + Write + Edit + MultiEdit + Glob + Grep + WebFetch + skill_view.
+ * `explore` — Read + Glob + Grep + WebFetch + skill_view only. NO bash, write, edit —
  *             the role is read-only by construction.
  *
  * Neither registers `Agent` (recursion cap) or the Task* family
  * (sub-agents don't plan iteratively).
+ *
+ * Glob and Grep are registered for BOTH types: they are read-only filesystem
+ * tools that carry no mutation risk and dramatically expand what `explore`
+ * sub-agents can search without falling back to bash.
+ *
+ * MultiEdit is registered for `general` only (it batches Edit calls, so it
+ * belongs wherever Edit is available).
  */
 function buildToolRegistry(
   kind: SubagentType,
@@ -139,6 +149,11 @@ function buildToolRegistry(
   const fileTracker = getFileStateTracker(subSessionId);
 
   tools.register(createReadTool({ tracker: fileTracker }));
+  // Glob + Grep: read-only filesystem tools, safe for both `general` and
+  // `explore`. Grep shells out to ripgrep (PATH inherited from parent process
+  // via bootstrapHostPath), Glob walks in-process. Both are parallelSafe.
+  tools.register(globTool);
+  tools.register(grepTool);
   tools.register(webFetchTool);
   if (skills.length > 0) {
     tools.register(createSkillViewTool({ skills, sessionId: subSessionId }));
@@ -148,8 +163,11 @@ function buildToolRegistry(
     tools.register(bashTool);
     tools.register(createWriteTool({ tracker: fileTracker }));
     tools.register(createEditTool({ tracker: fileTracker }));
+    // MultiEdit: same Read-before-Edit gate as Edit, batches N replacements
+    // atomically — registered wherever Edit is available.
+    tools.register(createMultiEditTool({ tracker: fileTracker }));
   }
-  // `explore` stops here — read-only.
+  // `explore` stops here — read-only (Glob + Grep registered above).
 
   return tools;
 }

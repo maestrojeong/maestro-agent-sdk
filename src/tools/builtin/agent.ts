@@ -9,9 +9,9 @@ import type { ToolHandler } from "@/tools/registry";
  * mid-stream. This is the same contract Claude Code's Task tool exposes.
  *
  * Two scoped types in v1:
- *   - `general` — full builtin toolkit (bash + Read + Write + Edit +
- *     WebFetch + skill_view). Use for self-contained units of work.
- *   - `explore` — read-only (Read + WebFetch + skill_view). Use for
+ *   - `general` — full builtin toolkit (bash + Read + Write + Edit + MultiEdit +
+ *     Glob + Grep + WebFetch + skill_view). Use for self-contained units of work.
+ *   - `explore` — read-only (Read + Glob + Grep + WebFetch + skill_view). Use for
  *     finding / surveying / reporting tasks where you don't want the
  *     sub-agent mutating files by accident.
  *
@@ -60,7 +60,7 @@ export function createAgentTool(opts: AgentToolFactoryOptions): ToolHandler {
         "Spawn a focused sub-agent to do ONE delegated task and return its final text. " +
         "The sub-agent has its own context — your tool calls, files-Read state, and todo list " +
         "are NOT shared with it. Use `general` for self-contained work that may need bash/Write/Edit, " +
-        "and `explore` for read-only surveys (Read/WebFetch/skill_view only). " +
+        "and `explore` for read-only surveys (Read/Glob/Grep/WebFetch/skill_view only). " +
         "The sub-agent cannot spawn its own sub-agents (no recursion). Pass a self-contained " +
         "prompt — the sub-agent sees ONLY that prompt and the inherited system context.",
       input_schema: {
@@ -76,8 +76,8 @@ export function createAgentTool(opts: AgentToolFactoryOptions): ToolHandler {
           subagent_type: {
             type: "string",
             description:
-              "Sub-agent role. 'general' = full builtin toolkit. 'explore' = read-only " +
-              "(Read/WebFetch/skill_view only — no bash, no write, no edit).",
+              "Sub-agent role. 'general' = full builtin toolkit (bash/Read/Write/Edit/MultiEdit/Glob/Grep/WebFetch/skill_view). " +
+              "'explore' = read-only (Read/Glob/Grep/WebFetch/skill_view — no bash, no write, no edit).",
           },
           prompt: {
             type: "string",
