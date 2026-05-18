@@ -42,7 +42,7 @@ import { getFileStateTracker } from "@/tools/file-state";
 import { ToolRegistry } from "@/tools/registry";
 import { logger } from "@/platform/logger";
 import { getMcpServersForQuery } from "@/platform/mcp-config";
-import type { AgentQueryOptions, UnifiedEvent } from "@/types";
+import type { AgentQueryOptions, TokenUsage, UnifiedEvent } from "@/types";
 
 /**
  * Maestro SDK provider (TS port of Maestro Agent v0.13.0).
@@ -314,6 +314,13 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
   // recorder captures it in the unified conversation log — same shape as
   // claude/codex `init` and `thread.started` events.
   yield { type: "session", sessionId };
+  if (opts.hooks?.onSessionStart) {
+    await opts.hooks.onSessionStart({
+      sessionId,
+      cwd: opts.cwd,
+      ...(opts.userId !== undefined ? { userId: opts.userId } : {}),
+    });
+  }
 
   // Skills index goes into the system prompt (NOT a user message) so
   // Anthropic's prefix cache covers it across every turn — the catalog only
@@ -387,11 +394,15 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
     "maestroProvider: starting run_conversation",
   );
 
+  let finalUsage: TokenUsage | undefined;
   let drained = false;
   let aborted = false;
   try {
     for await (const event of runConversation(agent, messages)) {
       yield event;
+      if (event.type === "result" && event.usage) {
+        finalUsage = event.usage;
+      }
     }
     drained = true;
   } catch (e) {
@@ -458,6 +469,19 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
         { err, sessionId, turns: messages.length },
         "maestroProvider: persist failed (best-effort)",
       );
+    }
+    if (opts.hooks?.onSessionEnd) {
+      try {
+        await opts.hooks.onSessionEnd({
+          sessionId,
+          cwd: opts.cwd,
+          ...(opts.userId !== undefined ? { userId: opts.userId } : {}),
+          aborted,
+          ...(finalUsage !== undefined ? { usage: finalUsage } : {}),
+        });
+      } catch (hookErr) {
+        logger.warn({ err: hookErr, sessionId }, "maestroProvider: onSessionEnd hook failed");
+      }
     }
   }
 }

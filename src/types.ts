@@ -53,6 +53,32 @@ export type UnifiedEvent =
   | { type: "error"; content: string };
 
 /**
+ * Session-level lifecycle callbacks. All handlers are optional and fire
+ * asynchronously (awaited) so hosts can do async work (e.g. persist state,
+ * trigger an archiver) without blocking the generator stream.
+ */
+export interface AgentHooks {
+  /** Fires once, right after the `{type:"session"}` event is emitted. */
+  onSessionStart?: (meta: {
+    sessionId: string;
+    cwd: string;
+    userId?: string;
+  }) => void | Promise<void>;
+  /**
+   * Fires in the `finally` block after the session is persisted.
+   * `aborted` is true when the run ended via AbortController.
+   * `usage` is undefined on abort or crash (loop never reached `result`).
+   */
+  onSessionEnd?: (meta: {
+    sessionId: string;
+    cwd: string;
+    userId?: string;
+    aborted: boolean;
+    usage?: TokenUsage;
+  }) => void | Promise<void>;
+}
+
+/**
  * Options accepted by `maestroProvider.query()` — the host-facing entry point.
  *
  * Most fields are optional; only `prompt`, `cwd`, `systemPrompt` are strictly
@@ -106,6 +132,12 @@ export interface AgentQueryOptions {
   mcpExtra?: Record<string, unknown>;
   isCron?: boolean;
   silent?: boolean;
+  /**
+   * Session-level lifecycle callbacks. All handlers are optional and fire
+   * asynchronously (awaited) so hosts can do async work (e.g. persist state,
+   * trigger an archiver) without blocking the generator stream.
+   */
+  hooks?: AgentHooks;
   /**
    * Named skill profile within the per-cwd `.skills/` directory. The SDK
    * resolves the skill catalog source as:
