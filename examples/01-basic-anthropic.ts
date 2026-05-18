@@ -12,8 +12,8 @@ import {
   bashTool,
   createReadTool,
   createWriteTool,
-  ToolRegistry,
   runConversation,
+  ToolRegistry,
 } from "../src";
 
 async function main() {
@@ -34,8 +34,7 @@ async function main() {
 
   const agent = new AIAgent(provider, tools, {
     model: "claude-sonnet-4-6",
-    systemPrompt:
-      "You are a helpful assistant. Use the bash, read, and write tools when needed.",
+    systemPrompt: "You are a helpful assistant. Use the bash, read, and write tools when needed.",
     maxIterations: 20,
     maxTokens: 4096,
   });

@@ -1,12 +1,8 @@
-import { afterEach, describe, expect, test } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  applySkillAllowlist,
-  MAESTRO_DEFAULT_SKILL_KEY,
-  resolveSkillsDir,
-} from "@/provider";
+import { afterEach, describe, expect, test } from "vitest";
+import { applySkillAllowlist, MAESTRO_DEFAULT_SKILL_KEY, resolveSkillsDir } from "@/provider";
 import { invalidateSkillsCache, loadSkills, type SkillEntry } from "@/skills/loader";
 
 /**
@@ -50,9 +46,7 @@ describe("resolveSkillsDir — deterministic (cwd, skillKey) routing", () => {
   });
 
   test("skillKey set → <cwd>/.skills/<key>/", () => {
-    expect(resolveSkillsDir({ cwd: "/proj/x", skillKey: "legal" })).toBe(
-      "/proj/x/.skills/legal",
-    );
+    expect(resolveSkillsDir({ cwd: "/proj/x", skillKey: "legal" })).toBe("/proj/x/.skills/legal");
   });
 
   test("explicit skillKey === 'default' resolves to same dir as omission", () => {
@@ -83,9 +77,7 @@ describe("resolveSkillsDir — deterministic (cwd, skillKey) routing", () => {
     process.env.MAESTRO_SKILL_DIR = "/env/should/be/ignored";
     try {
       expect(resolveSkillsDir({ cwd: "/proj/x" })).toBe("/proj/x/.skills/default");
-      expect(resolveSkillsDir({ cwd: "/proj/x", skillKey: "k" })).toBe(
-        "/proj/x/.skills/k",
-      );
+      expect(resolveSkillsDir({ cwd: "/proj/x", skillKey: "k" })).toBe("/proj/x/.skills/k");
     } finally {
       if (original === undefined) delete process.env.MAESTRO_SKILL_DIR;
       else process.env.MAESTRO_SKILL_DIR = original;

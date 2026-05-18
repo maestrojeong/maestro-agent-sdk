@@ -1,9 +1,9 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { SkillEntry } from "@/skills/loader";
-import { loadUsage, type SkillCounters } from "@/skills/usage";
 import { DATA_DIR } from "@/platform/config";
 import { logger } from "@/platform/logger";
+import type { SkillEntry } from "@/skills/loader";
+import { loadUsage, type SkillCounters } from "@/skills/usage";
 
 /**
  * Skill Curator — assigns lifecycle states (active / stale / archived) to

@@ -1,8 +1,4 @@
-import {
-  type RunSubAgentOptions,
-  runSubAgent,
-  type SubagentType,
-} from "@/sub-agent/runner";
+import { type RunSubAgentOptions, runSubAgent, type SubagentType } from "@/sub-agent/runner";
 import type { ToolHandler } from "@/tools/registry";
 
 /**

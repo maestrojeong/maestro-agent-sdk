@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, vi, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import type { ProviderMessage } from "@/providers/base";
 import {
   DeepseekProvider,
@@ -339,7 +339,9 @@ describe("DeepseekProvider.complete (mocked)", () => {
       expect(body.tools).toBeUndefined();
       return new Response(
         JSON.stringify({
-          choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
+          choices: [
+            { index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" },
+          ],
         }),
         { status: 200, headers: { "content-type": "application/json" } },
       );
@@ -397,7 +399,9 @@ describe("DeepseekProvider.stream (mocked SSE)", () => {
       return sseResponse([
         frame({ choices: [{ index: 0, delta: { content: "hel" }, finish_reason: null }] }),
         frame({ choices: [{ index: 0, delta: { content: "lo" }, finish_reason: null }] }),
-        frame({ choices: [{ index: 0, delta: { reasoning_content: "thinking..." }, finish_reason: null }] }),
+        frame({
+          choices: [{ index: 0, delta: { reasoning_content: "thinking..." }, finish_reason: null }],
+        }),
         frame({
           choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
           usage: { prompt_tokens: 3, completion_tokens: 4, prompt_cache_hit_tokens: 1 },
@@ -511,8 +515,18 @@ describe("DeepseekProvider.stream (mocked SSE)", () => {
               index: 0,
               delta: {
                 tool_calls: [
-                  { index: 0, id: "call_a", type: "function", function: { name: "tool_a", arguments: "" } },
-                  { index: 1, id: "call_b", type: "function", function: { name: "tool_b", arguments: "" } },
+                  {
+                    index: 0,
+                    id: "call_a",
+                    type: "function",
+                    function: { name: "tool_a", arguments: "" },
+                  },
+                  {
+                    index: 1,
+                    id: "call_b",
+                    type: "function",
+                    function: { name: "tool_b", arguments: "" },
+                  },
                 ],
               },
               finish_reason: null,

@@ -1,8 +1,5 @@
 import { describe, expect, test } from "vitest";
-import {
-  COMPACTED_MARKER_CLOSE,
-  COMPACTED_MARKER_OPEN,
-} from "@/memory/active-task-template";
+import { COMPACTED_MARKER_CLOSE, COMPACTED_MARKER_OPEN } from "@/memory/active-task-template";
 import { StreamingContextScrubber, scrubString } from "@/memory/scrubber";
 
 describe("StreamingContextScrubber — single-chunk inputs", () => {

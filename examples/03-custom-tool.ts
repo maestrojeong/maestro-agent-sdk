@@ -9,9 +9,9 @@
 import {
   AIAgent,
   AnthropicProvider,
+  runConversation,
   type ToolHandler,
   ToolRegistry,
-  runConversation,
 } from "../src";
 
 const weatherTool: ToolHandler = {

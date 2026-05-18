@@ -1,7 +1,4 @@
-import {
-  COMPACTED_MARKER_CLOSE,
-  COMPACTED_MARKER_OPEN,
-} from "@/memory/active-task-template";
+import { COMPACTED_MARKER_CLOSE, COMPACTED_MARKER_OPEN } from "@/memory/active-task-template";
 
 /**
  * StreamingContextScrubber — strip fenced context blocks from the live

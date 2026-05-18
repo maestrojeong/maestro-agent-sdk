@@ -1,18 +1,10 @@
-import { afterEach, beforeAll, describe, expect, test } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { afterEach, beforeAll, describe, expect, test } from "vitest";
+import { MODEL_DEEPSEEK_V4_FLASH, MODEL_DEEPSEEK_V4_PRO, MODEL_SONNET } from "@/platform/config";
 import { maestroRegistry } from "@/registry";
-import {
-  loadMaestroSession,
-  maestroSessionPath,
-  writeMaestroRollout,
-} from "@/session-store";
-import {
-  MODEL_DEEPSEEK_V4_FLASH,
-  MODEL_DEEPSEEK_V4_PRO,
-  MODEL_SONNET,
-} from "@/platform/config";
+import { loadMaestroSession, maestroSessionPath, writeMaestroRollout } from "@/session-store";
 import { appendConversationEvent, getConversationPath } from "@/storage/conversations";
 
 // Suite-local sandbox under the OS tmp dir. The SDK no longer surfaces a

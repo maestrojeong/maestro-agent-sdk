@@ -1,5 +1,5 @@
-import type { ToolHandler } from "@/tools/registry";
 import * as cheerio from "cheerio";
+import type { ToolHandler } from "@/tools/registry";
 
 /**
  * WebFetch builtin — claude SDK `WebFetch` tool parity for maestro.

@@ -1,9 +1,9 @@
-import { afterEach, describe, expect, test } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createSkillWriteTool } from "@/tools/builtin/skill_write";
+import { afterEach, describe, expect, test } from "vitest";
 import { invalidateSkillsCache, loadSkills } from "@/skills/loader";
+import { createSkillWriteTool } from "@/tools/builtin/skill_write";
 
 /**
  * Coverage for the v0.1.5 `skill_write` builtin (agent-autonomous skill
@@ -64,8 +64,17 @@ describe("skill_write — input validation", () => {
 
   test("invalid name (uppercase, underscore, leading dash) → error", async () => {
     const tool = createSkillWriteTool({ skillsDir: makeSkillsRoot() });
-    for (const bad of ["BadName", "snake_case", "-leading", "trailing-", "1starts-with-digit", "double--dash"]) {
-      const out = JSON.parse(await tool.execute({ name: bad, content: "# x\n> **Description**: y" }));
+    for (const bad of [
+      "BadName",
+      "snake_case",
+      "-leading",
+      "trailing-",
+      "1starts-with-digit",
+      "double--dash",
+    ]) {
+      const out = JSON.parse(
+        await tool.execute({ name: bad, content: "# x\n> **Description**: y" }),
+      );
       expect(out.error).toMatch(/invalid name/);
     }
   });
@@ -472,10 +481,7 @@ describe("loader — clawgram-format compatibility (skill.md + body meta)", () =
   test("plain `> Description:` (without bold) is also accepted", () => {
     const root = makeSkillsRoot();
     mkdirSync(join(root, "plain"), { recursive: true });
-    writeFileSync(
-      join(root, "plain", "skill.md"),
-      "# plain\n\n> Description: no asterisks\n",
-    );
+    writeFileSync(join(root, "plain", "skill.md"), "# plain\n\n> Description: no asterisks\n");
     const skills = loadSkills(root);
     expect(skills[0].description).toBe("no asterisks");
   });

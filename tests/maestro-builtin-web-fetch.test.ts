@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, vi, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { htmlToText, webFetchTool } from "@/tools/builtin/web_fetch";
 
 const ORIGINAL_FETCH = globalThis.fetch;

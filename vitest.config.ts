@@ -13,10 +13,7 @@ export default defineConfig({
     // (`appendConversationEvent`, `getConversationPath`) and on the strict
     // workspace-root check that the SDK loosened. They cover host integration
     // paths and will be reactivated when wired up via DI from a host.
-    exclude: [
-      "tests/maestro-registry.test.ts",
-      "tests/maestro-session-store.test.ts",
-    ],
+    exclude: ["tests/maestro-registry.test.ts", "tests/maestro-session-store.test.ts"],
     environment: "node",
     testTimeout: 15000,
   },

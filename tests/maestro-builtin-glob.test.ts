@@ -1,7 +1,7 @@
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { afterEach, describe, expect, test } from "vitest";
 import { compileGlob, globTool } from "@/tools/builtin/glob";
 
 /**
@@ -94,9 +94,7 @@ describe("Glob tool — input validation", () => {
   });
 
   test("relative path → structured error", async () => {
-    const out = JSON.parse(
-      await globTool.execute({ pattern: "*.ts", path: "relative/path" }),
-    );
+    const out = JSON.parse(await globTool.execute({ pattern: "*.ts", path: "relative/path" }));
     expect(out.error).toMatch(/must be absolute/);
   });
 

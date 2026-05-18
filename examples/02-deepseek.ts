@@ -4,13 +4,7 @@
  *   DEEPSEEK_API_KEY=... npx tsx examples/02-deepseek.ts "hello"
  */
 
-import {
-  AIAgent,
-  DeepseekProvider,
-  bashTool,
-  ToolRegistry,
-  runConversation,
-} from "../src";
+import { AIAgent, bashTool, DeepseekProvider, runConversation, ToolRegistry } from "../src";
 
 async function main() {
   const apiKey = process.env.DEEPSEEK_API_KEY;

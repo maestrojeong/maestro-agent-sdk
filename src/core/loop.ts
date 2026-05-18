@@ -1,13 +1,9 @@
 import type { AIAgent } from "@/core/agent";
+import { extractFileEvents } from "@/media/file-events";
 import { compressIfNeeded } from "@/memory/compressor";
 import { StreamingContextScrubber, scrubString } from "@/memory/scrubber";
-import type {
-  ProviderContentBlock,
-  ProviderMessage,
-  ProviderResponse,
-} from "@/providers/base";
-import { extractFileEvents } from "@/media/file-events";
 import { logger } from "@/platform/logger";
+import type { ProviderContentBlock, ProviderMessage, ProviderResponse } from "@/providers/base";
 import type { TokenUsage, UnifiedEvent } from "@/types";
 
 /**

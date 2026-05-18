@@ -29,8 +29,8 @@ import {
   loadSkillsCached,
   MAESTRO_DEFAULT_SKILL_KEY,
   resolveSkillsDir,
-  ToolRegistry,
   runConversation,
+  ToolRegistry,
 } from "../src";
 
 async function main() {

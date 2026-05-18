@@ -1,17 +1,17 @@
-import { afterEach, describe, expect, test } from "vitest";
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { afterEach, describe, expect, test } from "vitest";
+import { MAESTRO_SDK_VERSION } from "@/platform/version";
 import type { ProviderMessage } from "@/providers/base";
 import {
   deleteMaestroSession,
   loadMaestroSession,
   loadMaestroSessionMeta,
+  type MaestroSessionMeta,
   maestroSessionPath,
   saveMaestroSession,
   writeMaestroRollout,
-  type MaestroSessionMeta,
 } from "@/session-store";
-import { MAESTRO_SDK_VERSION } from "@/platform/version";
 
 /**
  * Test coverage for the v0.1.5 rollout `_meta` header.
@@ -50,10 +50,7 @@ function uuid(): string {
 
 /** Read the raw JSONL lines off disk for white-box inspection. */
 function readLines(sid: string): string[] {
-  return readFileSync(maestroSessionPath(sid), "utf8")
-    .trim()
-    .split("\n")
-    .filter(Boolean);
+  return readFileSync(maestroSessionPath(sid), "utf8").trim().split("\n").filter(Boolean);
 }
 
 describe("v0.1.5 rollout meta header — save / load round-trip", () => {

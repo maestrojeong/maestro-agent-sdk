@@ -29,10 +29,8 @@ function makeConsoleLogger(): Logger {
     (level: "log" | "info" | "warn" | "error") =>
     (objOrMsg: Record<string, unknown> | string, msg?: string) => {
       if (typeof objOrMsg === "string") {
-        // biome-ignore lint/suspicious/noConsole: SDK default logger
         console[level](`[${level}] ${objOrMsg}`);
       } else {
-        // biome-ignore lint/suspicious/noConsole: SDK default logger
         console[level](`[${level}] ${msg ?? ""}`, objOrMsg);
       }
     };

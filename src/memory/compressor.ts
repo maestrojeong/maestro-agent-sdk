@@ -1,8 +1,8 @@
 import { ACTIVE_TASK_TEMPLATE, wrapCompactedSummary } from "@/memory/active-task-template";
 import { pruneMessages } from "@/memory/prune";
 import { estimateTokens } from "@/memory/token-estimate";
-import type { Provider, ProviderContentBlock, ProviderMessage } from "@/providers/base";
 import { logger } from "@/platform/logger";
+import type { Provider, ProviderContentBlock, ProviderMessage } from "@/providers/base";
 
 /**
  * Maestro context auto-compaction.

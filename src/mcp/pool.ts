@@ -1,7 +1,7 @@
 import type { MaestroMcpClient, MaestroMcpServerSpec, MaestroMcpTool } from "@/mcp/client";
 import { type CacheKeyContext, getOrStartClient, releaseClient } from "@/mcp/pool-cache";
-import type { ToolHandler, ToolRegistry } from "@/tools/registry";
 import { logger } from "@/platform/logger";
+import type { ToolHandler, ToolRegistry } from "@/tools/registry";
 
 /**
  * MCP pool — per-turn lease view over the process-wide cache in `pool-cache.ts`.

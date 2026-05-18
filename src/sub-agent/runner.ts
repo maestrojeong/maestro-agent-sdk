@@ -5,9 +5,10 @@ import { fileURLToPath } from "node:url";
 import { AIAgent } from "@/core/agent";
 import { runConversation } from "@/core/loop";
 import { buildSystemReminder } from "@/memory/reminder";
+import { logger } from "@/platform/logger";
+import { providerForModel } from "@/provider";
 import { effortToThinkingBudget } from "@/providers/anthropic";
 import type { Provider, ProviderContentBlock, ProviderMessage } from "@/providers/base";
-import { providerForModel } from "@/provider";
 import { deleteMaestroSession } from "@/session-store";
 import { loadSkillsCached, type SkillEntry } from "@/skills/loader";
 import { bashTool } from "@/tools/builtin/bash";
@@ -18,7 +19,6 @@ import { webFetchTool } from "@/tools/builtin/web_fetch";
 import { createWriteTool } from "@/tools/builtin/write";
 import { getFileStateTracker } from "@/tools/file-state";
 import { ToolRegistry } from "@/tools/registry";
-import { logger } from "@/platform/logger";
 import type { EffortLevel, TokenUsage } from "@/types";
 
 /**

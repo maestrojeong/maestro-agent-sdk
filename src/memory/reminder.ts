@@ -70,8 +70,7 @@ export function buildSystemReminder(ctx: SystemReminderContext): string {
   if (ctx.tasks && ctx.tasks.length > 0) {
     lines.push(`Tasks (${taskSummaryCount(ctx.tasks)}):`);
     for (const t of ctx.tasks) {
-      const mark =
-        t.status === "completed" ? "✓" : t.status === "in_progress" ? "→" : " ";
+      const mark = t.status === "completed" ? "✓" : t.status === "in_progress" ? "→" : " ";
       const deps =
         t.blockedBy.length > 0
           ? ` (blocked by ${t.blockedBy.map((id) => `#${id}`).join(", ")})`

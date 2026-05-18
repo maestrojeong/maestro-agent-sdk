@@ -41,6 +41,9 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "lint": "biome check",
+    "lint:fix": "biome check --write",
+    "format": "biome format --write",
     "prepublishOnly": "npm run clean && npm run build"
   },
   "keywords": [
@@ -64,6 +67,7 @@
     "cheerio": "^1.2.0"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.4.12",
     "@types/node": "^20",
     "tsc-alias": "^1.8.17",
     "typescript": "^5",

@@ -4,11 +4,9 @@ import { AIAgent } from "@/core/agent";
 import { runConversation } from "@/core/loop";
 import { type MaestroMcpPool, registerMcpTools, startMcpPool } from "@/mcp/pool";
 import { buildSystemReminder } from "@/memory/reminder";
-import {
-  AnthropicProvider,
-  effortToMaxIter,
-  effortToThinkingBudget,
-} from "@/providers/anthropic";
+import { logger } from "@/platform/logger";
+import { getMcpServersForQuery } from "@/platform/mcp-config";
+import { AnthropicProvider, effortToMaxIter, effortToThinkingBudget } from "@/providers/anthropic";
 import type { Provider, ProviderContentBlock, ProviderMessage } from "@/providers/base";
 import { DeepseekProvider } from "@/providers/deepseek";
 import { maestroRegistry } from "@/registry";
@@ -40,8 +38,6 @@ import { webFetchTool } from "@/tools/builtin/web_fetch";
 import { createWriteTool } from "@/tools/builtin/write";
 import { getFileStateTracker } from "@/tools/file-state";
 import { ToolRegistry } from "@/tools/registry";
-import { logger } from "@/platform/logger";
-import { getMcpServersForQuery } from "@/platform/mcp-config";
 import type { AgentQueryOptions, TokenUsage, UnifiedEvent } from "@/types";
 
 /**

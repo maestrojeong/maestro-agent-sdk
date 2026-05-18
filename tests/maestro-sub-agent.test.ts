@@ -1,14 +1,10 @@
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { maestroSessionPath } from "@/session-store";
 import { createAgentTool } from "@/tools/builtin/agent";
-import {
-  __resetAllTrackers,
-  __trackerCount,
-  getFileStateTracker,
-} from "@/tools/file-state";
+import { __resetAllTrackers, __trackerCount, getFileStateTracker } from "@/tools/file-state";
 
 /**
  * Tests for the Phase 3.1 Sub-agent dispatch (Agent tool + runner).

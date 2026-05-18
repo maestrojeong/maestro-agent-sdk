@@ -36,20 +36,20 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { DATA_DIR } from "@/platform/config";
 import {
   assertUuidLike,
   type ChatPair,
   ensureCwdExists,
   extractChatPairs,
 } from "@/agents/rollout/shared";
+import { DATA_DIR } from "@/platform/config";
+import { writeJsonlFile } from "@/platform/jsonl";
+import { logger } from "@/platform/logger";
 import { MAESTRO_SDK_VERSION } from "@/platform/version";
 import type { ProviderContentBlock, ProviderMessage } from "@/providers/base";
 import { dropTaskStore } from "@/state/tasks";
-import { dropFileStateTracker } from "@/tools/file-state";
-import { parseJsonlText, writeJsonlFile } from "@/platform/jsonl";
-import { logger } from "@/platform/logger";
 import type { ConversationEntry } from "@/storage/conversations";
+import { dropFileStateTracker } from "@/tools/file-state";
 
 /**
  * Root directory for maestro session/rollout files.
@@ -419,9 +419,7 @@ export function trimToSafePrefix(messages: ProviderMessage[]): ProviderMessage[]
     // We correctly hit the `break` below, not the `continue` above. Only
     // tool_use creates a dangling obligation for the next API call.
     if (last.role === "assistant" && Array.isArray(last.content)) {
-      const hasToolUse = last.content.some(
-        (b) => (b as ProviderContentBlock).type === "tool_use",
-      );
+      const hasToolUse = last.content.some((b) => (b as ProviderContentBlock).type === "tool_use");
       if (hasToolUse) {
         end--;
         continue;

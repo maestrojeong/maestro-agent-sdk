@@ -1,10 +1,4 @@
-import type {
-  CreateInput,
-  TaskEntry,
-  TaskStatus,
-  TaskStore,
-  UpdateInput,
-} from "@/state/tasks";
+import type { CreateInput, TaskEntry, TaskStatus, TaskStore, UpdateInput } from "@/state/tasks";
 import type { ToolHandler } from "@/tools/registry";
 
 /**

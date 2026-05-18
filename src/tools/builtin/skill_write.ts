@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, normalize, relative } from "node:path";
-import { invalidateSkillsCache } from "@/skills/loader";
 import { logger } from "@/platform/logger";
+import { invalidateSkillsCache } from "@/skills/loader";
 import type { ToolHandler } from "@/tools/registry";
 
 /**
@@ -133,8 +133,8 @@ export function createSkillWriteTool(opts: SkillWriteToolOptions): ToolHandler {
               "`<skillsDir>/<name>/`, use forward slashes, must not contain `..` " +
               "or absolute prefixes, and cannot equal `skill.md` (reserved for " +
               "the manifest). Parent directories are created automatically. " +
-              "Example: `{\"scripts/run.sh\": \"#!/bin/bash\\n...\", " +
-              "\"templates/x.tex\": \"...\", \"references/api.md\": \"...\"}`",
+              'Example: `{"scripts/run.sh": "#!/bin/bash\\n...", ' +
+              '"templates/x.tex": "...", "references/api.md": "..."}`',
             additionalProperties: { type: "string" },
           },
           overwrite: {
@@ -194,8 +194,7 @@ export function createSkillWriteTool(opts: SkillWriteToolOptions): ToolHandler {
           }
           if (typeof raw !== "string") {
             return JSON.stringify({
-              error:
-                `skill_write: 'files[${rel}]' must be a string, got ${typeof raw}`,
+              error: `skill_write: 'files[${rel}]' must be a string, got ${typeof raw}`,
             });
           }
           const safetyErr = validateRelativePath(rel);
@@ -227,8 +226,7 @@ export function createSkillWriteTool(opts: SkillWriteToolOptions): ToolHandler {
         for (const f of fileWrites) {
           if (existsSync(f.abs)) {
             return JSON.stringify({
-              error:
-                `skill_write: '${f.abs}' already exists — pass overwrite: true to replace`,
+              error: `skill_write: '${f.abs}' already exists — pass overwrite: true to replace`,
               path: f.abs,
               rel: f.rel,
             });

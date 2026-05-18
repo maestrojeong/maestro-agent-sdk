@@ -2,8 +2,8 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import type { ProviderToolSchema } from "@/providers/base";
 import { logger } from "@/platform/logger";
+import type { ProviderToolSchema } from "@/providers/base";
 
 /**
  * Maestro MCP client wrapper.
@@ -56,10 +56,7 @@ export class MaestroMcpClient {
      */
     private readonly transportOverride?: Transport,
   ) {
-    this.client = new Client(
-      { name: "maestro-agent-sdk", version: "0.1.0" },
-      { capabilities: {} },
-    );
+    this.client = new Client({ name: "maestro-agent-sdk", version: "0.1.0" }, { capabilities: {} });
   }
 
   async start(): Promise<void> {

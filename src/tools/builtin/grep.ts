@@ -1,4 +1,4 @@
-import { spawnSync, type SpawnSyncOptions } from "node:child_process";
+import { type SpawnSyncOptions, spawnSync } from "node:child_process";
 import { isAbsolute } from "node:path";
 import { logger } from "@/platform/logger";
 import type { ToolHandler } from "@/tools/registry";
@@ -47,11 +47,7 @@ const RG_MAX_OUTPUT = 1_000_000;
 
 type OutputMode = "content" | "files_with_matches" | "count";
 
-const VALID_OUTPUT_MODES = new Set<OutputMode>([
-  "content",
-  "files_with_matches",
-  "count",
-]);
+const VALID_OUTPUT_MODES = new Set<OutputMode>(["content", "files_with_matches", "count"]);
 
 export const grepTool: ToolHandler = {
   // Pure read of the filesystem via an external process — multiple Greps
@@ -113,13 +109,11 @@ export const grepTool: ToolHandler = {
         },
         "-A": {
           type: "number",
-          description:
-            "Lines of trailing context per match. `content` mode only.",
+          description: "Lines of trailing context per match. `content` mode only.",
         },
         "-B": {
           type: "number",
-          description:
-            "Lines of leading context per match. `content` mode only.",
+          description: "Lines of leading context per match. `content` mode only.",
         },
         "-C": {
           type: "number",
@@ -130,8 +124,7 @@ export const grepTool: ToolHandler = {
         "-o": {
           type: "boolean",
           description:
-            "Print only the matched portion of each line (ripgrep `-o`). " +
-            "`content` mode only.",
+            "Print only the matched portion of each line (ripgrep `-o`). " + "`content` mode only.",
         },
         multiline: {
           type: "boolean",
@@ -141,8 +134,7 @@ export const grepTool: ToolHandler = {
         },
         head_limit: {
           type: "number",
-          description:
-            "Cap output to the first N lines. Defaults to 250. Pass 0 to disable.",
+          description: "Cap output to the first N lines. Defaults to 250. Pass 0 to disable.",
         },
         offset: {
           type: "number",
@@ -237,7 +229,7 @@ export const grepTool: ToolHandler = {
       });
     }
 
-    let stdout = typeof result.stdout === "string" ? result.stdout : "";
+    const stdout = typeof result.stdout === "string" ? result.stdout : "";
 
     // Head-limit / offset slicing — applied AFTER ripgrep returns the full
     // result so we don't lose deterministic ordering by piping through
@@ -287,7 +279,8 @@ export const grepTool: ToolHandler = {
     // truncation context explicitly.
     const note: string[] = [];
     if (offset > 0) note.push(`offset=${offset}`);
-    if (truncated) note.push(`truncated to ${headLimit} of ${allLines.length - offset} matching lines`);
+    if (truncated)
+      note.push(`truncated to ${headLimit} of ${allLines.length - offset} matching lines`);
     logger.debug(
       { offset, headLimit, total: allLines.length, returned: sliced.length },
       "Grep: applied head-limit/offset slicing",

@@ -1,7 +1,7 @@
-import { describe, expect, test } from "vitest";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { describe, expect, test } from "vitest";
 import { MaestroMcpClient, makePublicName } from "@/mcp/client";
 import { registerMcpTools } from "@/mcp/pool";
 import { ToolRegistry } from "@/tools/registry";

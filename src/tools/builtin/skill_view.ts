@@ -1,8 +1,8 @@
+import { logger } from "@/platform/logger";
 import { findSkillByName, type SkillEntry } from "@/skills/loader";
 import { preprocessSkillContent } from "@/skills/preprocess";
 import { bumpView } from "@/skills/usage";
 import type { ToolHandler } from "@/tools/registry";
-import { logger } from "@/platform/logger";
 
 /**
  * `skill_view` builtin — progressive-disclosure entry point for skills.

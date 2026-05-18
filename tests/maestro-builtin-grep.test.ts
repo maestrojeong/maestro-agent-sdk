@@ -1,8 +1,8 @@
-import { afterEach, beforeAll, describe, expect, test } from "vitest";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { spawnSync } from "node:child_process";
+import { afterEach, describe, expect, test } from "vitest";
 import { grepTool } from "@/tools/builtin/grep";
 
 /**
@@ -49,9 +49,7 @@ describe("Grep tool — input validation", () => {
   });
 
   test("relative path → structured error", async () => {
-    const out = JSON.parse(
-      await grepTool.execute({ pattern: "foo", path: "relative/path" }),
-    );
+    const out = JSON.parse(await grepTool.execute({ pattern: "foo", path: "relative/path" }));
     expect(out.error).toMatch(/must be absolute/);
   });
 });

@@ -1,7 +1,7 @@
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { MaestroMcpClient, type MaestroMcpServerSpec } from "@/mcp/client";
 import { startMcpPool } from "@/mcp/pool";
 import {

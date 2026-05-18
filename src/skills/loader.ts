@@ -155,7 +155,7 @@ function parseSkillFile(root: string, mdPath: string): SkillEntry | null {
 
   // Strip the trailing skill-file basename to recover the skill's directory,
   // regardless of which casing was used (SKILL.md vs skill.md).
-  const skillDir = mdPath.slice(0, -("/" + basename(mdPath)).length);
+  const skillDir = mdPath.slice(0, -`/${basename(mdPath)}`.length);
   const dirName = basename(skillDir);
   const name = (frontmatter.name ?? dirName).trim();
   if (!name) return null;
