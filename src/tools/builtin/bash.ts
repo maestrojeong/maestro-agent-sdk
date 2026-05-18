@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { isAbsolute, normalize } from "node:path";
 import type { ToolHandler } from "@/tools/registry";
 
 /** Default wall-clock cap. The model can override via the `timeout` input
@@ -98,7 +99,17 @@ export const bashTool: ToolHandler = {
     if (!command.trim()) {
       return JSON.stringify({ error: "empty command" });
     }
-    const cwd = typeof input.cwd === "string" ? input.cwd : undefined;
+    let cwd = typeof input.cwd === "string" ? input.cwd : undefined;
+    if (cwd !== undefined) {
+      // normalize() collapses `..` segments; isAbsolute ensures the shell
+      // can't be redirected to an arbitrary relative directory.
+      cwd = normalize(cwd);
+      if (!isAbsolute(cwd)) {
+        return JSON.stringify({
+          error: `Bash: 'cwd' must be an absolute path, got '${cwd}'`,
+        });
+      }
+    }
     // Resolve the effective timeout. Non-numeric / non-finite / non-positive
     // falls back to the 30s default. Positive values are clamped to 10min.
     const rawTimeout = input.timeout;

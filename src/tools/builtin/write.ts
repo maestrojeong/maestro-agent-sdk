@@ -1,5 +1,6 @@
 import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute } from "node:path";
+import { dirname, isAbsolute, normalize } from "node:path";
+import { checkBlockedPath } from "@/tools/path-guard";
 import type { FileStateTracker } from "@/tools/file-state";
 import type { ToolHandler } from "@/tools/registry";
 
@@ -54,7 +55,9 @@ export function createWriteTool(opts: WriteToolOptions = {}): ToolHandler {
       },
     },
     async execute(input) {
-      const filePath = typeof input.file_path === "string" ? input.file_path : "";
+      // normalize() collapses `..` segments before the isAbsolute + blocklist
+      // guards so that path traversal cannot bypass either check.
+      const filePath = normalize(typeof input.file_path === "string" ? input.file_path : "");
       if (!filePath) {
         return JSON.stringify({ error: "Write: missing 'file_path' argument" });
       }
@@ -63,6 +66,8 @@ export function createWriteTool(opts: WriteToolOptions = {}): ToolHandler {
           error: `Write: file_path must be absolute, got '${filePath}'`,
         });
       }
+      const blockErr = checkBlockedPath("Write", filePath);
+      if (blockErr) return JSON.stringify({ error: blockErr });
       // gate: Read-before-Write — when the file already exists the model
       // must have read it first (line-numbered view) to avoid blind overwrites.
       if (tracker) {

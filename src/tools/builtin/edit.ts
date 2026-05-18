@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, type Stats, statSync, writeFileSync } from "node:fs";
-import { isAbsolute } from "node:path";
+import { isAbsolute, normalize } from "node:path";
+import { checkBlockedPath } from "@/tools/path-guard";
 import type { FileStateTracker } from "@/tools/file-state";
 import type { ToolHandler } from "@/tools/registry";
 
@@ -78,7 +79,9 @@ export function createEditTool(opts: EditToolOptions = {}): ToolHandler {
       },
     },
     async execute(input) {
-      const filePath = typeof input.file_path === "string" ? input.file_path : "";
+      // normalize() collapses `..` segments (e.g. /safe/../etc → /etc) so
+      // that the isAbsolute check cannot be bypassed by path traversal.
+      const filePath = normalize(typeof input.file_path === "string" ? input.file_path : "");
       if (!filePath) {
         return JSON.stringify({ error: "Edit: missing 'file_path' argument" });
       }
@@ -87,6 +90,8 @@ export function createEditTool(opts: EditToolOptions = {}): ToolHandler {
           error: `Edit: file_path must be absolute, got '${filePath}'`,
         });
       }
+      const blockErr = checkBlockedPath("Edit", filePath);
+      if (blockErr) return JSON.stringify({ error: blockErr });
       // Read-before-Edit gate. No-op when no tracker is wired (standalone use).
       if (tracker) {
         const gateErr = tracker.checkBeforeMutate(filePath, "Edit");
