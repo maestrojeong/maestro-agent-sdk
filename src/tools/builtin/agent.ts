@@ -20,9 +20,18 @@ import type { ToolHandler } from "@/tools/registry";
  * for both). Running two in parallel would race the API rate limits + the
  * shared file-state tracker registry.
  *
- * No `description` field on the schema (advisor): the model would either
- * skip it or duplicate the prompt into it. We derive a log label from the
- * prompt's first line internally.
+ * Schema parity (v0.1.9):
+ *   - `description` is accepted (3-5 word label). Surfaces to logs / UI;
+ *     execution doesn't depend on it. The earlier "advisor: don't expose
+ *     description" call was reversed for claude-SDK parity — the field is
+ *     part of the model's pretrained Agent-call shape and dropping it
+ *     just adds friction. We still derive an internal log label from the
+ *     prompt when the model omits it.
+ *   - `model` (override) and `isolation` / `run_in_background` (claude-SDK
+ *     extras) remain deliberately absent. The first invites the model to
+ *     downgrade itself to "save cost" and miss things; the second two
+ *     need worktree + process-registry plumbing that hasn't paid for
+ *     itself yet. Reconsider if real workloads ask for them.
  */
 
 export interface AgentToolFactoryOptions {
@@ -57,6 +66,13 @@ export function createAgentTool(opts: AgentToolFactoryOptions): ToolHandler {
       input_schema: {
         type: "object",
         properties: {
+          description: {
+            type: "string",
+            description:
+              "3-5 word label for the delegated task. Surfaces to logs and any " +
+              "permission UI. Accepted for claude-SDK parity — execution doesn't " +
+              "depend on it. If omitted, an internal label is derived from `prompt`.",
+          },
           subagent_type: {
             type: "string",
             description:
