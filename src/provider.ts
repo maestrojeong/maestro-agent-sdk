@@ -21,14 +21,19 @@ import {
 import { curateSkills } from "@/skills/curator";
 import { buildSkillsIndex } from "@/skills/index-builder";
 import { loadSkillsCached } from "@/skills/loader";
-import { getTodoStore } from "@/state/todos";
+import { getTaskStore } from "@/state/tasks";
 import { createAgentTool } from "@/tools/builtin/agent";
 import { bashTool } from "@/tools/builtin/bash";
 import { createEditTool } from "@/tools/builtin/edit";
 import { createReadTool } from "@/tools/builtin/read";
 import { createSkillViewTool } from "@/tools/builtin/skill_view";
 import { createSkillWriteTool } from "@/tools/builtin/skill_write";
-import { createTodoWriteTool } from "@/tools/builtin/todo_write";
+import {
+  createTaskCreateTool,
+  createTaskGetTool,
+  createTaskListTool,
+  createTaskUpdateTool,
+} from "@/tools/builtin/tasks";
 import { webFetchTool } from "@/tools/builtin/web_fetch";
 import { createWriteTool } from "@/tools/builtin/write";
 import { getFileStateTracker } from "@/tools/file-state";
@@ -83,10 +88,12 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
   // turns so a Read in turn N is still recorded when an Edit fires in N+1.
   const fileTracker = getFileStateTracker(sessionId);
 
-  // Per-session TodoWrite store. Same module-level cache pattern — the
-  // store hydrates from `~/.maestro/sessions/<sid>.todos.json` on first
-  // access so a multi-turn plan survives across calls.
-  const todoStore = getTodoStore(sessionId);
+  // Per-session task store backing the TaskCreate/Update/List/Get family.
+  // Same module-level cache pattern as the file-state tracker — the store
+  // hydrates from `~/.maestro/sessions/<sid>.tasks.json` on first access
+  // (auto-migrating from the legacy `.todos.json` when present) so a
+  // multi-turn plan survives across calls.
+  const taskStore = getTaskStore(sessionId);
 
   const tools = new ToolRegistry();
 
@@ -100,7 +107,13 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
   tools.register(createWriteTool({ tracker: fileTracker }));
   tools.register(createEditTool({ tracker: fileTracker }));
   tools.register(webFetchTool);
-  tools.register(createTodoWriteTool({ store: todoStore }));
+  // Task family — granular CRUD replacing the v0.1.x TodoWrite. All four
+  // share the same per-session store; the system reminder renders the list
+  // every turn so the model rarely needs to call TaskList explicitly.
+  tools.register(createTaskCreateTool({ store: taskStore }));
+  tools.register(createTaskUpdateTool({ store: taskStore }));
+  tools.register(createTaskListTool({ store: taskStore }));
+  tools.register(createTaskGetTool({ store: taskStore }));
 
   // --- Skills: load SKILL.md catalog + register `skill_view` ---------------
   //
@@ -281,7 +294,7 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
   const buildIterReminder = (iterationsRemaining: number): string =>
     buildSystemReminder({
       sessionId,
-      todos: todoStore.list(),
+      tasks: taskStore.list(),
       extras: [iterationBudgetLine(iterationsRemaining, maxIter)],
     });
   const reminderText = buildIterReminder(maxIter);

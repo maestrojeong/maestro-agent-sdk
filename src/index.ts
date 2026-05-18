@@ -32,7 +32,12 @@ export { bashTool } from "@/tools/builtin/bash";
 export { createReadTool } from "@/tools/builtin/read";
 export { createWriteTool } from "@/tools/builtin/write";
 export { createEditTool } from "@/tools/builtin/edit";
-export { createTodoWriteTool } from "@/tools/builtin/todo_write";
+export {
+  createTaskCreateTool,
+  createTaskUpdateTool,
+  createTaskListTool,
+  createTaskGetTool,
+} from "@/tools/builtin/tasks";
 export { createSkillViewTool } from "@/tools/builtin/skill_view";
 export { createSkillWriteTool } from "@/tools/builtin/skill_write";
 export { createAgentTool } from "@/tools/builtin/agent";
@@ -91,7 +96,7 @@ export { hashToolContent } from "@/memory/hash";
 export { ACTIVE_TASK_TEMPLATE, wrapCompactedSummary } from "@/memory/active-task-template";
 
 // ─── State (todos) ───────────────────────────────────────────────────────────
-export { getTodoStore, dropTodoStore } from "@/state/todos";
+export { getTaskStore, dropTaskStore, type TaskEntry, type TaskStatus } from "@/state/tasks";
 
 // ─── MCP ─────────────────────────────────────────────────────────────────────
 export type { MaestroMcpServerSpec, MaestroMcpClient, MaestroMcpTool } from "@/mcp/client";

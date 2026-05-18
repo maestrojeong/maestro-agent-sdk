@@ -45,7 +45,7 @@ import {
 } from "@/agents/rollout/shared";
 import { MAESTRO_SDK_VERSION } from "@/platform/version";
 import type { ProviderContentBlock, ProviderMessage } from "@/providers/base";
-import { dropTodoStore } from "@/state/todos";
+import { dropTaskStore } from "@/state/tasks";
 import { dropFileStateTracker } from "@/tools/file-state";
 import { parseJsonlText, writeJsonlFile } from "@/platform/jsonl";
 import { logger } from "@/platform/logger";
@@ -57,7 +57,7 @@ import type { ConversationEntry } from "@/storage/conversations";
  * Resolves under `DATA_DIR` (which the host can pin via the
  * `MAESTRO_DATA_DIR` env var — see `platform/config`). One canonical knob
  * for "where SDK state lives" keeps the sessions, skill-usage counters,
- * and todo stores all under the same root.
+ * and task stores all under the same root.
  *
  * Re-reads `DATA_DIR` on every call so a host that sets the env var late
  * (before the first session save) still gets the override. The penalty
@@ -275,13 +275,14 @@ export function deleteMaestroSession(sessionId: string): void {
       logger.warn({ err: e, sessionId }, "deleteMaestroSession: unlink failed (non-ENOENT)");
       // Still drop the in-memory caches — caller treats the session as gone.
       dropFileStateTracker(sessionId);
-      dropTodoStore(sessionId);
+      dropTaskStore(sessionId);
       throw e;
     }
   }
   dropFileStateTracker(sessionId);
-  // Drops the in-memory store AND unlinks the on-disk `.todos.json` sidecar.
-  dropTodoStore(sessionId);
+  // Drops the in-memory store AND unlinks the on-disk `.tasks.json` sidecar
+  // (plus the legacy `.todos.json` if a migration hasn't fired yet).
+  dropTaskStore(sessionId);
 }
 
 /**
@@ -498,8 +499,8 @@ export function cleanupStaleMaestroSessions(maxAgeMs: number = DEFAULT_MAESTRO_S
       unlinkSync(path);
       removed++;
       dropFileStateTracker(sessionId);
-      // Also unlinks the on-disk `.todos.json` sidecar.
-      dropTodoStore(sessionId);
+      // Also unlinks the on-disk `.tasks.json` sidecar (+ legacy `.todos.json`).
+      dropTaskStore(sessionId);
     } catch (e) {
       if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") {
         logger.warn(
@@ -509,7 +510,7 @@ export function cleanupStaleMaestroSessions(maxAgeMs: number = DEFAULT_MAESTRO_S
       } else {
         // ENOENT mid-loop = raced. File gone → caches moot.
         dropFileStateTracker(sessionId);
-        dropTodoStore(sessionId);
+        dropTaskStore(sessionId);
       }
     }
   }

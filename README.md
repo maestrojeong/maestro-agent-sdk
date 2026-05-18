@@ -22,7 +22,7 @@ Inspired by [Claude Code](https://www.anthropic.com/claude-code) and [`hermes-ag
 
 - **Agent loop** — provider-driven tool-calling loop with iteration cap, abort signal, and event stream.
 - **Pluggable providers** — first-class adapters for Anthropic (Claude) and DeepSeek V4; provider-neutral message schema so adding OpenAI / Gemini / Ollama is a thin file.
-- **Built-in tools** — `bash`, `Read`, `Write`, `Edit`, `Agent` (sub-agent delegation), `TodoWrite`, `WebFetch`, `skill_view`, `skill_write`. Bring your own via `ToolRegistry`.
+- **Built-in tools** — `bash`, `Read`, `Write`, `Edit`, `Agent` (sub-agent delegation), `TaskCreate`/`TaskUpdate`/`TaskList`/`TaskGet`, `WebFetch`, `skill_view`, `skill_write`. Bring your own via `ToolRegistry`.
 - **MCP** — built-in client pool (stdio + SSE) so any MCP server (`@modelcontextprotocol/sdk`) shows up as tools.
 - **Skills** — per-workspace `.skills/<skillKey>/<name>/skill.md` packages with FTS-style indexing, on-demand body load (`skill_view`), and agent-autonomous authoring (`skill_write`).
 - **Memory** — automatic context compression (summarization + pruning) when the token budget is hit. Reuses the agent's own model for compaction — no separate model knob.
@@ -267,6 +267,55 @@ const { scanned, removed } = cleanupStaleMaestroSessions();
 console.log(`maestro sweep: removed ${removed}/${scanned}`);
 ```
 
+## Tasks — granular CRUD via Claude-Code-style `Task*` family
+
+v0.1.5 replaced the v0.1.x `TodoWrite` snapshot-replace tool with the
+`Task*` family — `TaskCreate`, `TaskUpdate`, `TaskList`, `TaskGet`. The
+trade-off: per-call payloads are smaller (one task at a time vs the whole
+list every turn) and the model gets first-class dependency edges and
+per-task metadata.
+
+```ts
+// Bootstrap a multi-step plan.
+TaskCreate({ subject: "Read spec", activeForm: "Reading spec" });
+// → { ok: true, id: "1", subject: "Read spec" }
+
+TaskCreate({ subject: "Implement loader" });
+// → { ok: true, id: "2" }
+
+TaskCreate({ subject: "Write tests", owner: "general" });
+// → { ok: true, id: "3" }
+
+// Wire dependencies. Both sides update in sync.
+TaskUpdate({ taskId: "3", addBlockedBy: ["2"] });
+
+// Advance status. Setting in_progress demotes any other in-flight task.
+TaskUpdate({ taskId: "1", status: "in_progress" });
+TaskUpdate({ taskId: "1", status: "completed" });
+TaskUpdate({ taskId: "2", status: "in_progress" });
+// → { ok: true, task: {...}, demotedId: "1" }  // (was already completed, no-op)
+
+// Read side — the per-turn system reminder already renders a summary;
+// TaskList exists for programmatic refresh after batch updates.
+TaskList();
+// TaskGet({ taskId: "2" }) for the full entry with description + metadata.
+```
+
+Persistence: `~/.maestro/sessions/<sessionId>.tasks.json` (`version: 2`).
+Files written by SDK ≤ 0.1.4 land at `.todos.json` (`version: 1`); the
+v0.1.5 store auto-migrates on first hydrate so existing sessions keep their
+plan without manual conversion. The migration strips the `task-N` prefix
+to bare numeric ids and maps `content` → `subject`.
+
+The system reminder rendered every turn carries a compact view:
+
+```
+Tasks (1/3):
+  [✓] #1  Read spec
+  [→] #2  Implement loader
+  [ ] #3  Write tests (blocked by #2)
+```
+
 ## Session rollout format (since v0.1.5)
 
 Each session JSONL at `~/.maestro/sessions/<sessionId>.jsonl` carries a
@@ -333,7 +382,7 @@ cd maestro-agent-sdk
 npm install
 npm run typecheck   # tsc --noEmit
 npm run build       # tsc + tsc-alias → dist/
-npm test            # vitest, 390 tests
+npm test            # vitest, 405 tests
 ```
 
 ### Known gaps

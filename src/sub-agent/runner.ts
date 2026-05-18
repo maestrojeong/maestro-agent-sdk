@@ -121,8 +121,8 @@ function loadOverlay(kind: SubagentType): string {
  * `explore` — Read + WebFetch + skill_view only. NO bash, write, edit —
  *             the role is read-only by construction.
  *
- * Neither registers `Agent` (recursion cap) or `todo_write` (sub-agents
- * don't plan iteratively).
+ * Neither registers `Agent` (recursion cap) or the Task* family
+ * (sub-agents don't plan iteratively).
  */
 function buildToolRegistry(
   kind: SubagentType,
@@ -162,7 +162,7 @@ function buildToolRegistry(
  * Cleanup contract (load-bearing):
  *   - Clean drain or thrown error → `deleteMaestroSession(subSessionId)`
  *     in the finally block. Frees the JSONL + file-state tracker + (any)
- *     todo store for this sub-session.
+ *     task store for this sub-session.
  *   - Abort → leave JSONL on disk. The 30-day TTL sweep will eventually
  *     clear it; meanwhile it's available for postmortem.
  */
