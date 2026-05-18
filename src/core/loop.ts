@@ -197,6 +197,15 @@ export async function* runConversation(
       // Walk the assistant's content blocks once: emit text/tool_use events
       // to the caller, build the assistant-turn message for the next
       // iteration, and collect tool_use blocks that need dispatching.
+      // Track whether this turn carries any thinking blocks alongside a
+      // tool_use. If it does, we MUST preserve the original block layout
+      // when pushing the assistant message back into history, because
+      // Anthropic re-validates the signed thinking block on the next turn
+      // and rejects with a 400 if neighboring blocks have been added/removed
+      // in a way that shifts the thinking block's effective position.
+      const hasThinkingBlock = response.content.some(
+        (b) => b.type === "thinking" || b.type === "redacted_thinking",
+      );
       for (const block of response.content) {
         if (block.type === "text") {
           // Non-streaming path: scrub the whole block at once. Mirrors the
@@ -206,6 +215,16 @@ export async function* runConversation(
           assistantText += cleaned;
           if (cleaned.length > 0) {
             assistantBlocks.push({ type: "text", text: cleaned });
+          } else if (hasThinkingBlock) {
+            // Scrubber removed the whole text block (e.g. pure
+            // <compacted-history>...</compacted-history> echo). Without
+            // a placeholder we'd silently drop a sibling of the thinking
+            // block, changing the block layout and risking the Anthropic
+            // "thinking blocks cannot be modified" 400 on the next turn.
+            // Keep an empty text block to preserve the original wire
+            // shape — the model already saw the original text, and an
+            // empty text node is a valid Anthropic content block.
+            assistantBlocks.push({ type: "text", text: "" });
           }
         } else if (block.type === "tool_use") {
           toolUses.push({ id: block.id, name: block.name, input: block.input });
