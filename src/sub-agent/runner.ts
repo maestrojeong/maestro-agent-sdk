@@ -11,14 +11,18 @@ import { effortToThinkingBudget } from "@/providers/anthropic";
 import type { Provider, ProviderContentBlock, ProviderMessage } from "@/providers/base";
 import { deleteMaestroSession } from "@/session-store";
 import { loadSkillsCached, type SkillEntry } from "@/skills/loader";
-import { bashTool } from "@/tools/builtin/bash";
+import { createBashTool } from "@/tools/builtin/bash";
 import { createEditTool } from "@/tools/builtin/edit";
+import { globTool } from "@/tools/builtin/glob";
+import { grepTool } from "@/tools/builtin/grep";
+import { createMultiEditTool } from "@/tools/builtin/multi_edit";
 import { createReadTool } from "@/tools/builtin/read";
 import { createSkillViewTool } from "@/tools/builtin/skill_view";
 import { webFetchTool } from "@/tools/builtin/web_fetch";
 import { createWriteTool } from "@/tools/builtin/write";
 import { getFileStateTracker } from "@/tools/file-state";
 import { ToolRegistry } from "@/tools/registry";
+import { isAbortError } from "@/core/is-abort-error";
 import type { EffortLevel, TokenUsage } from "@/types";
 
 /**
@@ -46,7 +50,7 @@ import type { EffortLevel, TokenUsage } from "@/types";
  *     No recursion. Grandchildren require the parent to re-delegate.
  */
 
-export type SubagentType = "general" | "explore";
+export type SubagentType = "general" | "explore" | "plan";
 
 export interface RunSubAgentOptions {
   subagentType: SubagentType;
@@ -117,12 +121,21 @@ function loadOverlay(kind: SubagentType): string {
 /**
  * Build the per-subagent-type tool registry.
  *
- * `general` — bash + Read + Write + Edit + WebFetch + skill_view.
- * `explore` — Read + WebFetch + skill_view only. NO bash, write, edit —
+ * `general` — bash + Read + Write + Edit + MultiEdit + Glob + Grep + WebFetch + skill_view.
+ * `explore` — Read + Glob + Grep + WebFetch + skill_view only. NO bash, write, edit —
  *             the role is read-only by construction.
+ * `plan`    — bash (read-only usage: ls/tree/git log/etc.) + Read + Glob + Grep +
+ *             WebFetch + skill_view. NO Write/Edit/MultiEdit — the role is to
+ *             produce a plan document, not to implement it.
  *
  * Neither registers `Agent` (recursion cap) or the Task* family
- * (sub-agents don't plan iteratively).
+ * (sub-agents don't plan iteratively — the plan is handed back to the parent).
+ *
+ * Glob and Grep are registered for ALL types: they are read-only filesystem
+ * tools that carry no mutation risk.
+ *
+ * MultiEdit is registered for `general` only (it batches Edit calls, so it
+ * belongs wherever Edit is available).
  */
 function buildToolRegistry(
   kind: SubagentType,
@@ -130,7 +143,6 @@ function buildToolRegistry(
   skills: SkillEntry[],
   abortSignal?: AbortSignal,
 ): ToolRegistry {
-  void abortSignal; // reserved for future bash abort wiring
   const tools = new ToolRegistry();
 
   // Sub-agent's OWN file-state tracker — keyed off subSessionId, NOT the
@@ -139,17 +151,33 @@ function buildToolRegistry(
   const fileTracker = getFileStateTracker(subSessionId);
 
   tools.register(createReadTool({ tracker: fileTracker }));
+  // Glob + Grep: read-only filesystem tools, safe for both `general` and
+  // `explore`. Grep shells out to ripgrep (PATH inherited from parent process
+  // via bootstrapHostPath), Glob walks in-process. Both are parallelSafe.
+  tools.register(globTool);
+  tools.register(grepTool);
   tools.register(webFetchTool);
   if (skills.length > 0) {
     tools.register(createSkillViewTool({ skills, sessionId: subSessionId }));
   }
 
   if (kind === "general") {
-    tools.register(bashTool);
+    tools.register(createBashTool({ signal: abortSignal }));
     tools.register(createWriteTool({ tracker: fileTracker }));
     tools.register(createEditTool({ tracker: fileTracker }));
+    // MultiEdit: same Read-before-Edit gate as Edit, batches N replacements
+    // atomically — registered wherever Edit is available.
+    tools.register(createMultiEditTool({ tracker: fileTracker }));
   }
-  // `explore` stops here — read-only.
+
+  if (kind === "plan") {
+    // bash is useful for read-only structural queries (ls, tree, git log,
+    // cargo tree, npm ls, …) that help the planner understand the codebase.
+    // Write/Edit/MultiEdit are intentionally excluded — the plan sub-agent
+    // produces a plan document, not implementation code.
+    tools.register(createBashTool({ signal: abortSignal }));
+  }
+  // `explore` and `plan` stop here — no write/edit tools.
 
   return tools;
 }
@@ -277,20 +305,6 @@ export async function runSubAgent(opts: RunSubAgentOptions): Promise<RunSubAgent
   }
 
   return { text: finalText, usage, subSessionId, aborted };
-}
-
-/**
- * Mirror of `maestroProvider`'s `isAbortError`. Inlined to avoid an extra
- * import path and keep this module self-contained for the sub-agent
- * boundary — the abort-shape detection is small and the runner is the
- * only sub-agent caller in v1.
- */
-function isAbortError(err: unknown): boolean {
-  if (!err || typeof err !== "object") return false;
-  const e = err as { name?: unknown; code?: unknown };
-  if (e.name === "AbortError") return true;
-  if (e.code === 20 || e.code === "ABORT_ERR") return true;
-  return false;
 }
 
 /** Convenience re-export for test setup — lets tests prime the loaded

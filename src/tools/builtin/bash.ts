@@ -1,5 +1,160 @@
 import { spawn } from "node:child_process";
+import { isAbsolute, normalize } from "node:path";
+import type { ProviderToolSchema } from "@/providers/base";
 import type { ToolHandler } from "@/tools/registry";
+
+/** Shared Bash schema — extracted as a named constant so both the bare
+ *  export (`bashTool`) and the factory (`createBashTool`) reference the
+ *  same object without a forward-reference problem. */
+const bashSchema = {
+  name: "Bash",
+  description:
+    "Execute a bash command and return stdout/stderr. Default 30s timeout " +
+    "(override via `timeout`, max 10min). 50KB output cap per stream by default " +
+    "(override via `max_output_bytes`, max 100KB). When a stream exceeds the " +
+    "cap both head and tail are preserved with a `[truncated N bytes]` marker " +
+    "between them — keeps the trailing error/summary visible. Optional " +
+    "`description` is recorded for audit/UI and otherwise ignored.",
+  input_schema: {
+    type: "object",
+    properties: {
+      command: {
+        type: "string",
+        description: "Bash command to execute.",
+      },
+      description: {
+        type: "string",
+        description:
+          "Short human-readable rationale for the command (~5-10 words). " +
+          "Accepted for claude-SDK parity — surfaces in permission UIs / " +
+          "audit logs. Ignored by execution.",
+      },
+      timeout: {
+        type: "number",
+        description:
+          "Wall-clock timeout in milliseconds. Defaults to 30000 (30s). " +
+          "Clamped to a hard ceiling of 600000 (10min). Use a higher value " +
+          "for slow tests, installs, or builds.",
+      },
+      max_output_bytes: {
+        type: "number",
+        description:
+          "Per-stream output cap in bytes. Defaults to 50000 (50KB). Clamped " +
+          "to a hard ceiling of 100000 (100KB). Exceeding bytes are dropped " +
+          "from the middle — head and tail are preserved with a " +
+          "`[truncated N bytes]` marker between them.",
+      },
+      cwd: {
+        type: "string",
+        description: "Working directory (optional).",
+      },
+    },
+    required: ["command"],
+  },
+} as const;
+
+// ───────────────────────────────────────────────
+// Factory — wraps the shared shell-out logic with
+// an AbortSignal so the sub-agent runner can wire
+// parent abort through to `spawn({ signal })`.
+//
+// Usage in runner.ts:
+//   tools.register(createBashTool({ signal: abortSignal }));
+// ───────────────────────────────────────────────
+export function createBashTool(opts?: { signal?: AbortSignal }): ToolHandler {
+  const parentSignal = opts?.signal;
+  return {
+    schema: bashSchema as unknown as ProviderToolSchema,
+    async execute(input) {
+      if (parentSignal?.aborted) {
+        return JSON.stringify({ error: "aborted" });
+      }
+      return executeBash(input, parentSignal);
+    },
+  };
+}
+
+/** Shared execute logic — used by both the factory wrapper and the bare export. */
+async function executeBash(
+  input: Record<string, unknown>,
+  abortSignal?: AbortSignal,
+): Promise<string> {
+  const command = String(input.command ?? "");
+  if (!command.trim()) {
+    return JSON.stringify({ error: "empty command" });
+  }
+  let cwd = typeof input.cwd === "string" ? input.cwd : undefined;
+  if (cwd !== undefined) {
+    cwd = normalize(cwd);
+    if (!isAbsolute(cwd)) {
+      return JSON.stringify({
+        error: `Bash: 'cwd' must be an absolute path, got '${cwd}'`,
+      });
+    }
+  }
+  const rawTimeout = input.timeout;
+  const timeoutMs =
+    typeof rawTimeout === "number" && Number.isFinite(rawTimeout) && rawTimeout > 0
+      ? Math.min(Math.floor(rawTimeout), BASH_TIMEOUT_MAX_MS)
+      : BASH_TIMEOUT_MS;
+  const rawMaxOutput = input.max_output_bytes;
+  const maxOutputBytes =
+    typeof rawMaxOutput === "number" && Number.isFinite(rawMaxOutput) && rawMaxOutput > 0
+      ? Math.min(Math.floor(rawMaxOutput), BASH_MAX_OUTPUT_HARD)
+      : BASH_MAX_OUTPUT_DEFAULT;
+
+  const stdoutRing = createOutputRing(maxOutputBytes);
+  const stderrRing = createOutputRing(maxOutputBytes);
+
+  return new Promise<string>((resolve, reject) => {
+    try {
+      const child = spawn("bash", ["-c", command], {
+        ...(cwd ? { cwd } : {}),
+        ...(abortSignal ? { signal: abortSignal } : {}),
+        env: process.env,
+      });
+
+      const timer = setTimeout(() => {
+        child.kill("SIGKILL");
+        resolve(
+          JSON.stringify({
+            error: `timeout after ${timeoutMs}ms`,
+            stdout: stdoutRing.render(),
+            stderr: stderrRing.render(),
+            ...truncatedFlag(stdoutRing, stderrRing),
+          }),
+        );
+      }, timeoutMs);
+
+      child.stdout?.on("data", (chunk: Buffer) => {
+        stdoutRing.append(chunk.toString("utf-8"));
+      });
+      child.stderr?.on("data", (chunk: Buffer) => {
+        stderrRing.append(chunk.toString("utf-8"));
+      });
+      child.on("close", (code) => {
+        clearTimeout(timer);
+        resolve(
+          JSON.stringify({
+            exitCode: code,
+            stdout: stdoutRing.render(),
+            stderr: stderrRing.render(),
+            ...truncatedFlag(stdoutRing, stderrRing),
+          }),
+        );
+      });
+      child.on("error", (err) => {
+        clearTimeout(timer);
+        resolve(JSON.stringify({ error: err.message }));
+      });
+    } catch (err) {
+      // Synchronous throw from spawn (e.g. invalid options) — reject
+      // rather than letting the Promise hang unresolved.
+      reject(err instanceof Error ? err : new Error(String(err)));
+    }
+  });
+}
+
 
 /** Default wall-clock cap. The model can override via the `timeout` input
  *  field — useful for slow tests, builds, installs — capped at `BASH_TIMEOUT_MAX_MS`
@@ -46,120 +201,11 @@ const BASH_MAX_OUTPUT_HARD = 100_000;
  * pretrained instinct to emit a short rationale per Bash call survives the
  * agent switch, which is what permission UIs / audit logs want to render.
  */
-export const bashTool: ToolHandler = {
-  schema: {
-    name: "Bash",
-    description:
-      "Execute a bash command and return stdout/stderr. Default 30s timeout " +
-      "(override via `timeout`, max 10min). 50KB output cap per stream by default " +
-      "(override via `max_output_bytes`, max 100KB). When a stream exceeds the " +
-      "cap both head and tail are preserved with a `[truncated N bytes]` marker " +
-      "between them — keeps the trailing error/summary visible. Optional " +
-      "`description` is recorded for audit/UI and otherwise ignored.",
-    input_schema: {
-      type: "object",
-      properties: {
-        command: {
-          type: "string",
-          description: "Bash command to execute.",
-        },
-        description: {
-          type: "string",
-          description:
-            "Short human-readable rationale for the command (~5-10 words). " +
-            "Accepted for claude-SDK parity — surfaces in permission UIs / " +
-            "audit logs. Ignored by execution.",
-        },
-        timeout: {
-          type: "number",
-          description:
-            "Wall-clock timeout in milliseconds. Defaults to 30000 (30s). " +
-            "Clamped to a hard ceiling of 600000 (10min). Use a higher value " +
-            "for slow tests, installs, or builds.",
-        },
-        max_output_bytes: {
-          type: "number",
-          description:
-            "Per-stream output cap in bytes. Defaults to 50000 (50KB). Clamped " +
-            "to a hard ceiling of 100000 (100KB). Exceeding bytes are dropped " +
-            "from the middle — head and tail are preserved with a " +
-            "`[truncated N bytes]` marker between them.",
-        },
-        cwd: {
-          type: "string",
-          description: "Working directory (optional).",
-        },
-      },
-      required: ["command"],
-    },
-  },
-  async execute(input) {
-    const command = String(input.command ?? "");
-    if (!command.trim()) {
-      return JSON.stringify({ error: "empty command" });
-    }
-    const cwd = typeof input.cwd === "string" ? input.cwd : undefined;
-    // Resolve the effective timeout. Non-numeric / non-finite / non-positive
-    // falls back to the 30s default. Positive values are clamped to 10min.
-    const rawTimeout = input.timeout;
-    const timeoutMs =
-      typeof rawTimeout === "number" && Number.isFinite(rawTimeout) && rawTimeout > 0
-        ? Math.min(Math.floor(rawTimeout), BASH_TIMEOUT_MAX_MS)
-        : BASH_TIMEOUT_MS;
-    // Same shape for the output cap. The model often picks an explicit value
-    // when it knows the command will be noisy (`bun install`, `pytest -v`),
-    // and we want to honour that without giving away an unbounded buffer.
-    const rawMaxOutput = input.max_output_bytes;
-    const maxOutputBytes =
-      typeof rawMaxOutput === "number" && Number.isFinite(rawMaxOutput) && rawMaxOutput > 0
-        ? Math.min(Math.floor(rawMaxOutput), BASH_MAX_OUTPUT_HARD)
-        : BASH_MAX_OUTPUT_DEFAULT;
+export const bashTool: ToolHandler = createBashTool();
 
-    const stdoutRing = createOutputRing(maxOutputBytes);
-    const stderrRing = createOutputRing(maxOutputBytes);
-
-    return new Promise<string>((resolve) => {
-      const child = spawn("bash", ["-c", command], {
-        ...(cwd ? { cwd } : {}),
-        env: process.env,
-      });
-
-      const timer = setTimeout(() => {
-        child.kill("SIGKILL");
-        resolve(
-          JSON.stringify({
-            error: `timeout after ${timeoutMs}ms`,
-            stdout: stdoutRing.render(),
-            stderr: stderrRing.render(),
-            ...truncatedFlag(stdoutRing, stderrRing),
-          }),
-        );
-      }, timeoutMs);
-
-      child.stdout?.on("data", (chunk: Buffer) => {
-        stdoutRing.append(chunk.toString("utf-8"));
-      });
-      child.stderr?.on("data", (chunk: Buffer) => {
-        stderrRing.append(chunk.toString("utf-8"));
-      });
-      child.on("close", (code) => {
-        clearTimeout(timer);
-        resolve(
-          JSON.stringify({
-            exitCode: code,
-            stdout: stdoutRing.render(),
-            stderr: stderrRing.render(),
-            ...truncatedFlag(stdoutRing, stderrRing),
-          }),
-        );
-      });
-      child.on("error", (err) => {
-        clearTimeout(timer);
-        resolve(JSON.stringify({ error: err.message }));
-      });
-    });
-  },
-};
+/** Named schema export so the provider can reference it
+ *  without instantiating a full tool registry. */
+export const bashToolSchema = bashSchema;
 
 /**
  * Two-ended output buffer that keeps the first `headCap` bytes and the last

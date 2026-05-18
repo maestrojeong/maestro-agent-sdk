@@ -1,5 +1,5 @@
 import { readdirSync, type Stats, statSync } from "node:fs";
-import { isAbsolute, join, relative, sep } from "node:path";
+import { isAbsolute, join, normalize, relative, sep } from "node:path";
 import type { ToolHandler } from "@/tools/registry";
 
 /**
@@ -93,7 +93,8 @@ export const globTool: ToolHandler = {
           error: `Glob: 'path' must be absolute, got '${rawPath}'`,
         });
       }
-      root = rawPath;
+      // normalize() collapses `..` so the walk root can't escape via e.g. /safe/../../../etc.
+      root = normalize(rawPath);
     } else if (isAbsolute(rawPattern)) {
       // claude-SDK parity: when the caller embeds the absolute root inside
       // `pattern` (e.g. `/Users/foo/proj/**/*.ts`) and omits `path`, we split
@@ -102,7 +103,8 @@ export const globTool: ToolHandler = {
       // *relative* paths and returns zero — a footgun we hit often when the
       // model copy-pastes absolute paths it just got from Read/Grep.
       const split = splitAbsolutePattern(rawPattern);
-      root = split.root;
+      // normalize here too — brace patterns can embed `..` in the fixed prefix.
+      root = normalize(split.root);
       pattern = split.pattern;
     } else {
       root = process.cwd();

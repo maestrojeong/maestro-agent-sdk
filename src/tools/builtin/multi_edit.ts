@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, type Stats, statSync, writeFileSync } from "node:fs";
-import { isAbsolute } from "node:path";
+import { isAbsolute, normalize } from "node:path";
 import { countOccurrences } from "@/tools/builtin/edit";
+import { checkBlockedPath } from "@/tools/path-guard";
 import type { FileStateTracker } from "@/tools/file-state";
 import type { ToolHandler } from "@/tools/registry";
 
@@ -115,7 +116,9 @@ export function createMultiEditTool(opts: MultiEditToolOptions = {}): ToolHandle
       },
     },
     async execute(input) {
-      const filePath = typeof input.file_path === "string" ? input.file_path : "";
+      // normalize() collapses `..` segments before the isAbsolute guard so
+      // that path traversal (e.g. /safe/../etc/passwd) cannot bypass it.
+      const filePath = normalize(typeof input.file_path === "string" ? input.file_path : "");
       if (!filePath) {
         return JSON.stringify({ error: "MultiEdit: missing 'file_path' argument" });
       }
@@ -124,6 +127,8 @@ export function createMultiEditTool(opts: MultiEditToolOptions = {}): ToolHandle
           error: `MultiEdit: file_path must be absolute, got '${filePath}'`,
         });
       }
+      const blockErr = checkBlockedPath("MultiEdit", filePath);
+      if (blockErr) return JSON.stringify({ error: blockErr });
       // Read-before-Edit gate. Fires once for the whole batch.
       if (tracker) {
         const gateErr = tracker.checkBeforeMutate(filePath, "MultiEdit");
