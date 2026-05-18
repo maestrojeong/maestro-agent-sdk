@@ -73,6 +73,7 @@ export {
   iterationBudgetLine,
   resolveSkillsDir,
   applySkillAllowlist,
+  MAESTRO_DEFAULT_SKILL_KEY,
 } from "@/provider";
 
 // ─── Skills ──────────────────────────────────────────────────────────────────

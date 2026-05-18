@@ -2,7 +2,11 @@ import { afterEach, describe, expect, test } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applySkillAllowlist, resolveSkillsDir } from "@/provider";
+import {
+  applySkillAllowlist,
+  MAESTRO_DEFAULT_SKILL_KEY,
+  resolveSkillsDir,
+} from "@/provider";
 import { invalidateSkillsCache, loadSkills, type SkillEntry } from "@/skills/loader";
 
 /**
@@ -10,12 +14,15 @@ import { invalidateSkillsCache, loadSkills, type SkillEntry } from "@/skills/loa
  *
  * Routing model: deterministic from `(opts.cwd, opts.skillKey)`.
  *   - `skillKey` set    → `<cwd>/.skills/<skillKey>/`
- *   - `skillKey` unset  → `<cwd>/.skills/`
+ *   - `skillKey` unset  → `<cwd>/.skills/<MAESTRO_DEFAULT_SKILL_KEY>/`
+ *                         (literally `<cwd>/.skills/default/`)
  *
- * No env var, no explicit dir override. The simplification trades
- * configurability for "one workspace, one keyed profile, one catalog"
- * predictability — every reader of the SDK can answer "where does this
- * call load skills from?" by looking at two fields.
+ * No env var, no explicit dir override. Every skill lives under a named
+ * key — the SDK never reads from `.skills/` root directly. The
+ * simplification trades configurability for "one workspace, one keyed
+ * profile, one catalog" predictability — every reader of the SDK can
+ * answer "where does this call load skills from?" by looking at two
+ * fields.
  *
  * `applySkillAllowlist` is a name-based filter applied to the loaded
  * catalog before curation / index-build / skill_view registration.
@@ -37,14 +44,24 @@ afterEach(() => {
 });
 
 describe("resolveSkillsDir — deterministic (cwd, skillKey) routing", () => {
-  test("no skillKey → <cwd>/.skills/ root", () => {
-    expect(resolveSkillsDir({ cwd: "/proj/x" })).toBe("/proj/x/.skills");
+  test("no skillKey → <cwd>/.skills/default/ (uses MAESTRO_DEFAULT_SKILL_KEY)", () => {
+    expect(MAESTRO_DEFAULT_SKILL_KEY).toBe("default");
+    expect(resolveSkillsDir({ cwd: "/proj/x" })).toBe("/proj/x/.skills/default");
   });
 
   test("skillKey set → <cwd>/.skills/<key>/", () => {
     expect(resolveSkillsDir({ cwd: "/proj/x", skillKey: "legal" })).toBe(
       "/proj/x/.skills/legal",
     );
+  });
+
+  test("explicit skillKey === 'default' resolves to same dir as omission", () => {
+    // Symbolic equivalence — passing the constant explicitly must match the
+    // implicit-default behavior, so hosts can choose whether to be explicit
+    // without changing semantics.
+    const implicit = resolveSkillsDir({ cwd: "/proj/x" });
+    const explicit = resolveSkillsDir({ cwd: "/proj/x", skillKey: MAESTRO_DEFAULT_SKILL_KEY });
+    expect(explicit).toBe(implicit);
   });
 
   test("different keys under same cwd resolve to disjoint dirs", () => {
@@ -65,7 +82,7 @@ describe("resolveSkillsDir — deterministic (cwd, skillKey) routing", () => {
     const original = process.env.MAESTRO_SKILL_DIR;
     process.env.MAESTRO_SKILL_DIR = "/env/should/be/ignored";
     try {
-      expect(resolveSkillsDir({ cwd: "/proj/x" })).toBe("/proj/x/.skills");
+      expect(resolveSkillsDir({ cwd: "/proj/x" })).toBe("/proj/x/.skills/default");
       expect(resolveSkillsDir({ cwd: "/proj/x", skillKey: "k" })).toBe(
         "/proj/x/.skills/k",
       );
@@ -132,16 +149,30 @@ describe("end-to-end skill loading from resolved dir", () => {
     );
   }
 
-  test("no skillKey: loads from <cwd>/.skills/", () => {
-    const cwd = mkdtempSync(join(tmpdir(), "maestro-skills-noKey-"));
+  test("no skillKey: loads from <cwd>/.skills/default/", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "maestro-skills-defaultKey-"));
     tracked.push(cwd);
-    const dotSkills = join(cwd, ".skills");
-    writeSkill(dotSkills, "general", "from-root");
+    const defaultDir = join(cwd, ".skills", "default");
+    writeSkill(defaultDir, "general", "from-default");
 
     const resolved = resolveSkillsDir({ cwd });
-    expect(resolved).toBe(dotSkills);
+    expect(resolved).toBe(defaultDir);
     const skills = loadSkills(resolved);
-    expect(skills.map((s) => s.name)).toEqual(["from-root"]);
+    expect(skills.map((s) => s.name)).toEqual(["from-default"]);
+  });
+
+  test("no skillKey + only siblings of default/ populated → empty catalog", () => {
+    // Sanity check: putting skills directly under `.skills/` (without a key
+    // subdir) is invisible to the SDK. The new layout requires every skill
+    // to live under a named key dir.
+    const cwd = mkdtempSync(join(tmpdir(), "maestro-skills-bareRoot-"));
+    tracked.push(cwd);
+    writeSkill(join(cwd, ".skills"), "general", "bare-root-skill");
+
+    const resolved = resolveSkillsDir({ cwd });
+    // Resolves to .skills/default/ which doesn't exist → empty catalog.
+    expect(resolved).toBe(join(cwd, ".skills", "default"));
+    expect(loadSkills(resolved)).toEqual([]);
   });
 
   test("keyed: loads only from <cwd>/.skills/<key>/, peer keys invisible", () => {
@@ -163,17 +194,18 @@ describe("end-to-end skill loading from resolved dir", () => {
     expect(codingSkills.map((s) => s.name)).toEqual(["review"]);
   });
 
-  test("missing keyed dir loads empty catalog (no auto-fallback to root)", () => {
+  test("missing keyed dir loads empty catalog (no cross-key fallback)", () => {
     const cwd = mkdtempSync(join(tmpdir(), "maestro-skills-missing-"));
     tracked.push(cwd);
-    // Populate root .skills/ but request a key that doesn't exist.
-    writeSkill(join(cwd, ".skills"), "general", "root-only");
+    // Populate one key but request another.
+    writeSkill(join(cwd, ".skills", "other"), "general", "other-only");
 
     const resolved = resolveSkillsDir({ cwd, skillKey: "no-such-key" });
     expect(resolved).toBe(join(cwd, ".skills", "no-such-key"));
     const skills = loadSkills(resolved);
-    // Loader returns empty when rootDir is missing — no implicit fallback to
-    // `.skills/` root means a typo'd key cleanly yields zero skills.
+    // Loader returns empty when rootDir is missing — keys are isolated, so a
+    // typo cleanly yields zero skills rather than silently inheriting another
+    // key's catalog.
     expect(skills).toEqual([]);
   });
 

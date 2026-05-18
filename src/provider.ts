@@ -112,14 +112,16 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
   //
   // Source-dir resolution is deterministic from `(opts.cwd, opts.skillKey)`:
   //   - `opts.skillKey` set    → `<cwd>/.skills/<skillKey>/`
-  //   - `opts.skillKey` unset  → `<cwd>/.skills/`
+  //   - `opts.skillKey` unset  → `<cwd>/.skills/default/`
   //
   // No env var, no explicit dir override — one workspace, one keyed
-  // profile, one catalog. Skills live alongside the project the agent is
-  // working on; the SDK never writes into a global directory. Empty dir
-  // is the expected starting state — agents populate it autonomously
-  // (or a host seeds it from a template). Multiple disjoint skill sets
-  // in one cwd are partitioned by `skillKey` subdirectories.
+  // profile, one catalog. Skills always live under a named key
+  // subdirectory; the root `.skills/` only ever holds key dirs. Skills
+  // live alongside the project the agent is working on; the SDK never
+  // writes into a global directory. Empty dir is the expected starting
+  // state — agents populate it autonomously (or a host seeds it from a
+  // template). Multiple disjoint skill sets in one cwd are partitioned
+  // by `skillKey` subdirectories.
   //
   // After loading we apply `opts.allowedSkills` (if provided) as a name
   // whitelist BEFORE curation, so curator + index-builder + skill_view all
@@ -471,11 +473,29 @@ export function iterationBudgetLine(remaining: number, max: number): string {
 }
 
 /**
+ * Skill profile name used when `AgentQueryOptions.skillKey` is omitted.
+ *
+ * Every skill the SDK loads lives under `<cwd>/.skills/<key>/` — there is
+ * no "uncategorized" slot directly beneath `.skills/`. When the caller
+ * doesn't specify a key, the SDK routes to this default subdirectory so
+ * the on-disk layout stays uniformly `key → catalog`. Hosts that want
+ * a different default name can pass `skillKey: "their-name"` explicitly
+ * on every call; the constant is exported so they can reference it
+ * symbolically rather than hard-coding the string.
+ */
+export const MAESTRO_DEFAULT_SKILL_KEY = "default" as const;
+
+/**
  * Resolve the directory the skill catalog should be loaded from for this
  * call. Deterministic from `(opts.cwd, opts.skillKey)`:
  *
  *   - `opts.skillKey` set    → `<cwd>/.skills/<skillKey>/`
- *   - `opts.skillKey` unset  → `<cwd>/.skills/`
+ *   - `opts.skillKey` unset  → `<cwd>/.skills/default/`
+ *
+ * Every loaded skill lives under a named key — the SDK never reads from
+ * `<cwd>/.skills/` directly. This keeps the layout uniform so a caller
+ * scanning the filesystem can answer "which profiles exist in this
+ * workspace?" with one `readdir`.
  *
  * The per-cwd `.skills/` convention treats every session's working
  * directory as its own skill scope — agents create, edit, and consume
@@ -499,8 +519,7 @@ export function iterationBudgetLine(remaining: number, max: number): string {
  * step that calls `loadSkillsCached` ahead of a provider invocation).
  */
 export function resolveSkillsDir(opts: { cwd: string; skillKey?: string }): string {
-  const root = join(opts.cwd, ".skills");
-  return opts.skillKey ? join(root, opts.skillKey) : root;
+  return join(opts.cwd, ".skills", opts.skillKey ?? MAESTRO_DEFAULT_SKILL_KEY);
 }
 
 /**

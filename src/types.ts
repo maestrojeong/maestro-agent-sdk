@@ -108,8 +108,17 @@ export interface AgentQueryOptions {
   silent?: boolean;
   /**
    * Named skill profile within the per-cwd `.skills/` directory. The SDK
-   * resolves the skill catalog source as `<cwd>/.skills/<skillKey>/`
-   * when set, or `<cwd>/.skills/` when omitted.
+   * resolves the skill catalog source as:
+   *
+   *   - `<cwd>/.skills/<skillKey>/`            when set
+   *   - `<cwd>/.skills/<MAESTRO_DEFAULT_SKILL_KEY>/` when omitted (literally
+   *     `<cwd>/.skills/default/` — the constant is exported so hosts can
+   *     reference it symbolically).
+   *
+   * Every skill lives under a named key — the SDK never loads from the
+   * `.skills/` root directly. This keeps the layout uniform so a caller
+   * scanning the filesystem can answer "which profiles exist?" with one
+   * `readdir`.
    *
    * Use case: one workspace, multiple disjoint skill sets. A topic /
    * session passes a key (e.g. "legal", "coding"); the agent's catalog
