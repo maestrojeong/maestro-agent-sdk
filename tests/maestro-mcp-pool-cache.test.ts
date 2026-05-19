@@ -16,7 +16,6 @@ import {
   MAESTRO_MCP_POOL_IDLE_TTL_MS,
   MAESTRO_MCP_POOL_MAX,
   releaseClient,
-  setMcpCacheIgnoreEnvKeys,
   sweepIdle,
 } from "@/mcp/pool-cache";
 
@@ -88,32 +87,16 @@ describe("hashSpec", () => {
     expect(hashSpec(a)).toBe(hashSpec(b));
   });
 
-  test("env values ARE part of the hash by default (different creds → different slots)", () => {
-    const a: MaestroMcpServerSpec = { command: "bun", env: { TOKEN: "alice" } };
-    const b: MaestroMcpServerSpec = { command: "bun", env: { TOKEN: "bob" } };
-    expect(hashSpec(a)).not.toBe(hashSpec(b));
+  test("env values are not included in the hash (per-turn vars stay shareable)", () => {
+    const a: MaestroMcpServerSpec = { command: "bun", env: { DEPTH: "1" } };
+    const b: MaestroMcpServerSpec = { command: "bun", env: { DEPTH: "5" } };
+    expect(hashSpec(a)).toBe(hashSpec(b));
   });
 
   test("env key set IS part of the hash", () => {
     const a: MaestroMcpServerSpec = { command: "bun", env: { FOO: "1" } };
     const b: MaestroMcpServerSpec = { command: "bun", env: { BAR: "1" } };
     expect(hashSpec(a)).not.toBe(hashSpec(b));
-  });
-
-  test("setMcpCacheIgnoreEnvKeys folds high-churn vars back into one slot", () => {
-    setMcpCacheIgnoreEnvKeys(["DEPTH"]);
-    try {
-      const a: MaestroMcpServerSpec = { command: "bun", env: { DEPTH: "1" } };
-      const b: MaestroMcpServerSpec = { command: "bun", env: { DEPTH: "5" } };
-      expect(hashSpec(a)).toBe(hashSpec(b));
-
-      // Non-ignored keys still split slots.
-      const c: MaestroMcpServerSpec = { command: "bun", env: { DEPTH: "1", TOKEN: "x" } };
-      const d: MaestroMcpServerSpec = { command: "bun", env: { DEPTH: "1", TOKEN: "y" } };
-      expect(hashSpec(c)).not.toBe(hashSpec(d));
-    } finally {
-      setMcpCacheIgnoreEnvKeys(null);
-    }
   });
 
   test("different command → different hash", () => {

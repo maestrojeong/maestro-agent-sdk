@@ -42,44 +42,6 @@ export const MAESTRO_MCP_POOL_IDLE_TTL_MS = Number.parseInt(
 /** Hard cap on cached clients. LRU eviction past this. */
 export const MAESTRO_MCP_POOL_MAX = Number.parseInt(process.env.MAESTRO_MCP_POOL_MAX ?? "16", 10);
 
-/**
- * Env keys whose VALUES are excluded from the spec hash. By default the hash
- * folds every env value in — different credentials / scopes / modes get
- * different cache slots, which is the correct behaviour for multi-tenant
- * SDK use.
- *
- * Hosts that pass per-turn variables in env (e.g. `--depth=N`, current
- * topic id, render-time options) can opt those keys out so a single value
- * change doesn't multiply their cache slots.
- *
- * Override per process:  MAESTRO_MCP_CACHE_IGNORE_ENV_KEYS=DEPTH,TURN_ID
- */
-const ENV_HASH_IGNORE_KEYS = new Set(
-  (process.env.MAESTRO_MCP_CACHE_IGNORE_ENV_KEYS ?? "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean),
-);
-
-/** Programmatic override for `ENV_HASH_IGNORE_KEYS`. `null` keeps the
- *  env-derived default. Useful for tests and for SDK consumers that wire
- *  policy through code instead of env vars. */
-let envHashIgnoreOverride: Set<string> | null = null;
-
-/**
- * Set or clear the env-key ignore list at runtime. `null` reverts to the
- * `MAESTRO_MCP_CACHE_IGNORE_ENV_KEYS` env-derived default. Useful for hosts
- * that compute the policy from their own config and want stronger guarantees
- * than parsing an env var.
- */
-export function setMcpCacheIgnoreEnvKeys(keys: Iterable<string> | null): void {
-  envHashIgnoreOverride = keys ? new Set(keys) : null;
-}
-
-function getEnvHashIgnoreKeys(): Set<string> {
-  return envHashIgnoreOverride ?? ENV_HASH_IGNORE_KEYS;
-}
-
 /** Context that scopes a cache key. Two turns with the same context + server
  *  + spec share the same client; otherwise they get separate slots. */
 export interface CacheKeyContext {
@@ -103,19 +65,6 @@ interface CachedEntry {
 }
 
 const cache = new Map<string, CachedEntry>();
-
-/**
- * In-flight `start()` deduplication. Two concurrent `getOrStartClient` calls
- * on the same key both see a cache miss, so without this map both would spawn
- * a stdio subprocess and one would be `close()`-ed seconds later — leaving a
- * brief window where two children share a `--user-data-dir` (playwright,
- * codex). The map holds the in-progress promise so the second caller awaits
- * the first instead of racing.
- *
- * Entries are removed in `finally` after `start()` resolves or throws.
- */
-const inflight = new Map<string, Promise<MaestroMcpClient>>();
-
 let sweeperHandle: ReturnType<typeof setInterval> | null = null;
 let shutdownRegistered = false;
 
@@ -126,42 +75,22 @@ let clientFactory: ClientFactory = (name, spec) => new MaestroMcpClient(name, sp
 
 /**
  * Build a stable hash of a server spec. We hash command + args + transport
- * url + env entries (key=value pairs).
- *
- * Why include env VALUES (correctness over cache hit rate):
- *
- *   - MCP servers commonly carry credentials, scopes, mode flags, or tenant
- *     ids in env (GITHUB_TOKEN, OPENAI_API_KEY, MAESTRO_TOPIC=…). Hashing
- *     only the keys would let two callers with the same key shape but
- *     different VALUES share a process — the second caller would be talking
- *     to the first caller's authenticated session. That's a correctness +
- *     security bug for multi-tenant SDK use.
- *
- *   - The cost of including values is reduced cache hit rate when callers
- *     vary env values per turn (`--depth`, `TURN_ID`, render options).
- *     `setMcpCacheIgnoreEnvKeys()` / `MAESTRO_MCP_CACHE_IGNORE_ENV_KEYS`
- *     opts specific keys out so high-churn variables don't blow up cache
- *     slot counts.
+ * url + sorted env keys (values excluded — they often contain per-turn
+ * variables like depth, group ids; would defeat caching).
  *
  * Two callers with the same hash get the same client back — caller is
  * responsible for ensuring that's semantically correct (i.e. they pass the
  * same `CacheKeyContext` if their spec encodes the context).
  */
 export function hashSpec(spec: MaestroMcpServerSpec): string {
-  const ignore = getEnvHashIgnoreKeys();
-  const envEntries: Array<[string, string]> = [];
-  if (spec.env) {
-    for (const k of Object.keys(spec.env).sort()) {
-      if (ignore.has(k)) continue;
-      envEntries.push([k, spec.env[k] ?? ""]);
-    }
-  }
   const normalized = {
     command: spec.command ?? null,
     args: spec.args ?? [],
     type: spec.type ?? null,
     url: spec.url ?? null,
-    env: envEntries,
+    // env values vary per turn (e.g. session-comm --depth). Hash only the keys
+    // so an env-mutating caller still gets a cache hit on the same shape.
+    envKeys: spec.env ? Object.keys(spec.env).sort() : [],
   };
   return createHash("sha256").update(JSON.stringify(normalized)).digest("hex").slice(0, 16);
 }
@@ -203,47 +132,34 @@ export async function getOrStartClient(
     return existing.client;
   }
 
-  // A concurrent acquire on the same key is already starting a client; reuse
-  // its promise instead of spawning a second subprocess. After it resolves,
-  // the cache entry exists and the lookup below picks it up with a fresh
-  // refcount increment.
-  const pending = inflight.get(key);
-  if (pending) {
-    await pending;
-    const settled = cache.get(key);
-    if (settled) {
-      settled.refcount++;
-      settled.lastUsed = Date.now();
-      return settled.client;
-    }
-    // The in-flight start() rejected. Fall through and start a fresh client
-    // ourselves so the caller gets a real failure, not a stale ghost.
-  }
-
-  // Fresh spawn. We intentionally don't pre-register the cache entry — if
-  // start() throws we don't want a dead entry sitting in cache (negative
-  // caching is off). The inflight map covers the concurrency hole.
+  // Fresh spawn. We intentionally don't pre-register the entry — if start()
+  // throws we don't want a dead entry sitting in cache (negative caching off).
   const client = clientFactory(serverName, spec);
-  const startPromise = (async () => {
-    await client.start();
-    const entry: CachedEntry = {
-      key,
-      client,
-      refcount: 1,
-      lastUsed: Date.now(),
-      serverName,
-    };
-    cache.set(key, entry);
-    evictOverCap();
-    return client;
-  })();
+  await client.start();
 
-  inflight.set(key, startPromise);
-  try {
-    return await startPromise;
-  } finally {
-    inflight.delete(key);
+  // Race check: a concurrent acquire of the same key could have raced ahead
+  // while we were in `await client.start()`. If so, drop ours and use theirs.
+  const racer = cache.get(key);
+  if (racer) {
+    await client.close().catch(() => {});
+    racer.refcount++;
+    racer.lastUsed = Date.now();
+    return racer.client;
   }
+
+  const entry: CachedEntry = {
+    key,
+    client,
+    refcount: 1,
+    lastUsed: Date.now(),
+    serverName,
+  };
+  cache.set(key, entry);
+
+  // Enforce hard cap by evicting LRU idle entries.
+  evictOverCap();
+
+  return client;
 }
 
 /**
@@ -365,7 +281,6 @@ function ensureShutdownHook(): void {
  *  test runs that share the module singleton. */
 export function __resetForTests(): void {
   cache.clear();
-  inflight.clear();
   stopSweeper();
   shutdownRegistered = false;
   clientFactory = (name, spec) => new MaestroMcpClient(name, spec);

@@ -7,6 +7,71 @@
  * providers, and tools actually consume.
  */
 
+// ─── Guardrails ──────────────────────────────────────────────────────────────
+
+/**
+ * Result of a guardrail / hook check.
+ *
+ * - allow:        pass through, run continues normally.
+ * - reject_content: surface a rejection message but keep the loop alive.
+ * - tripwire:    abort the entire run immediately.
+ *
+ * Hosts wire these into `llmPreHook` / `llmPostHook` on AIAgentConfig to
+ * enforce content policies (PII, dangerous commands, output filtering) without
+ * any human-in-the-loop delay — perfect for async messaging surfaces like
+ * Telegram where a synchronous approval dialog is impossible.
+ */
+export type GuardrailDecision = "allow" | "reject_content" | "tripwire";
+
+export interface GuardrailResult {
+  decision: GuardrailDecision;
+  /**
+   * When `reject_content`: the message surfaced to the user / injected back
+   * to the model as a substitute for the rejected content.
+   */
+  message?: string;
+}
+
+/**
+ * LLM Pre Hook — fires right before the provider API call.
+ *
+ * Receives the full messages array (including the latest user turn) so the
+ * host can inspect the entire conversation state before the model sees it.
+ * Use cases: PII scanning, dangerous-request detection, content-policy
+ * enforcement at the prompt level.
+ */
+export type LlmPreHook = (
+  messages: ProviderMessage[],
+  ctx: { abortSignal?: AbortSignal },
+) => GuardrailResult | Promise<GuardrailResult>;
+
+/**
+ * LLM Post Hook — fires after a turn completes but before the `result`
+ * UnifiedEvent is yielded.
+ *
+ * Receives the final assembled assistant text for turn-complete responses
+ * (no pending tool calls). Use cases: API-key leak detection, output content
+ * filtering, sensitive-data scrubbing in assistant responses.
+ *
+ * On streaming providers: the text deltas have already been emitted by this
+ * point. The hook can still veto the `result` event or alter its content to
+ * signal upstream consumers.
+ */
+export type LlmPostHook = (
+  text: string,
+  ctx: {
+    /** Latest conversation messages (up to but not including the turn just completed). */
+    messages: ProviderMessage[];
+    abortSignal?: AbortSignal;
+  },
+) => GuardrailResult | Promise<GuardrailResult>;
+
+/**
+ * These imports are for the guardrail types only — re-exported below the
+ * ProviderMessage reference.
+ */
+import type { ProviderMessage } from "@/providers/base";
+
 export interface TokenUsage {
   inputTokens: number;
   outputTokens: number;

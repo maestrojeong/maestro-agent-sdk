@@ -36,10 +36,8 @@ export {
   createTaskUpdateTool,
 } from "@/tools/builtin/tasks";
 export {
-  createWebFetchTool,
   htmlToMarkdown,
   htmlToText,
-  type WebFetchToolOptions,
   webFetchTool,
 } from "@/tools/builtin/web_fetch";
 export { createWriteTool, writeTool } from "@/tools/builtin/write";
@@ -61,7 +59,7 @@ export {
   type PreToolUseContext,
   type PreToolUseDecision,
   type PreToolUseHook,
-  type ToolDispatchStatus,
+
   type ToolHandler,
   ToolRegistry,
 } from "@/tools/registry";

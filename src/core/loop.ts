@@ -119,6 +119,33 @@ export async function* runConversation(
       ...(agent.config.effort ? { effort: agent.config.effort } : {}),
       ...(agent.config.abortSignal ? { abortSignal: agent.config.abortSignal } : {}),
     };
+
+    // ─── LLM Pre Hook ───
+    // Host guardrail runs before the provider sees the request. tripwire
+    // aborts the entire run; reject_content injects a rejection message as
+    // a user turn and lets the model respond to it next iteration.
+    if (agent.config.llmPreHook) {
+      const preResult = await agent.config.llmPreHook(wireMessages, {
+        ...(agent.config.abortSignal ? { abortSignal: agent.config.abortSignal } : {}),
+      });
+      if (preResult.decision === "tripwire") {
+        yield {
+          type: "error",
+          content: preResult.message ?? "guardrail: pre-hook tripwire",
+        };
+        return;
+      }
+      if (preResult.decision === "reject_content" && preResult.message) {
+        messages.push({
+          role: "user",
+          content: [{ type: "text", text: preResult.message }],
+        });
+        yield { type: "user_message", content: preResult.message };
+        continue;
+      }
+      // allow — fall through to provider call
+    }
+
     let response: ProviderResponse;
     let assistantText = "";
     const toolUses: { id: string; name: string; input: Record<string, unknown> }[] = [];
@@ -276,10 +303,34 @@ export async function* runConversation(
     messages.push({ role: "assistant", content: assistantBlocks });
 
     if (toolUses.length === 0) {
+      // ─── LLM Post Hook ───
+      // Host guardrail validates the final assistant text before the `result`
+      // event. tripwire replaces the result with an error; reject_content
+      // rewrites the content field so the caller surfaces the rejection message.
+      let resultContent = assistantText;
+      if (agent.config.llmPostHook) {
+        // Snapshot the current conversation (excludes the assistant turn just
+        // pushed — it's now the last entry in `messages`).
+        const postResult = await agent.config.llmPostHook(assistantText, {
+          messages,
+          ...(agent.config.abortSignal ? { abortSignal: agent.config.abortSignal } : {}),
+        });
+        if (postResult.decision === "tripwire") {
+          yield {
+            type: "error",
+            content: postResult.message ?? "guardrail: post-hook tripwire",
+          };
+          return;
+        }
+        if (postResult.decision === "reject_content") {
+          resultContent = postResult.message ?? resultContent;
+        }
+      }
+
       // No more tools — turn complete.
       yield {
         type: "result",
-        content: assistantText,
+        content: resultContent,
         stopReason: response.stopReason,
         usage: {
           inputTokens: usageAcc.inputTokens,
