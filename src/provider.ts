@@ -610,20 +610,28 @@ export function iterationBudgetLine(remaining: number, max: number): string {
  *   const overlay = wrapUpOverlayLine(remaining, maxIter);
  *   extras = [iterLine, ...(overlay ? [overlay] : [])];
  *
- * Why pair this with the iteration-line:
- *   - `thinkingBudgetForTurn` (anthropic.ts) trims thinking to base/4 in the
- *     last 3 turns. Without an accompanying behavior cue the model doesn't
- *     know its reasoning room shrank — the system-prompt persona is still
- *     "be thorough" from turn 1. The overlay closes that gap by explicitly
- *     telling the model: "wrap-up zone active, stop new tool calls, write
- *     the final answer next."
- *   - Threshold is aligned with `thinkingBudgetForTurn`'s
- *     `maxIter - iter <= 3` rule. The loop passes
- *     `remaining = maxIter - (iter + 1)`, so `remaining <= 2` matches the
- *     same three-turn window from the iteration-reminder side.
- *   - Skipped entirely when `maxIter <= 3` (tiny budgets don't have a
- *     meaningful wrap-up zone to lead into — every turn is already a
- *     wrap-up turn).
+ * Three-layer wrap-up enforcement (v0.1.17):
+ *   1. Thinking budget trimmed to `base / 4` (`thinkingBudgetForTurn`).
+ *   2. Tools array sent as `[]` (`loop.ts` — Anthropic API can't return
+ *      a `tool_use` block when no tools are declared, so the next turn
+ *      is forced to pure text).
+ *   3. This overlay — the model-facing explanation of what just changed,
+ *      so it knows it can't reach for a tool even if the persona block
+ *      still says "verify with grep".
+ *
+ * All three fire on the same boundary (the shared `isWrapUpZone` helper
+ * in anthropic.ts), so the messaging here can speak in present tense
+ * about hard facts: "no further tool calls are possible" reflects what
+ * the wire actually does, not a wish.
+ *
+ * Threshold is `remaining <= 2`. The loop passes
+ * `remaining = maxIter - (iter + 1)`, so this matches `iter >= maxIter - 3`
+ * — the same three-turn window the other two layers use.
+ *
+ * Skipped entirely when `maxIter <= 3`: tiny caps don't have a meaningful
+ * wrap-up zone (every turn is already a wrap-up turn) and the tool-disable
+ * layer also opts out at this threshold (see `isWrapUpZone` docstring).
+ * Emitting the overlay without the tool gate would be a contract lie.
  *
  * Imperative phrasing matches Claude Code style: a short, action-named
  * meta-annotation rather than a paragraph of explanation. The model
@@ -633,7 +641,7 @@ export function iterationBudgetLine(remaining: number, max: number): string {
 export function wrapUpOverlayLine(remaining: number, max: number): string | null {
   if (max <= 3) return null;
   if (remaining > 2) return null;
-  return "[wrap-up zone] Thinking budget is now trimmed. Stop new tool calls — consolidate findings and write the final answer.";
+  return "[wrap-up zone] Tools are now disabled and the thinking budget is trimmed. No further tool calls are possible — synthesize the final answer from existing context.";
 }
 
 /**

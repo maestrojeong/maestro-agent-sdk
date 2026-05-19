@@ -3,7 +3,7 @@ import { extractFileEvents } from "@/media/file-events";
 import { compressIfNeeded } from "@/memory/compressor";
 import { StreamingContextScrubber, scrubString } from "@/memory/scrubber";
 import { logger } from "@/platform/logger";
-import { thinkingBudgetForTurn } from "@/providers/anthropic";
+import { isWrapUpZone, thinkingBudgetForTurn } from "@/providers/anthropic";
 import type { ProviderContentBlock, ProviderMessage, ProviderResponse } from "@/providers/base";
 import type { TokenUsage, UnifiedEvent } from "@/types";
 
@@ -109,11 +109,32 @@ export async function* runConversation(
     // rationale; the helper handles the undefined / zero base no-op and
     // the Anthropic >= 1024 minimum internally.
     const turnBudget = thinkingBudgetForTurn(agent.config.thinkingBudget, iterations, maxIter);
+    // v0.1.17: hard enforcement in the wrap-up zone. The text-only signal
+    // ("[wrap-up zone] stop new tool calls" in the system-reminder) was
+    // ignorable — the model could still emit `tool_use` blocks if it
+    // judged a tool worthwhile. Sending an empty tools array removes that
+    // option entirely: Anthropic's API won't let the model surface a
+    // tool_use block when no tools are declared, so the next assistant
+    // turn is forced to be pure text and the loop's natural-termination
+    // branch (`toolUses.length === 0`) fires deterministically.
+    //
+    // Threshold matches `thinkingBudgetForTurn` exactly via the shared
+    // `isWrapUpZone` helper so the three wrap-up layers (thinking trim,
+    // tool disable, reminder overlay) all light up on the same turn —
+    // no off-by-one between them.
+    //
+    // Prefix-cache impact: yes, removing tools breaks the prefix-cache hit
+    // at the wrap-up boundary. But this only happens in the final 3 turns
+    // of a session, which is the tail of the conversation — the bulk of
+    // the prefix cache (system prompt + early turns) stays intact, and
+    // these are the turns where the model is supposed to slow down and
+    // finalize anyway. The trade is worth it for deterministic shutdown.
+    const inWrapUp = isWrapUpZone(iterations, maxIter);
     const callOpts = {
       model: agent.config.model,
       messages: wireMessages,
       system: agent.config.systemPrompt,
-      tools: agent.tools.schemas(),
+      tools: inWrapUp ? [] : agent.tools.schemas(),
       maxTokens: agent.config.maxTokens,
       ...(turnBudget ? { thinkingBudget: turnBudget } : {}),
       ...(agent.config.effort ? { effort: agent.config.effort } : {}),

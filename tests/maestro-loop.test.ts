@@ -379,6 +379,91 @@ describe("runConversation", () => {
     // upgrade) — the cap is no longer derived from effort.
     expect(last.type === "result" && last.content).toMatch(/maxIterations/);
   });
+
+  test("v0.1.17 wrap-up zone empties the tools schema on the last 3 turns", async () => {
+    // With maxIter=6, wrap-up zone covers iter 3..5 (last 3 turns).
+    // The loop should send the registered tools schema for iter 0..2,
+    // then an empty array for iter 3..5. This is the hard-enforcement
+    // guarantee: the API simply can't return another tool_use once tools
+    // is empty, so the loop's natural-termination branch fires
+    // deterministically inside the zone.
+    const responses: ProviderResponse[] = Array(6)
+      .fill(null)
+      .map(() => ({
+        content: [{ type: "tool_use" as const, id: "t", name: "echo", input: {} }],
+        stopReason: "tool_use" as const,
+        usage: { inputTokens: 1, outputTokens: 1 },
+      }));
+    const { provider, calls } = makeProvider(responses);
+    const tools = new ToolRegistry();
+    tools.register({
+      schema: {
+        name: "echo",
+        description: "",
+        input_schema: { type: "object", properties: {} },
+      },
+      async execute() {
+        return "{}";
+      },
+    });
+    const agent = new AIAgent(provider, tools, {
+      model: "x",
+      systemPrompt: "",
+      maxIterations: 6,
+    });
+    await collect(runConversation(agent, initialMessages("loop")));
+
+    // First three calls (iter 0, 1, 2) carry the full tools schema.
+    expect(calls.length).toBe(6);
+    for (let i = 0; i < 3; i++) {
+      expect(calls[i].tools?.length).toBeGreaterThan(0);
+    }
+    // Last three calls (iter 3, 4, 5) carry an empty schema — wrap-up
+    // zone enforcement.
+    for (let i = 3; i < 6; i++) {
+      expect(calls[i].tools).toEqual([]);
+    }
+  });
+
+  test("v0.1.17 tiny maxIter (<=3) opts out of wrap-up — tools stay live every turn", async () => {
+    // maxIter=3 means every turn would be wrap-up under the bare
+    // `maxIter - iter <= 3` rule. isWrapUpZone's tiny-cap escape hatch
+    // prevents that — the model gets to use tools normally on a 3-turn
+    // budget. Verifies the escape hatch flows all the way through to the
+    // wire calls (not just the helper).
+    const responses: ProviderResponse[] = Array(3)
+      .fill(null)
+      .map(() => ({
+        content: [{ type: "tool_use" as const, id: "t", name: "echo", input: {} }],
+        stopReason: "tool_use" as const,
+        usage: { inputTokens: 1, outputTokens: 1 },
+      }));
+    const { provider, calls } = makeProvider(responses);
+    const tools = new ToolRegistry();
+    tools.register({
+      schema: {
+        name: "echo",
+        description: "",
+        input_schema: { type: "object", properties: {} },
+      },
+      async execute() {
+        return "{}";
+      },
+    });
+    const agent = new AIAgent(provider, tools, {
+      model: "x",
+      systemPrompt: "",
+      maxIterations: 3,
+    });
+    await collect(runConversation(agent, initialMessages("loop")));
+
+    // Every call (including the last) keeps the tools schema live —
+    // tiny caps never enter the wrap-up zone.
+    expect(calls.length).toBe(3);
+    for (const c of calls) {
+      expect(c.tools?.length).toBeGreaterThan(0);
+    }
+  });
 });
 
 describe("runConversation (streaming path)", () => {

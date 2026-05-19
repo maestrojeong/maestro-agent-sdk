@@ -7,6 +7,7 @@ import {
   buildCacheableTools,
   effortToPersonaPrompt,
   effortToThinkingBudget,
+  isWrapUpZone,
   thinkingBudgetForTurn,
 } from "@/providers/anthropic";
 
@@ -602,6 +603,59 @@ describe("extended thinking budget", () => {
       // for iter=0 too, but the explicit `iter > 0` guard protects the
       // planning turn. First turn always gets the full base.
       expect(thinkingBudgetForTurn(16384, 0, 3)).toBe(16384);
+    });
+  });
+
+  describe("isWrapUpZone (v0.1.17 — single source of truth for wrap-up boundary)", () => {
+    // The three wrap-up layers (thinking trim, tools disable, reminder
+    // overlay) all consult this helper. These tests pin the boundary so
+    // any future refactor can't drift the three off each other.
+
+    test("returns true for the last 3 turns of a normal cap", () => {
+      // 90-cap: iter 87, 88, 89 are wrap-up (maxIter - iter = 3, 2, 1).
+      expect(isWrapUpZone(87, 90)).toBe(true);
+      expect(isWrapUpZone(88, 90)).toBe(true);
+      expect(isWrapUpZone(89, 90)).toBe(true);
+    });
+
+    test("returns false for turns before the wrap-up window", () => {
+      expect(isWrapUpZone(0, 90)).toBe(false);
+      expect(isWrapUpZone(50, 90)).toBe(false);
+      expect(isWrapUpZone(86, 90)).toBe(false);
+    });
+
+    test("never wrap-up on turn 0 even when maxIter is small (planning turn protected)", () => {
+      // maxIter=4, iter=0: maxIter - iter = 4 > 3, normal anyway.
+      // maxIter=5, iter=0: same.
+      // Edge case: maxIter=4 means wrap-up would normally fire at iter 1, 2, 3.
+      // The `iter <= 0` guard makes turn 0 always non-wrap-up so the
+      // planning turn has full capability regardless of cap.
+      expect(isWrapUpZone(0, 4)).toBe(false);
+      expect(isWrapUpZone(0, 5)).toBe(false);
+      expect(isWrapUpZone(0, 90)).toBe(false);
+    });
+
+    test("tiny caps (maxIter <= 3) opt out entirely", () => {
+      // At maxIter=3 every turn is already a wrap-up turn; gating tools
+      // from turn 1 onward would mean the model can't call any tools
+      // on a 3-turn task, defeating the cap's purpose. Tiny caps trust
+      // the iter-line tone alone.
+      expect(isWrapUpZone(0, 3)).toBe(false);
+      expect(isWrapUpZone(1, 3)).toBe(false);
+      expect(isWrapUpZone(2, 3)).toBe(false);
+      expect(isWrapUpZone(0, 1)).toBe(false);
+    });
+
+    test("matches thinkingBudgetForTurn's threshold for every iter at maxIter=90", () => {
+      // Cross-verify: the two helpers must agree on every turn so the
+      // thinking trim and the tool disable never split. If this ever
+      // diverges, one of the implementations regressed.
+      for (let iter = 0; iter < 90; iter++) {
+        const trimmed = thinkingBudgetForTurn(16384, iter, 90);
+        const wrap = isWrapUpZone(iter, 90);
+        const wasTrimmed = trimmed !== 16384;
+        expect(wasTrimmed).toBe(wrap);
+      }
     });
   });
 
