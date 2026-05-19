@@ -157,6 +157,19 @@ for await (const event of runConversation(agent, "Summarize today's news.")) {
 >
 > The model still sees a remaining-iteration count in the per-turn
 > `<system-reminder>` so it can self-pace within the cap you set.
+>
+> **Wrap-up zone hard enforcement (v0.1.17).** In the same last-3-turn
+> window the loop also sends `tools: []` on the wire. Anthropic's API
+> can't emit a `tool_use` block when no tools are declared, so the next
+> assistant turn is forced to pure text and the loop's natural-termination
+> branch fires deterministically. The previous text-only signal ("[wrap-up
+> zone] stop new tool calls") was ignorable — the model could still
+> reach for a tool if it judged one worthwhile. Now the gate is real:
+> three layers (thinking trim, tools disable, reminder overlay) all fire
+> on the same boundary via the shared `isWrapUpZone(iter, maxIter)`
+> helper. Tiny caps (`maxIter <= 3`) opt out — at that scale every turn
+> is already a wrap-up turn and gating tools would defeat the cap's
+> purpose.
 
 More runnable scripts live under [`examples/`](./examples) — Anthropic, DeepSeek,
 a custom-tool walkthrough, and a `skill_write` demo.

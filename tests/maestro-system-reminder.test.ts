@@ -122,6 +122,18 @@ describe("wrapUpOverlayLine (v0.1.16 wrap-up zone behavior cue)", () => {
     expect(wrapUpOverlayLine(0, 90)).not.toBeNull();
   });
 
+  test("v0.1.17 overlay text reflects hard enforcement — tools disabled, no further tool calls possible", () => {
+    // Previously the overlay said "stop new tool calls" — a request the
+    // model could decline. v0.1.17 actually empties the tools array on
+    // wire, so the overlay now states the new reality in present tense.
+    // Pin both phrases so a future copy edit that softens the language
+    // (e.g. back to "please consider stopping") trips this test and
+    // forces a review of whether enforcement still matches the prose.
+    const overlay = wrapUpOverlayLine(2, 90) ?? "";
+    expect(overlay).toContain("disabled");
+    expect(overlay).toContain("No further tool calls are possible");
+  });
+
   test("skips overlay entirely on tiny caps (maxIter <= 3)", () => {
     // A 3-turn cap doesn't have a meaningful wrap-up *zone* — every
     // turn is already a wrap-up. The iter-line carries the urgency

@@ -598,11 +598,10 @@ export function thinkingBudgetForTurn(
   maxIter: number,
 ): number | undefined {
   if (!base || base <= 0) return base;
-  // Wrap-up zone: last 3 turns. `maxIter - iter` counts how many turns
-  // remain *including* the current one, so `<= 3` matches the iter
-  // reminder's "finalize NOW" trigger at remaining <= 1 plus a one-turn
-  // lead-in for the model to plan its closure.
-  if (iter > 0 && maxIter - iter <= 3) {
+  // Single source of truth — `isWrapUpZone` owns the threshold so this
+  // helper, the loop's tool-disable gate, and the wrap-up overlay all
+  // fire on exactly the same turn boundary.
+  if (isWrapUpZone(iter, maxIter)) {
     const trimmed = Math.floor(base / 4);
     // Floor at 1024 — Anthropic minimum for `thinking.budget_tokens` when
     // thinking is enabled. If base itself is already < 1024 we don't
@@ -611,6 +610,37 @@ export function thinkingBudgetForTurn(
     return Math.max(trimmed, 1024);
   }
   return base;
+}
+
+/**
+ * Single source of truth for "is this turn in the wrap-up zone?" Used by
+ * three call sites that must all fire on the same boundary:
+ *   1. `thinkingBudgetForTurn` — trims the per-turn thinking budget.
+ *   2. `loop.ts` callOpts assembly — empties the tools schema (v0.1.17+).
+ *   3. `wrapUpOverlayLine` (provider.ts) — emits the reminder cue.
+ *
+ * Threshold logic:
+ *   - Tiny caps (`maxIter <= 3`) — return false unconditionally.
+ *     At maxIter=3 every turn is already a wrap-up turn; gating tools
+ *     would mean the model can't call any tools from turn 1, which
+ *     defeats the cap's purpose. Tiny caps trust the model + the
+ *     iter-line tone to wind things down on their own.
+ *   - Turn 0 — never wrap-up. The first turn is planning and must
+ *     keep full capability even when `maxIter` is small (e.g. maxIter=4
+ *     would otherwise gate the planning turn, which is exactly when
+ *     the model needs tools most).
+ *   - Last 3 turns (`maxIter - iter <= 3`) — wrap-up active.
+ *
+ * Why "last 3" and not "last 1": the model needs at least one full
+ * turn after entering wrap-up to actually synthesize and emit the
+ * final answer. With a 3-turn lead-in: turn N-3 enters wrap-up (no
+ * more tools), turns N-2 / N-1 can iterate on the final text if the
+ * first attempt was incomplete, turn N-0 is the hard ceiling.
+ */
+export function isWrapUpZone(iter: number, maxIter: number): boolean {
+  if (maxIter <= 3) return false;
+  if (iter <= 0) return false;
+  return maxIter - iter <= 3;
 }
 
 /**
