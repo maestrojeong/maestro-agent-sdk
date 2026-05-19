@@ -5,7 +5,7 @@ import {
   buildCacheableMessages,
   buildCacheableSystem,
   buildCacheableTools,
-  effortToMaxIter,
+  effortToPersonaPrompt,
   effortToThinkingBudget,
 } from "@/providers/anthropic";
 
@@ -508,19 +508,39 @@ describe("extended thinking budget", () => {
     });
   });
 
-  describe("effortToMaxIter", () => {
-    test("maps each maestro effort level to a monotonic iteration cap", () => {
-      expect(effortToMaxIter("low")).toBe(5);
-      expect(effortToMaxIter("medium")).toBe(20);
-      expect(effortToMaxIter("high")).toBe(50);
-      expect(effortToMaxIter("xhigh")).toBe(90);
-      expect(effortToMaxIter("max")).toBe(200);
+  describe("effortToPersonaPrompt", () => {
+    test("returns a Working-mode block naming the effort level for each tier", () => {
+      for (const e of ["low", "medium", "high", "xhigh", "max"] as const) {
+        const out = effortToPersonaPrompt(e);
+        expect(out).toBeDefined();
+        expect(out).toContain("## Working mode");
+        expect(out).toContain(`**${e}**`);
+        // Persona body is a bullet list — every level emits at least 3
+        // imperatives so the model has concrete verbs to condition on.
+        const bulletCount = (out ?? "").split("\n").filter((l) => l.startsWith("- ")).length;
+        expect(bulletCount).toBeGreaterThanOrEqual(3);
+      }
     });
 
-    test("falls back to 90 (historical default) for unset / unknown values", () => {
-      expect(effortToMaxIter(undefined)).toBe(90);
-      expect(effortToMaxIter("minimal")).toBe(90);
-      expect(effortToMaxIter("nonsense")).toBe(90);
+    test("returns undefined for unset / unknown effort so the caller skips concat", () => {
+      expect(effortToPersonaPrompt(undefined)).toBeUndefined();
+      expect(effortToPersonaPrompt("minimal")).toBeUndefined();
+      expect(effortToPersonaPrompt("nonsense")).toBeUndefined();
+    });
+
+    test("is a pure function — same effort returns byte-identical text (cache stability)", () => {
+      expect(effortToPersonaPrompt("low")).toBe(effortToPersonaPrompt("low"));
+      expect(effortToPersonaPrompt("max")).toBe(effortToPersonaPrompt("max"));
+    });
+
+    test("low effort mentions wrap-up verbs; max effort mentions exhaustive verbs", () => {
+      // These assertions intentionally key on action verbs the persona is
+      // designed to plant in the model's distribution. If the verbs are
+      // ever softened the test fails, prompting an explicit prompt review.
+      const low = effortToPersonaPrompt("low") ?? "";
+      const max = effortToPersonaPrompt("max") ?? "";
+      expect(low.toLowerCase()).toContain("fast");
+      expect(max.toLowerCase()).toContain("exhaustive");
     });
   });
 

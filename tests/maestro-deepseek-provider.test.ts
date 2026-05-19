@@ -38,7 +38,12 @@ describe("effortForDeepseek", () => {
     expect(effortForDeepseek("low")).toBe("low");
     expect(effortForDeepseek("medium")).toBe("medium");
     expect(effortForDeepseek("high")).toBe("high");
-    expect(effortForDeepseek("xhigh")).toBe("max");
+    // v0.1.16: xhigh now maps to DeepSeek `high` (was `max`). The change
+    // reserves DeepSeek `max` for maestro `max` and keeps the xhigh
+    // user-facing semantics ("between high and max") consistent with the
+    // actual API behavior.
+    expect(effortForDeepseek("xhigh")).toBe("high");
+    expect(effortForDeepseek("max")).toBe("max");
     expect(effortForDeepseek(undefined)).toBeUndefined();
   });
 });

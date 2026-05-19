@@ -17,7 +17,11 @@ import { getMcpServersForQuery } from "@/platform/mcp-config";
 // `platform/env-bootstrap.ts` for the full rationale and safety notes.
 bootstrapHostPath();
 
-import { AnthropicProvider, effortToMaxIter, effortToThinkingBudget } from "@/providers/anthropic";
+import {
+  AnthropicProvider,
+  effortToPersonaPrompt,
+  effortToThinkingBudget,
+} from "@/providers/anthropic";
 import type { Provider, ProviderContentBlock, ProviderMessage } from "@/providers/base";
 import { DeepseekProvider } from "@/providers/deepseek";
 import { maestroRegistry } from "@/registry";
@@ -81,6 +85,21 @@ import type { AgentQueryOptions, TokenUsage, UnifiedEvent } from "@/types";
  * Snapshot pinned to upstream Maestro v0.13.0 (MIT, Nous Research). See
  * docs/maestro-integration.md for the porting roadmap.
  */
+
+/**
+ * Default tool-iteration cap when the caller doesn't supply
+ * `opts.maxIterations`. 120 was picked as a single comfortable ceiling:
+ * large enough to absorb research + multi-file edit chains without
+ * strangling longer investigations, small enough that a runaway loop
+ * still terminates in bounded wall-clock time on a typical model.
+ *
+ * As of v0.1.16 this is decoupled from `effort` — effort drives reasoning
+ * depth (thinking budget + persona), the iteration cap is a separate
+ * orthogonal budget the host owns. Override per call with
+ * `AgentQueryOptions.maxIterations`.
+ */
+export const DEFAULT_MAX_ITERATIONS = 120;
+
 export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<UnifiedEvent> {
   // Provider instantiation is deferred until after model resolution so the
   // right adapter (Anthropic / DeepSeek) is chosen based on the resolved
@@ -255,10 +274,14 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
   // `AIAgent` below. Default is the registry's `medium`, matching how
   // claude-provider hands effort to its SDK when the caller doesn't pin one.
   const resolvedEffort = opts.effort ?? maestroRegistry.defaultEffort;
-  const maxIter = effortToMaxIter(resolvedEffort);
+  // v0.1.16: maxIter is no longer derived from effort. The cap is a single
+  // host-tunable default (`DEFAULT_MAX_ITERATIONS = 120`) that the caller
+  // overrides per call via `opts.maxIterations`. See the AgentQueryOptions
+  // docstring for the split rationale (reasoning depth vs turn budget).
+  const maxIter = opts.maxIterations ?? DEFAULT_MAX_ITERATIONS;
   logger.info(
-    { effort: opts.effort, resolved: resolvedEffort, maxIter },
-    "maestroProvider: effort → maxIter resolution",
+    { effort: opts.effort, resolved: resolvedEffort, maxIter, callerOverride: opts.maxIterations },
+    "maestroProvider: effort + maxIter resolution",
   );
 
   // Pick provider by resolved model id prefix. DeepSeek models (`deepseek-*`)
@@ -345,9 +368,23 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
   // identity / instructions that should still anchor the prompt, and the
   // skills block reads naturally as a final "and also, here's what tools
   // you have access to" section.
-  const augmentedSystemPrompt = skillsBlock
-    ? `${opts.systemPrompt}\n\n${skillsBlock}`
-    : opts.systemPrompt;
+  //
+  // The optional effort persona slots BETWEEN the caller's systemPrompt and
+  // the skills catalog. Three layers in fixed order:
+  //   1. caller identity / instructions    — anchors who the model is
+  //   2. effort persona (this layer)       — names the working mode + verbs
+  //   3. skills catalog                     — "tools you can reach for"
+  // Reading top-down, the model first knows what it's for, then how hard it
+  // should push, then what's available. The persona is a pure function of
+  // `resolvedEffort` so it stays prefix-cache stable across every call at a
+  // given level — same five strings cycle. Skipping the layer (undefined
+  // effort or `effortToPersonaPrompt` returning undefined) keeps the
+  // historical no-effort prompt byte-identical so existing callers don't
+  // see a cache miss after the upgrade.
+  const personaBlock = effortToPersonaPrompt(resolvedEffort);
+  const augmentedSystemPrompt = [opts.systemPrompt, personaBlock, skillsBlock]
+    .filter((s): s is string => typeof s === "string" && s.length > 0)
+    .join("\n\n");
 
   // Register the `Agent` tool last — it captures the resolved model,
   // effort, augmented system prompt (parent base for sub-agents), and the

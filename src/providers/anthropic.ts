@@ -539,43 +539,93 @@ export function effortToThinkingBudget(e: string | undefined): number | undefine
 }
 
 /**
- * Map effort to a per-turn tool-iteration cap. Used as `AIAgent.maxIterations`
- * AND surfaced to the model via the per-iteration system-reminder so it can
- * self-pace (low → wrap up fast, max → take your time).
+ * Build a system-prompt persona block that names the active effort level
+ * AND prescribes concrete behavior the model should adopt this turn.
  *
- * Lives next to `effortToThinkingBudget` for grep affinity even though the
- * cap is provider-agnostic (the maestro loop owns it, not the API request).
- * The Anthropic SDK / DeepSeek API themselves don't see this value; only the
- * model does, through the reminder.
+ * Why a system-prompt block (not a system-reminder line):
+ *   - First-turn visibility. The per-iteration reminder lives in the user
+ *     message and is reread each turn, but its `Tool iterations remaining`
+ *     tone only shifts as the budget drains — at the start of an `xhigh`
+ *     vs `low` run the model sees nearly identical text. A system-prompt
+ *     persona lets the model condition every token from turn 1 on the
+ *     working mode, instead of inferring it indirectly from `maxIter`.
+ *   - Cache stability. The block is a pure function of `effort`, so the
+ *     same five strings cycle through every call at a given level. They
+ *     sit between caller `systemPrompt` and the skills catalog, riding
+ *     the same prefix-cache boundary that already covers both — no extra
+ *     invalidations.
  *
- * Scale rationale:
- *   - `low` (5)    — single Read + answer territory. Forces the wrap-up
- *      tone almost immediately so the model stops tooling early.
- *   - `medium` (20) — "research one thing then answer" budget.
- *   - `high` (50)  — multi-file edits, moderate debugging chains.
- *   - `xhigh` (90) — matches the previous hard-coded default; extended
- *      exploration runs without hitting the cap.
- *   - `max` (200)  — large refactors / deep delegations; rarely should
- *      reach this many turns in practice but the headroom exists.
+ * Effort-shape rationale (terse imperatives win over hedged paragraphs —
+ * the model conditions hardest on action verbs, not adjectives):
+ *   - `low`    — answer fast, one Read max, no verification
+ *   - `medium` — one focused exploration, light cross-check
+ *   - `high`   — multi-file exploration, verify on doubt
+ *   - `xhigh`  — broad survey, hold multiple hypotheses, name edge cases
+ *   - `max`    — exhaustive: every relevant file, tests, all failure modes
  *
- * Unknown effort falls back to 90 (= `xhigh`) — keeps the loop running
- * with the historical default rather than silently strangling it.
+ * Returns `undefined` for an unknown / absent effort so callers can skip
+ * concatenation entirely; the model then sees only the caller's system
+ * prompt, preserving the historical no-effort baseline.
+ *
+ * Lives in anthropic.ts next to `effortToThinkingBudget` for grep affinity,
+ * but the string itself is provider-agnostic — DeepSeek receives the same
+ * block via the same caller (provider.ts), so the persona cue is consistent
+ * across providers even when `reasoning_effort` is the only native handle
+ * the API exposes.
  */
-export function effortToMaxIter(e: string | undefined): number {
+export function effortToPersonaPrompt(e: string | undefined): string | undefined {
+  let header: string;
+  let bullets: string[];
   switch (e) {
     case "low":
-      return 5;
+      header = "You are in **low** effort mode — answer fast.";
+      bullets = [
+        "Read at most one file. Skip exhaustive search.",
+        "No cross-verification unless the user explicitly asked.",
+        "Wrap up immediately after the first sufficient answer.",
+        "If the question is ambiguous, ask one clarifying question rather than exploring.",
+      ];
+      break;
     case "medium":
-      return 20;
+      header = "You are in **medium** effort mode — focused work.";
+      bullets = [
+        "Explore one area thoroughly; do not branch into adjacent files unless directly relevant.",
+        "Cross-check only within the same file or function.",
+        "Answer when the primary question is resolved — do not preemptively extend scope.",
+      ];
+      break;
     case "high":
-      return 50;
+      header = "You are in **high** effort mode — careful work.";
+      bullets = [
+        "Multi-file exploration is expected when the question spans modules.",
+        "Verify assumptions with a second tool call (grep + read) before asserting.",
+        "Surface uncertainties explicitly rather than papering over them.",
+        "Still bias toward shipping an answer; do not spelunk indefinitely.",
+      ];
+      break;
     case "xhigh":
-      return 90;
+      header = "You are in **xhigh** effort mode — thorough investigation.";
+      bullets = [
+        "Survey the relevant surface broadly before drilling down.",
+        "Hold multiple hypotheses; rank them by evidence before committing.",
+        "Name edge cases and failure modes even if the happy path is clear.",
+        "Justify final claims with concrete code references (file + line).",
+      ];
+      break;
     case "max":
-      return 200;
+      header = "You are in **max** effort mode — exhaustive analysis.";
+      bullets = [
+        "Read every related file; do not stop at the first plausible answer.",
+        "Consider writing or updating tests when behavior is non-trivial.",
+        "Enumerate all failure modes you can construct; analyze each.",
+        "Cross-verify with independent paths (grep + read + run, if applicable).",
+        "Prefer a complete answer over a fast one — the budget is large on purpose.",
+      ];
+      break;
     default:
-      return 90;
+      return undefined;
   }
+  return ["## Working mode", header, ...bullets.map((b) => `- ${b}`)].join("\n");
 }
 
 function mapUsage(u: AnthropicUsage): TokenUsage {

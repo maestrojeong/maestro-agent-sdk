@@ -100,17 +100,34 @@ for await (const event of runConversation(agent, "Summarize today's news.")) {
 }
 ```
 
-> **Effort scale.** `effort` drives both the thinking budget _and_ the
-> tool-iteration cap. The model also sees its remaining-iteration count in a
-> `<system-reminder>` block every turn so it can self-pace. Knobs:
+> **Effort scale (v0.1.16+).** `effort` controls two orthogonal knobs:
 >
-> | effort  | thinking budget | iteration cap |
-> |---------|----------------:|--------------:|
-> | `low`   |          2 048  |             5 |
-> | `medium`|          8 192  |            20 |
-> | `high`  |         16 384  |            50 |
-> | `xhigh` |         32 768  |            90 |
-> | `max`   |         65 536  |           200 |
+> 1. **Reasoning depth** — thinking budget on Anthropic (`thinking.budget_tokens`),
+>    `reasoning_effort` on DeepSeek.
+> 2. **Working-mode persona** — a `## Working mode` block injected into the
+>    system prompt with imperative verbs the model conditions on from turn 1
+>    (e.g. `low` → "answer fast, one Read max", `max` → "exhaustive,
+>    enumerate failure modes"). Pure function of `effort`, prefix-cache stable.
+>
+> The **tool-iteration cap is no longer derived from effort** as of v0.1.16 —
+> it's a single host-tunable default (`DEFAULT_MAX_ITERATIONS = 120`) that you
+> override per call via `AgentQueryOptions.maxIterations`. This lets a host
+> mix and match: `effort: "low"` + `maxIterations: 120` (terse, but don't
+> trip on a surprise sub-task), or `effort: "max"` + `maxIterations: 30`
+> (think hard, but stay snappy).
+>
+> | effort  | thinking budget (Anthropic) | DeepSeek `reasoning_effort` |
+> |---------|----------------------------:|:---------------------------:|
+> | `low`   |                      2 048  |          `low`              |
+> | `medium`|                      8 192  |          `medium`           |
+> | `high`  |                     16 384  |          `high`             |
+> | `xhigh` |                     32 768  |          `high`             |
+> | `max`   |                     65 536  |          `max`              |
+>
+> DeepSeek's API ships four tiers; maestro's `xhigh` maps to DeepSeek `high`
+> (not `max`) so that `max` stays reserved for the explicit "deepest
+> reasoning" opt-in. The model still sees a remaining-iteration count in the
+> per-turn `<system-reminder>` so it can self-pace within the cap you set.
 
 More runnable scripts live under [`examples/`](./examples) — Anthropic, DeepSeek,
 a custom-tool walkthrough, and a `skill_write` demo.
@@ -122,6 +139,8 @@ Per-call options on `AgentQueryOptions`:
 | Option | Required | Purpose |
 |---|---|---|
 | `cwd` | ✓ | Workspace root. Drives `.skills/` location, rollout `_meta`, and the `mkdir` invariant. |
+| `effort` | — | Reasoning depth + working-mode persona (`low`/`medium`/`high`/`xhigh`/`max`). See the effort table above. |
+| `maxIterations` | — | Tool-iteration cap. Omit for `DEFAULT_MAX_ITERATIONS = 120`. Decoupled from `effort` as of v0.1.16 — controls turn budget, not reasoning depth. |
 | `skillKey` | — | Named skill profile within `<cwd>/.skills/`. Omit for `default`. |
 | `allowedSkills` | — | Per-call name whitelist applied before curation. |
 | `sessionMetadata` | — | Opaque host bag round-tripped via the rollout `_meta` header. |

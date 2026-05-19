@@ -290,11 +290,22 @@ function buildRequestBody(opts: ProviderCompleteOptions, stream: boolean): Recor
 
 /**
  * Map the SDK's `EffortLevel` to DeepSeek's `reasoning_effort` string.
- * DeepSeek's API ships four tiers (low/medium/high/max); maestro's
- * `xhigh` and `max` both collapse onto DeepSeek `max` — the thinking
- * depth is identical between them, but their maestro-side `maxIter` caps
- * differ (xhigh=90, max=200), so the user-facing distinction is "how
- * much rope before the loop strangles", not API-side reasoning depth.
+ * DeepSeek's API ships four tiers (low/medium/high/max); maestro adds
+ * `xhigh` as a fifth tier on the Anthropic side (between high and max).
+ *
+ * Mapping policy (v0.1.16+):
+ *   - maestro `xhigh` → DeepSeek `high` (NOT `max`).
+ *     Rationale: DeepSeek's `max` is its top reasoning_effort tier and
+ *     the latency / token cost is meaningfully higher than `high`. The
+ *     user-facing semantics of `xhigh` are "more than high, less than max"
+ *     — bucketing it into DeepSeek `max` overshot. Pinning to `high`
+ *     keeps DeepSeek's behavior between `high` and `max` as the maestro
+ *     name suggests, and reserves DeepSeek `max` for maestro `max`.
+ *   - maestro `max`   → DeepSeek `max`.
+ *     The only level where the caller has explicitly opted into the
+ *     deepest reasoning. The iteration cap (host-controlled via
+ *     `opts.maxIterations`) is now independent, so `max` on the API
+ *     side no longer implies any specific turn budget.
  *
  * Returns undefined when effort is unset/unknown so the caller can skip
  * thinking entirely.
@@ -308,7 +319,7 @@ export function effortForDeepseek(e: EffortLevel | undefined): string | undefine
     case "high":
       return "high";
     case "xhigh":
-      return "max";
+      return "high";
     case "max":
       return "max";
     default:
