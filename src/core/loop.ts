@@ -3,6 +3,7 @@ import { extractFileEvents } from "@/media/file-events";
 import { compressIfNeeded } from "@/memory/compressor";
 import { StreamingContextScrubber, scrubString } from "@/memory/scrubber";
 import { logger } from "@/platform/logger";
+import { thinkingBudgetForTurn } from "@/providers/anthropic";
 import type { ProviderContentBlock, ProviderMessage, ProviderResponse } from "@/providers/base";
 import type { TokenUsage, UnifiedEvent } from "@/types";
 
@@ -100,13 +101,21 @@ export async function* runConversation(
     // progressive typing UX. complete() stays as the fallback for providers
     // that haven't implemented stream() yet (e.g. an early Phase 5 OpenAI
     // adapter could ship stream() in a follow-up).
+    // v0.1.16: thinking budget is turn-adaptive. The base budget on
+    // `agent.config.thinkingBudget` reflects the caller's effort; for the
+    // wire call we resolve it through `thinkingBudgetForTurn` so the
+    // wrap-up zone (last 3 turns) trims down to 1/4 base. First + middle
+    // turns get the full base. See `thinkingBudgetForTurn` for the
+    // rationale; the helper handles the undefined / zero base no-op and
+    // the Anthropic >= 1024 minimum internally.
+    const turnBudget = thinkingBudgetForTurn(agent.config.thinkingBudget, iterations, maxIter);
     const callOpts = {
       model: agent.config.model,
       messages: wireMessages,
       system: agent.config.systemPrompt,
       tools: agent.tools.schemas(),
       maxTokens: agent.config.maxTokens,
-      ...(agent.config.thinkingBudget ? { thinkingBudget: agent.config.thinkingBudget } : {}),
+      ...(turnBudget ? { thinkingBudget: turnBudget } : {}),
       ...(agent.config.effort ? { effort: agent.config.effort } : {}),
       ...(agent.config.abortSignal ? { abortSignal: agent.config.abortSignal } : {}),
     };

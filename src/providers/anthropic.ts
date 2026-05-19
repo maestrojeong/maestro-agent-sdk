@@ -516,10 +516,31 @@ function applyThinkingHeaders(headers: Record<string, string>, budget: number | 
  * Map the SDK's shared `EffortLevel` to an Anthropic thinking budget in
  * tokens. Maestro accepts `low|medium|high|xhigh|max` (see
  * `MAESTRO_EFFORT_VALUES`); other values return undefined so the caller skips
- * thinking entirely. Budget scale is a deliberate match for the rough
- * progression claude-agent-sdk uses internally (the SDK doesn't expose its
- * mapping, so these are calibrated empirically against the latency / cost
- * curve we see on sonnet-4-6).
+ * thinking entirely.
+ *
+ * Scale (v0.1.16):
+ *   - low    →  2 048
+ *   - medium →  8 192
+ *   - high   → 16 384
+ *   - xhigh  → 16 384   (same ceiling as `high` — the difference is persona,
+ *                        not budget. `xhigh` tells the model to use the same
+ *                        thinking allowance more broadly: hold multiple
+ *                        hypotheses, survey, name edge cases. The ceiling
+ *                        is shared because empirically thinking ROI above
+ *                        ~16K drops sharply on sonnet-4-6 / haiku-4-5;
+ *                        bumping the budget didn't change answer quality
+ *                        as much as bumping the persona's instructions.)
+ *   - max    → 32 768   (halved from v0.1.15's 65 536. 64K thinking is
+ *                        almost never fully utilized in a single turn;
+ *                        the latency penalty was unrecouped. 32K is the
+ *                        ceiling for "really chew on this" without paying
+ *                        for theoretical headroom the model doesn't reach.)
+ *
+ * Budgets are *ceilings*, not enforced spending: the model decides how
+ * much to actually emit inside the budget. So a 32K ceiling on a simple
+ * task still costs almost nothing — the savings come from latency, not
+ * tokens, since the model returns sooner when it knows the budget is
+ * smaller.
  */
 export function effortToThinkingBudget(e: string | undefined): number | undefined {
   switch (e) {
@@ -530,12 +551,66 @@ export function effortToThinkingBudget(e: string | undefined): number | undefine
     case "high":
       return 16384;
     case "xhigh":
-      return 32768;
+      return 16384;
     case "max":
-      return 65536;
+      return 32768;
     default:
       return undefined;
   }
+}
+
+/**
+ * Resolve the actual thinking budget the loop should send on *this turn*,
+ * given the base budget (already derived from effort) and the turn's
+ * position within the iteration cap.
+ *
+ * Why turn-adaptive:
+ *   - Turn 0 (first call) is where the model parses the prompt and lays
+ *     out its plan. Thinking here is the highest-ROI use of budget —
+ *     a careful plan saves tool calls later. We send the full base.
+ *   - Mid turns are tool-dispatch territory: "this grep returned X,
+ *     now read Y." Interleaved thinking still has value (short
+ *     reasoning between tool calls is what Anthropic's interleaved
+ *     beta is for), so we keep the full base here too. Cutting it
+ *     mid-flow defeats the beta.
+ *   - The last 3 turns are the *wrap-up zone*. The iteration reminder
+ *     has already flipped to "finalize NOW, stop tooling and write the
+ *     final answer." At that point spending another 16K thinking on a
+ *     turn that mostly emits final text is pure latency waste. We trim
+ *     to 1/4 of base — enough room for a short "what should this
+ *     summary include" pass, no room for fresh exploration.
+ *
+ * Floor: the trimmed budget is clamped to >= 1024 because Anthropic
+ * requires `thinking.budget_tokens >= 1024` when thinking is enabled.
+ * Returning a value below that would 400 the API. If the caller passed
+ * a base smaller than 1024 (shouldn't happen with our effort map, but
+ * a host could override), we just return the base as-is — the original
+ * `applyThinkingBudget` no-ops zero / undefined, and the user explicitly
+ * asked for less.
+ *
+ * Pure helper — no allocation, no closure — so loop.ts can call it
+ * cheaply inside the hot iteration loop. Exported for tests and for
+ * hosts that want to compose their own per-turn budgeting.
+ */
+export function thinkingBudgetForTurn(
+  base: number | undefined,
+  iter: number,
+  maxIter: number,
+): number | undefined {
+  if (!base || base <= 0) return base;
+  // Wrap-up zone: last 3 turns. `maxIter - iter` counts how many turns
+  // remain *including* the current one, so `<= 3` matches the iter
+  // reminder's "finalize NOW" trigger at remaining <= 1 plus a one-turn
+  // lead-in for the model to plan its closure.
+  if (iter > 0 && maxIter - iter <= 3) {
+    const trimmed = Math.floor(base / 4);
+    // Floor at 1024 — Anthropic minimum for `thinking.budget_tokens` when
+    // thinking is enabled. If base itself is already < 1024 we don't
+    // mess with it (see docstring).
+    if (base < 1024) return base;
+    return Math.max(trimmed, 1024);
+  }
+  return base;
 }
 
 /**

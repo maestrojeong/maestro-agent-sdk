@@ -121,13 +121,40 @@ for await (const event of runConversation(agent, "Summarize today's news.")) {
 > | `low`   |                      2 048  |          `low`              |
 > | `medium`|                      8 192  |          `medium`           |
 > | `high`  |                     16 384  |          `high`             |
-> | `xhigh` |                     32 768  |          `high`             |
-> | `max`   |                     65 536  |          `max`              |
+> | `xhigh` |                     16 384  |          `high`             |
+> | `max`   |                     32 768  |          `max`              |
+>
+> **`xhigh` shares `high`'s thinking ceiling** — the difference is persona,
+> not budget. `xhigh` tells the model to use the same allowance more broadly
+> (hold multiple hypotheses, survey, name edge cases). On sonnet-4-6 /
+> haiku-4-5 the answer-quality return on thinking above ~16K dropped off
+> sharply in practice, so the lever became persona instead of more tokens.
+>
+> **`max` is halved from v0.1.15's 65 536** — 64K thinking is rarely fully
+> utilized in a single turn; the latency penalty was unrecouped. 32K is the
+> ceiling for "really chew on this" without paying for headroom the model
+> doesn't reach.
 >
 > DeepSeek's API ships four tiers; maestro's `xhigh` maps to DeepSeek `high`
 > (not `max`) so that `max` stays reserved for the explicit "deepest
-> reasoning" opt-in. The model still sees a remaining-iteration count in the
-> per-turn `<system-reminder>` so it can self-pace within the cap you set.
+> reasoning" opt-in.
+>
+> **Turn-adaptive budget (v0.1.16).** The per-turn thinking budget the loop
+> actually sends to the API is *not* constant — it's resolved through
+> `thinkingBudgetForTurn(base, iter, maxIter)`:
+>
+> - **First turn** (`iter == 0`) — full base. Planning gets the full
+>   allowance because a careful first-turn plan saves tool calls later.
+> - **Middle turns** — full base. Interleaved thinking between tool calls
+>   is what Anthropic's interleaved-thinking beta is for; cutting it
+>   mid-flow defeats the beta.
+> - **Last 3 turns** (wrap-up zone) — `base / 4`, floored at 1024 (the
+>   Anthropic API minimum). The iteration reminder has already flipped to
+>   "finalize NOW"; spending another 16K thinking on a turn that mostly
+>   emits final text is pure latency waste.
+>
+> The model still sees a remaining-iteration count in the per-turn
+> `<system-reminder>` so it can self-pace within the cap you set.
 
 More runnable scripts live under [`examples/`](./examples) — Anthropic, DeepSeek,
 a custom-tool walkthrough, and a `skill_write` demo.

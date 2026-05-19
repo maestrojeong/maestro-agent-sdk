@@ -51,6 +51,7 @@ export {
   buildCacheableTools,
   effortToPersonaPrompt,
   effortToThinkingBudget,
+  thinkingBudgetForTurn,
 } from "@/providers/anthropic";
 
 // ─── Providers ───────────────────────────────────────────────────────────────
