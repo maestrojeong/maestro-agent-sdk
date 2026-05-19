@@ -4,23 +4,16 @@
 [![npm version](https://img.shields.io/npm/v/maestro-agent-sdk.svg)](https://www.npmjs.com/package/maestro-agent-sdk)
 [![license](https://img.shields.io/npm/l/maestro-agent-sdk.svg)](./LICENSE)
 
-**Embeddable agent SDK that ships skills, memory, and MCP out of the box.**
+**Embeddable agent SDK — skills, memory, MCP, and host-controlled guardrails out of the box.**
 Anthropic + DeepSeek today, BYO-provider in one file. No CLI, no gateway, no host lock-in.
 
 > **Status:** Early port (v0.1.x). Active development. API surface may change before 1.0.
 
-Inspired by [Claude Code](https://www.anthropic.com/claude-code) and [`hermes-agent`](https://github.com/NousResearch/hermes-agent) — same agent-loop shape, repackaged as an embeddable TypeScript library.
-
-### How it compares
-
-| | What you get |
-|---|---|
-| **vs [`@anthropic-ai/claude-agent-sdk`](https://github.com/anthropics/claude-agent-sdk-typescript)** | Multi-provider from day one (Anthropic + DeepSeek), with skills (`SKILL.md` / `skill.md` indexing), memory (auto context compaction), and MCP client pool built in — not provided as separate add-ons. |
-| **vs LangChain / LangGraph** | Thin loop, no DSL. A provider is one adapter file; a tool is `{ name, description, schema, run }`. You read the source in an afternoon. |
+A generalizable agent runtime. Swap providers, inject your own logger/MCP resolver/hooks, and embed it in any host process — no framework, no lock-in.
 
 ## What's in the box
 
-- **Agent loop** — provider-driven tool-calling loop with iteration cap, abort signal, and event stream.
+- **Agent loop** — provider-driven tool-calling loop with iteration cap, abort signal, LLM pre/post guardrail hooks, and event stream.
 - **Pluggable providers** — first-class adapters for Anthropic (Claude) and DeepSeek V4; provider-neutral message schema so adding OpenAI / Gemini / Ollama is a thin file.
 - **Built-in tools** — `bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`, `Agent` (sub-agent delegation), `TaskCreate`/`TaskUpdate`/`TaskList`/`TaskGet`, `WebFetch`, `skill_view`, `skill_write`. Bring your own via `ToolRegistry`. Grep shells out to ripgrep (`rg`) so install it if you want the tool active; the SDK surfaces a structured error pointing to the install path when missing.
 - **MCP** — built-in client pool (stdio + SSE) so any MCP server (`@modelcontextprotocol/sdk`) shows up as tools.
@@ -122,118 +115,6 @@ for await (const event of runConversation(agent, "Summarize today's news.")) {
 More runnable scripts live under [`examples/`](./examples) — Anthropic, DeepSeek,
 a custom-tool walkthrough, and a `skill_write` demo.
 
-## Skills — per-workspace, agent-autonomous
-
-Skill catalog routing is deterministic from `(opts.cwd, opts.skillKey)`:
-
-```
-  skillKey set    → <cwd>/.skills/<skillKey>/
-  skillKey unset  → <cwd>/.skills/default/   (uses MAESTRO_DEFAULT_SKILL_KEY)
-```
-
-Every skill lives under a **named key** subdirectory. The SDK never reads from
-`<cwd>/.skills/` directly, so a host can list "which profiles exist in this
-workspace?" with one `readdir`. One workspace can host multiple disjoint
-catalogs (e.g. `legal/`, `coding/`, `research/`) and each session selects its
-profile by passing `skillKey`.
-
-### On-disk layout
-
-```
-<cwd>/.skills/
-├── default/                          ← skillKey omitted
-│   └── general/note-template/skill.md
-├── legal/                            ← skillKey: "legal"
-│   └── general/
-│       ├── ocr/
-│       │   ├── skill.md
-│       │   ├── scripts/preprocess.py
-│       │   └── references/api.md
-│       └── hearing-report/skill.md
-└── coding/                           ← skillKey: "coding"
-    └── general/code-review/skill.md
-```
-
-### Manifest format (clawgram-style)
-
-Two filename conventions are accepted: `SKILL.md` (upstream v0.13.0 with YAML
-frontmatter) and `skill.md` (lowercase, body-based). For new skills the
-clawgram convention is recommended:
-
-```markdown
-# OCR 텍스트 추출 (English subtitle)
-
-> **Description**: OCR, 이미지 읽어줘, PDF 텍스트 추출 요청 시 트리거.
-
-## Required MCP
-- ocr
-- paddleocr
-
-## 트리거
-- ...
-
-## 프로세스
-### 1. 이미지 준비
-### 2. paddleocr 실행
-
-## Gotchas
-- 흐릿한 이미지는 deskew 필요
-```
-
-The first heading is the display title; the `> **Description**: ...` blockquote
-carries the trigger keywords (this drives system-prompt activation). The
-loader extracts the description from either YAML frontmatter or this
-blockquote — both styles can coexist in the same `.skills/<key>/` tree.
-
-### Authoring from inside the agent — `skill_write`
-
-The model can persist new skills mid-session, including adjacent assets
-(scripts, templates, references), in one transactional call:
-
-```ts
-skill_write({
-  name: "ocr",                       // kebab-case, becomes the folder name
-  content: "# OCR ...\n\n> **Description**: OCR, 이미지 읽어줘\n\n...",
-  files: {
-    "scripts/preprocess.py": "import cv2\n...",
-    "scripts/run.sh": "#!/bin/bash\n...",
-    "templates/report.html": "<!doctype html>...",
-    "references/paddleocr-api.md": "# PaddleOCR API\n...",
-  },
-  overwrite: false,                  // default: refuse to clobber
-});
-```
-
-Resulting layout under `<skillsDir>/ocr/`:
-
-```
-ocr/
-├── skill.md            ← from `content`
-├── scripts/
-│   ├── preprocess.py
-│   └── run.sh
-├── templates/report.html
-└── references/paddleocr-api.md
-```
-
-Safety:
-
-- kebab-case validation on `name`
-- relative-path validation on every `files` key (rejects `..` escapes,
-  absolute prefixes, backslashes, and the reserved `skill.md` name)
-- `overwrite=false` → batch aborts BEFORE any disk touch if any target
-  already exists (validate-all-then-write)
-- cache invalidation on success → the new skill appears in the NEXT turn's
-  `<available_skills>` catalog (intentionally not the current turn — would
-  break the prompt cache)
-
-### Reading from the model side — `skill_view`
-
-The system prompt only carries name + summary per skill (FTS-style index).
-When the model decides a skill is relevant it calls `skill_view(name)` and
-gets the full body back, with a `[Skill directory: ...]` hint so relative
-paths in the body resolve against the right cwd.
-
 ## Configuration
 
 Per-call options on `AgentQueryOptions`:
@@ -332,25 +213,18 @@ treats their first line as a regular message. Hosts that want to inspect
 session metadata without reading the full message log can call
 `loadMaestroSessionMeta(sessionId)`.
 
-## Architecture
+## Positioning — a building block, not a product
 
-```
-src/
-├── core/         AIAgent class + run_conversation loop
-├── tools/        ToolRegistry + builtin tools + PreToolUse/PostToolUse hook surface
-├── providers/    Provider adapters (anthropic, deepseek)
-├── mcp/          MCP client pool (stdio + SSE)
-├── skills/       Skill loader, index builder, usage tracker, curator
-├── memory/       Context compressor, token estimator, reminders, scrubber
-├── state/        Per-session todo store
-├── sub-agent/    Sub-agent runner for the `Agent` tool
-├── platform/     Injectable host adapters (logger, lifecycle, config, jsonl, version, mcp-config)
-├── agents/       Cross-agent rollout helpers + per-agent registry contract
-├── storage/      ConversationReader DI (host supplies past turns for cross-agent forks)
-└── media/        File-event extraction from inline `[FILE:/path]` tags
-```
+maestro-agent-sdk is an agent *runtime*, not an agent *product*. You pick the UI, the provider mix, the guardrail rules, the storage layer.
 
-The `platform/`, `storage/`, and `agents/contracts` modules expose **injection points** so the SDK never assumes a particular host process.
+| Project | Layer | Key trade-off |
+|---------|-------|---------------|
+| **maestro-agent-sdk** | Embeddable SDK | Agent loop only — no CLI, no UI, no fixed product shape. Host injects logger, MCP resolver, session store, guardrails. |
+| **hermes-agent** | Full-featured app | TUI, web dashboard, gateway, cron, Discord/Feishu. All-in-one — opinionated and coupled to its own host. |
+| **OpenAI Agents SDK** | SDK + scaffold | Strong guardrails/tracing/handoffs, but multi-agent by design — heavier abstraction surface. |
+| **oh-my-claudecode** | Orchestration plugin | Sits on Claude Code agent loop. Value is team mode, LSP tools, session replay. |
+
+**maestro-agent-sdk leaves product decisions to you.** Same `AIAgent` works in a Telegram bot, cron runner, or code review pipeline.
 
 ## Host integration (DI)
 
@@ -374,26 +248,73 @@ setMcpResolver((opts) => ({
 setConversationReader((userId, topic, groupId) => myStore.read({ userId, topic, groupId }));
 ```
 
+
+## Skills — drop a directory, get indexed context
+
+Skills are `SKILL.md` (or `skill.md`) files in a directory. The SDK indexes them, passes name+summary to the system prompt, and the model calls `skill_view(name)` to load the full body on demand.
+
+
+
+**Creating skills:** `skill_write(name, body)` → writes `SKILL.md` into the directory.  
+**Loading skills:** `skill_view(name)` → loads full markdown into context.  
+**Security:** the SDK checks all SKILL.md files on startup for prompt injection, exfiltration, and destructive patterns.
+
+### Example SKILL.md
+
+
+
+## Hooks & Guardrails — LLM pre/post + tool hooks
+
+### LLM Pre Hook — inspect every API call
+
+Fires right before every provider call. The host can reject, rewrite, or tripwire the run.
+
+
+
+### LLM Post Hook — validate the final turn
+
+Fires when the model has no more tool calls (turn complete). Validates the final text before it becomes the result.
+
+
+
+### Tool hooks — per-tool pre/post
+
+The `ToolRegistry` supports `use({pre, post})` for tool-level guardrails:
+
+
+
+### Guardrail decisions
+
+| Decision | Effect |
+|----------|--------|
+| `allow` | Proceed normally |
+| `reject_content` | Replace the message/result, continue execution |
+| `tripwire` | Abort the entire agent run immediately |
+| `block` | (Tool hooks only) Skip tool execution, return message |
+
+## MCP — zero-config client pool
+
+Add an MCP server config and the SDK lazily spawns, caches, and reuses subprocess clients.
+
+
+
+- **Lazy spawn** — servers start on first tool call, not at agent creation.  
+- **Pool cache** — same (command, args, env-keys) hash reuses the running process.  
+- **SSE + stdio** — both transport types supported.  
+- **Background reconnect** — crashed servers restart automatically.
+
 ## Development
 
 ```bash
 git clone git@github.com:maestrojeong/maestro-agent-sdk.git
 cd maestro-agent-sdk
-npm install
+bun install         # also supported
+npm install         # alternative
 npm run typecheck   # tsc --noEmit
 npm run build       # tsc + tsc-alias → dist/
 npm test            # vitest, 426 tests (+11 skipped without ripgrep)
 ```
 
-### Known gaps
-
-Two test files are currently excluded in `vitest.config.ts`:
-
-- `maestro-registry.test.ts`
-- `maestro-session-store.test.ts`
-
-They rely on host-side helpers (`appendConversationEvent`, `getConversationPath`) and on the strict workspace-root check that the SDK loosened. They'll come back online once we wire them through the `ConversationReader` DI hook.
-
 ## License
 
-[MIT](./LICENSE). Design influenced by [Claude Code](https://www.anthropic.com/claude-code) and Nous Research's [`hermes-agent`](https://github.com/NousResearch/hermes-agent) (also MIT); see [NOTICE](./NOTICE) for attribution details.
+[MIT](./LICENSE). 

@@ -1,6 +1,6 @@
 import type { Provider } from "@/providers/base";
 import type { ToolRegistry } from "@/tools/registry";
-import type { EffortLevel } from "@/types";
+import type { EffortLevel, LlmPostHook, LlmPreHook } from "@/types";
 
 /**
  * AIAgent — minimal TS port of upstream `run_agent.py::AIAgent`.
@@ -58,6 +58,10 @@ export interface AIAgentConfig {
    * only fires for subsequent tool_result turns.
    */
   buildIterReminder?: (iterationsRemaining: number) => string | null;
+  /** LLM Pre Hook — fires right before every provider API call. */
+  llmPreHook?: LlmPreHook;
+  /** LLM Post Hook — fires on turn-complete (no tool calls) before `result` event. */
+  llmPostHook?: LlmPostHook;
 }
 
 export class AIAgent {
@@ -70,6 +74,8 @@ export class AIAgent {
     effort?: EffortLevel;
     abortSignal?: AbortSignal;
     buildIterReminder?: (iterationsRemaining: number) => string | null;
+    llmPreHook?: LlmPreHook;
+    llmPostHook?: LlmPostHook;
   };
 
   constructor(provider: Provider, tools: ToolRegistry, config: AIAgentConfig) {
@@ -86,6 +92,8 @@ export class AIAgent {
       ...(config.effort ? { effort: config.effort } : {}),
       ...(config.abortSignal ? { abortSignal: config.abortSignal } : {}),
       ...(config.buildIterReminder ? { buildIterReminder: config.buildIterReminder } : {}),
+      ...(config.llmPreHook ? { llmPreHook: config.llmPreHook } : {}),
+      ...(config.llmPostHook ? { llmPostHook: config.llmPostHook } : {}),
     };
   }
 }

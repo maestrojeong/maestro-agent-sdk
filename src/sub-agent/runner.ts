@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AIAgent } from "@/core/agent";
+import { isAbortError } from "@/core/is-abort-error";
 import { runConversation } from "@/core/loop";
 import { buildSystemReminder } from "@/memory/reminder";
 import { logger } from "@/platform/logger";
@@ -22,7 +23,6 @@ import { webFetchTool } from "@/tools/builtin/web_fetch";
 import { createWriteTool } from "@/tools/builtin/write";
 import { getFileStateTracker } from "@/tools/file-state";
 import { ToolRegistry } from "@/tools/registry";
-import { isAbortError } from "@/core/is-abort-error";
 import type { EffortLevel, TokenUsage } from "@/types";
 
 /**

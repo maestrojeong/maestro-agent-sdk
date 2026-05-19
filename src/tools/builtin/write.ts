@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, normalize } from "node:path";
-import { checkBlockedPath } from "@/tools/path-guard";
 import type { FileStateTracker } from "@/tools/file-state";
+import { checkBlockedPath } from "@/tools/path-guard";
 import type { ToolHandler } from "@/tools/registry";
 
 /**

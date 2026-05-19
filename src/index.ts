@@ -1,10 +1,9 @@
 /**
  * maestro-agent-sdk — public API.
  *
- * Provider-agnostic agent loop with built-in tools, skills, memory, and MCP.
+ * Provider-agnostic agent loop with built-in tools, skills, memory, MCP,
+ * and host-controlled guardrails (LLM pre/post hooks + tool hooks).
  * See README.md for a quick start.
- *
- * Originally derived from Nous Research's hermes-agent (MIT); see NOTICE.
  */
 
 export { MAESTRO_SDK_VERSION } from "@/platform/version";
@@ -23,6 +22,7 @@ export { AIAgent, type AIAgentConfig } from "@/core/agent";
 export { runConversation } from "@/core/loop";
 // ─── MCP ─────────────────────────────────────────────────────────────────────
 export type { MaestroMcpClient, MaestroMcpServerSpec, MaestroMcpTool } from "@/mcp/client";
+
 export { ACTIVE_TASK_TEMPLATE, wrapCompactedSummary } from "@/memory/active-task-template";
 // ─── Memory / compression ────────────────────────────────────────────────────
 export { compressIfNeeded } from "@/memory/compressor";
@@ -94,6 +94,7 @@ export { bashTool } from "@/tools/builtin/bash";
 export { createEditTool } from "@/tools/builtin/edit";
 export { compileGlob, globTool } from "@/tools/builtin/glob";
 export { grepTool } from "@/tools/builtin/grep";
+export { createMultiEditTool } from "@/tools/builtin/multi_edit";
 export { createReadTool } from "@/tools/builtin/read";
 export { createSkillViewTool } from "@/tools/builtin/skill_view";
 export { createSkillWriteTool } from "@/tools/builtin/skill_write";
@@ -103,6 +104,7 @@ export {
   createTaskListTool,
   createTaskUpdateTool,
 } from "@/tools/builtin/tasks";
+export { webFetchTool } from "@/tools/builtin/web_fetch";
 export { createWriteTool } from "@/tools/builtin/write";
 export { dropFileStateTracker, getFileStateTracker } from "@/tools/file-state";
 // ─── Tool registry + hook surface ────────────────────────────────────────────
@@ -114,6 +116,7 @@ export {
   type PreToolUseContext,
   type PreToolUseDecision,
   type PreToolUseHook,
+
   type ToolHandler,
   ToolRegistry,
 } from "@/tools/registry";
@@ -123,6 +126,10 @@ export type {
   AgentKind,
   AgentQueryOptions,
   EffortLevel,
+  GuardrailDecision,
+  GuardrailResult,
+  LlmPostHook,
+  LlmPreHook,
   TokenUsage,
   UnifiedEvent,
 } from "@/types";

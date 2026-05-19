@@ -16,6 +16,7 @@ import { getMcpServersForQuery } from "@/platform/mcp-config";
 // One-shot at import time keeps the per-tool-call cost at zero. See
 // `platform/env-bootstrap.ts` for the full rationale and safety notes.
 bootstrapHostPath();
+
 import { AnthropicProvider, effortToMaxIter, effortToThinkingBudget } from "@/providers/anthropic";
 import type { Provider, ProviderContentBlock, ProviderMessage } from "@/providers/base";
 import { DeepseekProvider } from "@/providers/deepseek";
@@ -226,7 +227,7 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
     // their own playwright instance (forum/dm scope rules). The cache hashes
     // the spec on top of this, so a server spec change inside the same scope
     // also creates a fresh client.
-    mcpPool = await startMcpPool(servers as unknown as Record<string, unknown>, {
+    mcpPool = await startMcpPool(servers, {
       userId: opts.userId,
       session: opts.session,
       groupId: opts.groupId,
