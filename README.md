@@ -110,11 +110,13 @@ for await (const event of runConversation(agent, "Summarize today's news.")) {
 >    enumerate failure modes"). Pure function of `effort`, prefix-cache stable.
 >
 > The **tool-iteration cap is no longer derived from effort** as of v0.1.16 —
-> it's a single host-tunable default (`DEFAULT_MAX_ITERATIONS = 120`) that you
-> override per call via `AgentQueryOptions.maxIterations`. This lets a host
-> mix and match: `effort: "low"` + `maxIterations: 120` (terse, but don't
-> trip on a surprise sub-task), or `effort: "max"` + `maxIterations: 30`
-> (think hard, but stay snappy).
+> it's a single host-tunable default (`DEFAULT_MAX_ITERATIONS = 90`) that you
+> override per call via `AgentQueryOptions.maxIterations`. The default
+> matches v0.1.15's old `xhigh` cap (the "extended exploration" baseline)
+> so existing callers that didn't pin a value see no behavior change. This
+> lets a host mix and match: `effort: "low"` + `maxIterations: 90` (terse,
+> but don't trip on a surprise sub-task), or `effort: "max"` +
+> `maxIterations: 30` (think hard, but stay snappy).
 >
 > | effort  | thinking budget (Anthropic) | DeepSeek `reasoning_effort` |
 > |---------|----------------------------:|:---------------------------:|
@@ -167,7 +169,7 @@ Per-call options on `AgentQueryOptions`:
 |---|---|---|
 | `cwd` | ✓ | Workspace root. Drives `.skills/` location, rollout `_meta`, and the `mkdir` invariant. |
 | `effort` | — | Reasoning depth + working-mode persona (`low`/`medium`/`high`/`xhigh`/`max`). See the effort table above. |
-| `maxIterations` | — | Tool-iteration cap. Omit for `DEFAULT_MAX_ITERATIONS = 120`. Decoupled from `effort` as of v0.1.16 — controls turn budget, not reasoning depth. |
+| `maxIterations` | — | Tool-iteration cap. Omit for `DEFAULT_MAX_ITERATIONS = 90`. Decoupled from `effort` as of v0.1.16 — controls turn budget, not reasoning depth. |
 | `skillKey` | — | Named skill profile within `<cwd>/.skills/`. Omit for `default`. |
 | `allowedSkills` | — | Per-call name whitelist applied before curation. |
 | `sessionMetadata` | — | Opaque host bag round-tripped via the rollout `_meta` header. |

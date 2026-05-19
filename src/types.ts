@@ -199,17 +199,20 @@ export interface AgentQueryOptions {
    * with `stopReason: "max_iterations"` and surfaces the budget to the
    * model in the final result event.
    *
-   * Omit to use `DEFAULT_MAX_ITERATIONS` (120) — calibrated as a single
+   * Omit to use `DEFAULT_MAX_ITERATIONS` (90) — calibrated as a single
    * default that comfortably covers research / multi-file edit chains
-   * without strangling longer investigations. Pass a number to override
-   * up or down per call (e.g. a webhook that wants a hard 20-turn ceiling).
+   * without strangling longer investigations. The value matches the
+   * previous `xhigh` cap from v0.1.15's effort-derived table, which was
+   * the de facto "extended exploration" baseline before the decoupling.
+   * Pass a number to override up or down per call (e.g. a webhook that
+   * wants a hard 20-turn ceiling, or a deep-research session at 200).
    *
    * Decoupled from `effort` as of v0.1.16: prior versions derived the cap
    * from effort (5 / 20 / 50 / 90 / 200), but in practice the cap and the
    * reasoning-depth knob serve different needs — effort signals how hard
    * the model should push within a turn, the cap signals how many turns
    * the host is willing to fund. Splitting them lets a host run, say,
-   * `effort=low` + `maxIterations=120` (be terse, but don't trip on a
+   * `effort=low` + `maxIterations=90` (be terse, but don't trip on a
    * surprise sub-task) or `effort=max` + `maxIterations=30` (think hard,
    * but stay snappy).
    */

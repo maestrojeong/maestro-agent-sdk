@@ -638,6 +638,11 @@ export function thinkingBudgetForTurn(
  *   - `xhigh`  — broad survey, hold multiple hypotheses, name edge cases
  *   - `max`    — exhaustive: every relevant file, tests, all failure modes
  *
+ * All five levels emit exactly four bullets (v0.1.16+). Uniform shape
+ * keeps the prefix-cache boundary identical-length across levels and
+ * makes A/B telemetry honest — a longer level can't outperform a shorter
+ * one just because the model had more text to condition on.
+ *
  * Returns `undefined` for an unknown / absent effort so callers can skip
  * concatenation entirely; the model then sees only the caller's system
  * prompt, preserving the historical no-effort baseline.
@@ -666,6 +671,7 @@ export function effortToPersonaPrompt(e: string | undefined): string | undefined
       bullets = [
         "Explore one area thoroughly; do not branch into adjacent files unless directly relevant.",
         "Cross-check only within the same file or function.",
+        "If a tool result is ambiguous, do one follow-up read; do not start a new chain.",
         "Answer when the primary question is resolved — do not preemptively extend scope.",
       ];
       break;
@@ -691,10 +697,9 @@ export function effortToPersonaPrompt(e: string | undefined): string | undefined
       header = "You are in **max** effort mode — exhaustive analysis.";
       bullets = [
         "Read every related file; do not stop at the first plausible answer.",
-        "Consider writing or updating tests when behavior is non-trivial.",
         "Enumerate all failure modes you can construct; analyze each.",
         "Cross-verify with independent paths (grep + read + run, if applicable).",
-        "Prefer a complete answer over a fast one — the budget is large on purpose.",
+        "Consider writing or updating tests when behavior is non-trivial.",
       ];
       break;
     default:

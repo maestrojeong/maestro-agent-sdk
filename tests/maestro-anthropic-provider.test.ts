@@ -519,10 +519,18 @@ describe("extended thinking budget", () => {
         expect(out).toBeDefined();
         expect(out).toContain("## Working mode");
         expect(out).toContain(`**${e}**`);
-        // Persona body is a bullet list — every level emits at least 3
-        // imperatives so the model has concrete verbs to condition on.
-        const bulletCount = (out ?? "").split("\n").filter((l) => l.startsWith("- ")).length;
-        expect(bulletCount).toBeGreaterThanOrEqual(3);
+      }
+    });
+
+    test("every level emits exactly 4 bullets (v0.1.16 uniform shape)", () => {
+      // Uniform 4-bullet shape keeps the prefix-cache boundary identical-
+      // length across levels and makes A/B telemetry honest — a longer
+      // level can't outperform a shorter one just because the model had
+      // more text to condition on.
+      for (const e of ["low", "medium", "high", "xhigh", "max"] as const) {
+        const out = effortToPersonaPrompt(e) ?? "";
+        const bulletCount = out.split("\n").filter((l) => l.startsWith("- ")).length;
+        expect(bulletCount).toBe(4);
       }
     });
 

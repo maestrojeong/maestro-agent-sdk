@@ -42,6 +42,7 @@ export {
   maestroProvider,
   providerForModel,
   resolveSkillsDir,
+  wrapUpOverlayLine,
 } from "@/provider";
 export {
   AnthropicProvider,
