@@ -15,7 +15,7 @@ A generalizable agent runtime. Swap providers, inject your own logger/MCP resolv
 
 - **Agent loop** — provider-driven tool-calling loop with iteration cap, abort signal, LLM pre/post guardrail hooks, and event stream.
 - **Pluggable providers** — first-class adapters for Anthropic (Claude) and DeepSeek V4; provider-neutral message schema so adding OpenAI / Gemini / Ollama is a thin file.
-- **Built-in tools** — `bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`, `Agent` (sub-agent delegation), `TaskCreate`/`TaskUpdate`/`TaskList`/`TaskGet`, `WebFetch`, `skill_view`, `skill_write`. Bring your own via `ToolRegistry`. Grep shells out to ripgrep (`rg`) so install it if you want the tool active; the SDK surfaces a structured error pointing to the install path when missing.
+- **Built-in tools** — `bash`, `Read`, `Write`, `Edit`, `MultiEdit`, `Glob`, `Grep`, `Agent` (sub-agent delegation), `TaskCreate`/`TaskUpdate`/`TaskList`/`TaskGet`, `WebFetch` (optional SSRF policy via `createWebFetchTool`), `skill_view`, `skill_write`. Bring your own via `ToolRegistry`. Grep shells out to ripgrep (`rg`) so install it if you want the tool active; the SDK surfaces a structured error pointing to the install path when missing. Tool primitives are also importable from the `maestro-agent-sdk/tools` subpath when you don't need the rest of the runtime.
 - **MCP** — built-in client pool (stdio + SSE) so any MCP server (`@modelcontextprotocol/sdk`) shows up as tools.
 - **Skills** — per-workspace `.skills/<skillKey>/<name>/skill.md` packages with FTS-style indexing, on-demand body load (`skill_view`), and agent-autonomous authoring (`skill_write`).
 - **Memory** — automatic context compression (summarization + pruning) when the token budget is hit. Reuses the agent's own model for compaction — no separate model knob.
@@ -203,7 +203,7 @@ Each session JSONL at `~/.maestro/sessions/<sessionId>.jsonl` carries a
 `_meta` header line for forensics and host-side indexing:
 
 ```jsonl
-{"_meta":{"version":1,"cwd":"/path","skillKey":"legal","userId":"...","createdAt":"2026-05-18T...","sdkVersion":"0.1.5","skillsDir":"...","metadata":{...}}}
+{"_meta":{"version":1,"cwd":"/path","skillKey":"legal","userId":"...","createdAt":"2026-05-18T...","sdkVersion":"0.1.x","skillsDir":"...","metadata":{...}}}
 {"role":"user","content":"..."}
 {"role":"assistant","content":[...]}
 ```
@@ -251,37 +251,105 @@ setConversationReader((userId, topic, groupId) => myStore.read({ userId, topic, 
 
 ## Skills — drop a directory, get indexed context
 
-Skills are `SKILL.md` (or `skill.md`) files in a directory. The SDK indexes them, passes name+summary to the system prompt, and the model calls `skill_view(name)` to load the full body on demand.
+Skills are `SKILL.md` (or `skill.md`) files inside `<cwd>/.skills/<skillKey>/<name>/`. The SDK walks that tree on first turn, parses each file's YAML frontmatter, and appends a `## Skills (mandatory)` block to the system prompt with one `name + 60-char description` line per skill. Bodies stay on disk — the model calls `skill_view(name)` to load the full markdown on demand. Index is cached per (root, mtime, TTL) so subsequent turns pay no walk cost.
 
+```ts
+import { maestroProvider } from "maestro-agent-sdk";
 
+// `maestroProvider` is the batteries-included entry point: it builds the
+// ToolRegistry, wires builtin tools + skills + MCP, and drives the loop.
+for await (const event of maestroProvider({
+  cwd: "/path/to/workspace",  // .skills/ resolved relative to this
+  skillKey: "legal",          // → /path/to/workspace/.skills/legal/<name>/SKILL.md
+  prompt: "Draft a contract clause for ...",
+  userId: "alice",
+  session: "thread-42",
+  // skill_view + skill_write tools are auto-registered; the model picks
+  // which skill body to load per turn.
+})) {
+  if (event.type === "text_delta") process.stdout.write(event.content);
+}
+```
 
-**Creating skills:** `skill_write(name, body)` → writes `SKILL.md` into the directory.  
-**Loading skills:** `skill_view(name)` → loads full markdown into context.  
-**Security:** the SDK checks all SKILL.md files on startup for prompt injection, exfiltration, and destructive patterns.
-
-### Example SKILL.md
-
-
+**Creating skills:** `skill_write(name, body)` → writes `SKILL.md` into the named directory; the index hot-reloads.
+**Loading skills:** `skill_view(name)` → returns the full markdown body to the model.
+**Security:** every `SKILL.md` is scanned at index-time for prompt-injection, exfiltration, and destructive shell patterns. A flagged file is dropped from the catalog with a logged reason.
 
 ## Hooks & Guardrails — LLM pre/post + tool hooks
 
 ### LLM Pre Hook — inspect every API call
 
-Fires right before every provider call. The host can reject, rewrite, or tripwire the run.
+Fires right before every provider call. The host can pass through, replace the user-visible content, or tripwire the entire run. Receives the full message array (system + history + current turn).
 
+```ts
+import { AIAgent, AnthropicProvider, ToolRegistry } from "maestro-agent-sdk";
 
+const agent = new AIAgent(provider, tools, {
+  model: "claude-sonnet-4-6",
+  systemPrompt: "...",
+  llmPreHook: async (messages, { abortSignal }) => {
+    const lastUser = messages.filter((m) => m.role === "user").at(-1);
+    const text = typeof lastUser?.content === "string" ? lastUser.content : "";
+    if (/api[_-]?key|password/i.test(text)) {
+      return {
+        decision: "reject_content",
+        message: "Sensitive credential detected — please rephrase without secrets.",
+      };
+    }
+    if (/rm -rf \//.test(text)) {
+      return { decision: "tripwire", message: "Destructive request blocked." };
+    }
+    return { decision: "allow" };
+  },
+});
+```
 
 ### LLM Post Hook — validate the final turn
 
-Fires when the model has no more tool calls (turn complete). Validates the final text before it becomes the result.
+Fires when the model produced a turn-complete response (no pending tool calls), before the `result` event is yielded. Use for output redaction, API-key leak detection, or final policy enforcement.
 
-
+```ts
+const agent = new AIAgent(provider, tools, {
+  // ...
+  llmPostHook: async (text, { messages }) => {
+    if (/sk-[a-zA-Z0-9]{20,}/.test(text)) {
+      return {
+        decision: "reject_content",
+        message: "[redacted: API key leak detected in assistant output]",
+      };
+    }
+    return { decision: "allow" };
+  },
+});
+```
 
 ### Tool hooks — per-tool pre/post
 
-The `ToolRegistry` supports `use({pre, post})` for tool-level guardrails:
+`ToolRegistry.use({ pre, post })` brackets every `dispatch()`. Pre can `allow` / `modify` / `block`; post sees the actual outcome via `status: "ok" | "blocked" | "error"` (since v0.1.14) so audit/telemetry hooks observe denied and failed calls too.
 
+```ts
+import { ToolRegistry, type PreToolUseDecision } from "maestro-agent-sdk";
 
+const tools = new ToolRegistry();
+// ... register builtin tools ...
+
+tools.use({
+  name: "fs-allowlist",
+  pre: ({ toolName, input }): PreToolUseDecision => {
+    if (toolName !== "Write" && toolName !== "Edit") return { decision: "allow" };
+    const path = String(input.file_path ?? "");
+    if (!path.startsWith("/workspace/")) {
+      return { decision: "block", error: `path '${path}' outside allowlist` };
+    }
+    return { decision: "allow" };
+  },
+  post: ({ toolName, status, error, output }) => {
+    metrics.increment(`tool.${toolName}.${status}`);
+    if (status === "error") logger.warn({ toolName, error }, "tool failed");
+    return {};  // pass output through unchanged
+  },
+});
+```
 
 ### Guardrail decisions
 
@@ -289,19 +357,33 @@ The `ToolRegistry` supports `use({pre, post})` for tool-level guardrails:
 |----------|--------|
 | `allow` | Proceed normally |
 | `reject_content` | Replace the message/result, continue execution |
-| `tripwire` | Abort the entire agent run immediately |
-| `block` | (Tool hooks only) Skip tool execution, return message |
+| `tripwire` | Abort the entire agent run immediately (LLM hooks only) |
+| `modify` | (Tool pre hooks only) Substitute the tool's `input` before dispatch |
+| `block` | (Tool pre hooks only) Skip tool execution, return the supplied error |
 
 ## MCP — zero-config client pool
 
-Add an MCP server config and the SDK lazily spawns, caches, and reuses subprocess clients.
+Wire an `McpResolver` and the SDK lazily spawns, caches, and reuses MCP subprocess clients across turns. Cache key includes `(userId, session, groupId, agentKind, server, specHash)` — two users never share a client, and same-server / same-spec calls within a session reuse the warm process.
 
+```ts
+import { setMcpResolver } from "maestro-agent-sdk";
 
+setMcpResolver((opts) => ({
+  playwright: {
+    command: "playwright-mcp",
+    args: ["--user-data-dir", `/tmp/pw-${opts.userId}`],
+  },
+  // SSE transport
+  search: { type: "sse", url: "https://internal.example.com/mcp" },
+}));
+```
 
-- **Lazy spawn** — servers start on first tool call, not at agent creation.  
-- **Pool cache** — same (command, args, env-keys) hash reuses the running process.  
-- **SSE + stdio** — both transport types supported.  
-- **Background reconnect** — crashed servers restart automatically.
+- **Lazy spawn** — servers start on first tool call, not at agent creation.
+- **Pool cache** — `(userId, session, groupId, agentKind, server, specHash)` keyed; idle TTL 5 min, LRU cap 16 (override via `MAESTRO_MCP_POOL_IDLE_TTL_MS` / `MAESTRO_MCP_POOL_MAX`).
+- **In-flight dedup** — concurrent acquires on the same key await one `start()` instead of double-spawning (v0.1.14).
+- **Env values in cache hash** — `{ TOKEN: alice }` and `{ TOKEN: bob }` get separate processes by default; opt high-churn keys out via `setMcpCacheIgnoreEnvKeys(["DEPTH"])` (v0.1.14).
+- **stdio + SSE** — both transports supported via `MaestroMcpServerSpec`.
+- **Graceful shutdown** — `SIGINT` / `SIGTERM` closes every cached client before exit.
 
 ## Development
 
@@ -312,7 +394,7 @@ bun install         # also supported
 npm install         # alternative
 npm run typecheck   # tsc --noEmit
 npm run build       # tsc + tsc-alias → dist/
-npm test            # vitest, 426 tests (+11 skipped without ripgrep)
+npm test            # vitest, 437 tests (+11 skipped without ripgrep)
 ```
 
 ## License
