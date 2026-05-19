@@ -5,8 +5,9 @@ import {
   buildCacheableMessages,
   buildCacheableSystem,
   buildCacheableTools,
-  effortToMaxIter,
+  effortToPersonaPrompt,
   effortToThinkingBudget,
+  thinkingBudgetForTurn,
 } from "@/providers/anthropic";
 
 const ORIGINAL_FETCH = globalThis.fetch;
@@ -491,12 +492,15 @@ describe("prompt caching breakpoints", () => {
 
 describe("extended thinking budget", () => {
   describe("effortToThinkingBudget", () => {
-    test("maps the five maestro effort levels to monotonic budgets", () => {
+    test("maps the five maestro effort levels to v0.1.16 budgets", () => {
+      // v0.1.16: xhigh shares high's ceiling (persona-only difference);
+      // max halved from 65 536 to 32 768 because the 32K → 64K range has
+      // poor ROI on sonnet-4-6 / haiku-4-5 in practice.
       expect(effortToThinkingBudget("low")).toBe(2048);
       expect(effortToThinkingBudget("medium")).toBe(8192);
       expect(effortToThinkingBudget("high")).toBe(16384);
-      expect(effortToThinkingBudget("xhigh")).toBe(32768);
-      expect(effortToThinkingBudget("max")).toBe(65536);
+      expect(effortToThinkingBudget("xhigh")).toBe(16384);
+      expect(effortToThinkingBudget("max")).toBe(32768);
     });
 
     test("returns undefined for unsupported / unset values", () => {
@@ -508,19 +512,96 @@ describe("extended thinking budget", () => {
     });
   });
 
-  describe("effortToMaxIter", () => {
-    test("maps each maestro effort level to a monotonic iteration cap", () => {
-      expect(effortToMaxIter("low")).toBe(5);
-      expect(effortToMaxIter("medium")).toBe(20);
-      expect(effortToMaxIter("high")).toBe(50);
-      expect(effortToMaxIter("xhigh")).toBe(90);
-      expect(effortToMaxIter("max")).toBe(200);
+  describe("effortToPersonaPrompt", () => {
+    test("returns a Working-mode block naming the effort level for each tier", () => {
+      for (const e of ["low", "medium", "high", "xhigh", "max"] as const) {
+        const out = effortToPersonaPrompt(e);
+        expect(out).toBeDefined();
+        expect(out).toContain("## Working mode");
+        expect(out).toContain(`**${e}**`);
+      }
     });
 
-    test("falls back to 90 (historical default) for unset / unknown values", () => {
-      expect(effortToMaxIter(undefined)).toBe(90);
-      expect(effortToMaxIter("minimal")).toBe(90);
-      expect(effortToMaxIter("nonsense")).toBe(90);
+    test("every level emits exactly 4 bullets (v0.1.16 uniform shape)", () => {
+      // Uniform 4-bullet shape keeps the prefix-cache boundary identical-
+      // length across levels and makes A/B telemetry honest — a longer
+      // level can't outperform a shorter one just because the model had
+      // more text to condition on.
+      for (const e of ["low", "medium", "high", "xhigh", "max"] as const) {
+        const out = effortToPersonaPrompt(e) ?? "";
+        const bulletCount = out.split("\n").filter((l) => l.startsWith("- ")).length;
+        expect(bulletCount).toBe(4);
+      }
+    });
+
+    test("returns undefined for unset / unknown effort so the caller skips concat", () => {
+      expect(effortToPersonaPrompt(undefined)).toBeUndefined();
+      expect(effortToPersonaPrompt("minimal")).toBeUndefined();
+      expect(effortToPersonaPrompt("nonsense")).toBeUndefined();
+    });
+
+    test("is a pure function — same effort returns byte-identical text (cache stability)", () => {
+      expect(effortToPersonaPrompt("low")).toBe(effortToPersonaPrompt("low"));
+      expect(effortToPersonaPrompt("max")).toBe(effortToPersonaPrompt("max"));
+    });
+
+    test("low effort mentions wrap-up verbs; max effort mentions exhaustive verbs", () => {
+      // These assertions intentionally key on action verbs the persona is
+      // designed to plant in the model's distribution. If the verbs are
+      // ever softened the test fails, prompting an explicit prompt review.
+      const low = effortToPersonaPrompt("low") ?? "";
+      const max = effortToPersonaPrompt("max") ?? "";
+      expect(low.toLowerCase()).toContain("fast");
+      expect(max.toLowerCase()).toContain("exhaustive");
+    });
+  });
+
+  describe("thinkingBudgetForTurn", () => {
+    test("first turn keeps full base (planning gets full allowance)", () => {
+      expect(thinkingBudgetForTurn(16384, 0, 120)).toBe(16384);
+      expect(thinkingBudgetForTurn(8192, 0, 30)).toBe(8192);
+    });
+
+    test("middle turns keep full base (interleaved thinking has value)", () => {
+      // 120 iter cap → middle range is roughly iter 1 .. 116.
+      expect(thinkingBudgetForTurn(16384, 1, 120)).toBe(16384);
+      expect(thinkingBudgetForTurn(16384, 60, 120)).toBe(16384);
+      expect(thinkingBudgetForTurn(16384, 116, 120)).toBe(16384);
+    });
+
+    test("last 3 turns enter the wrap-up zone and trim to 1/4 base", () => {
+      // maxIter - iter == 3 → enter wrap-up. 16K / 4 = 4096.
+      expect(thinkingBudgetForTurn(16384, 117, 120)).toBe(4096);
+      expect(thinkingBudgetForTurn(16384, 118, 120)).toBe(4096);
+      expect(thinkingBudgetForTurn(16384, 119, 120)).toBe(4096);
+    });
+
+    test("wrap-up clamps to 1024 (Anthropic API minimum) when base/4 < 1024", () => {
+      // base 2048 → 2048/4 = 512, below the 1024 floor, so we clamp up.
+      expect(thinkingBudgetForTurn(2048, 119, 120)).toBe(1024);
+      // base 4096 → 4096/4 = 1024 exactly, no clamp.
+      expect(thinkingBudgetForTurn(4096, 119, 120)).toBe(1024);
+    });
+
+    test("base below 1024 passes through verbatim (caller asked for less)", () => {
+      // If a host explicitly overrode to a sub-1024 budget the helper
+      // doesn't second-guess that — the loop's responsibility was to honor
+      // the caller. (Anthropic would 400 such a body, but that's the
+      // caller's problem to opt out of via undefined.)
+      expect(thinkingBudgetForTurn(512, 119, 120)).toBe(512);
+    });
+
+    test("undefined / 0 base is a no-op (thinking disabled)", () => {
+      expect(thinkingBudgetForTurn(undefined, 0, 120)).toBeUndefined();
+      expect(thinkingBudgetForTurn(undefined, 119, 120)).toBeUndefined();
+      expect(thinkingBudgetForTurn(0, 0, 120)).toBe(0);
+    });
+
+    test("never trims first turn even if maxIter is tiny", () => {
+      // maxIter=3 means wrap-up condition (maxIter - iter <= 3) is true
+      // for iter=0 too, but the explicit `iter > 0` guard protects the
+      // planning turn. First turn always gets the full base.
+      expect(thinkingBudgetForTurn(16384, 0, 3)).toBe(16384);
     });
   });
 

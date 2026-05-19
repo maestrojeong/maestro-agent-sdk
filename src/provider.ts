@@ -17,7 +17,11 @@ import { getMcpServersForQuery } from "@/platform/mcp-config";
 // `platform/env-bootstrap.ts` for the full rationale and safety notes.
 bootstrapHostPath();
 
-import { AnthropicProvider, effortToMaxIter, effortToThinkingBudget } from "@/providers/anthropic";
+import {
+  AnthropicProvider,
+  effortToPersonaPrompt,
+  effortToThinkingBudget,
+} from "@/providers/anthropic";
 import type { Provider, ProviderContentBlock, ProviderMessage } from "@/providers/base";
 import { DeepseekProvider } from "@/providers/deepseek";
 import { maestroRegistry } from "@/registry";
@@ -81,6 +85,24 @@ import type { AgentQueryOptions, TokenUsage, UnifiedEvent } from "@/types";
  * Snapshot pinned to upstream Maestro v0.13.0 (MIT, Nous Research). See
  * docs/maestro-integration.md for the porting roadmap.
  */
+
+/**
+ * Default tool-iteration cap when the caller doesn't supply
+ * `opts.maxIterations`. 90 was picked as a single comfortable ceiling:
+ * large enough to absorb research + multi-file edit chains without
+ * strangling longer investigations, small enough that a runaway loop
+ * still terminates in bounded wall-clock time on a typical model. The
+ * choice matches the previous `xhigh` cap from v0.1.15's effort-derived
+ * table — the level that was effectively the "extended exploration"
+ * baseline before maxIter was decoupled from effort.
+ *
+ * As of v0.1.16 this is decoupled from `effort` — effort drives reasoning
+ * depth (thinking budget + persona), the iteration cap is a separate
+ * orthogonal budget the host owns. Override per call with
+ * `AgentQueryOptions.maxIterations`.
+ */
+export const DEFAULT_MAX_ITERATIONS = 90;
+
 export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<UnifiedEvent> {
   // Provider instantiation is deferred until after model resolution so the
   // right adapter (Anthropic / DeepSeek) is chosen based on the resolved
@@ -255,10 +277,14 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
   // `AIAgent` below. Default is the registry's `medium`, matching how
   // claude-provider hands effort to its SDK when the caller doesn't pin one.
   const resolvedEffort = opts.effort ?? maestroRegistry.defaultEffort;
-  const maxIter = effortToMaxIter(resolvedEffort);
+  // v0.1.16: maxIter is no longer derived from effort. The cap is a single
+  // host-tunable default (`DEFAULT_MAX_ITERATIONS = 90`) that the caller
+  // overrides per call via `opts.maxIterations`. See the AgentQueryOptions
+  // docstring for the split rationale (reasoning depth vs turn budget).
+  const maxIter = opts.maxIterations ?? DEFAULT_MAX_ITERATIONS;
   logger.info(
-    { effort: opts.effort, resolved: resolvedEffort, maxIter },
-    "maestroProvider: effort → maxIter resolution",
+    { effort: opts.effort, resolved: resolvedEffort, maxIter, callerOverride: opts.maxIterations },
+    "maestroProvider: effort + maxIter resolution",
   );
 
   // Pick provider by resolved model id prefix. DeepSeek models (`deepseek-*`)
@@ -313,12 +339,20 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
   // the per-iteration builder below so first-turn and subsequent-turn
   // reminders render with identical shape — the model sees the same fields
   // in the same order, only the counts change.
-  const buildIterReminder = (iterationsRemaining: number): string =>
-    buildSystemReminder({
+  const buildIterReminder = (iterationsRemaining: number): string => {
+    // The iter-line carries the count + tone; the wrap-up overlay (v0.1.16+)
+    // adds an explicit behavior cue for the last 3 turns, synchronized with
+    // `thinkingBudgetForTurn`'s budget trim so the model sees thinking AND
+    // behavior shrink together instead of one without the other.
+    const extras: string[] = [iterationBudgetLine(iterationsRemaining, maxIter)];
+    const overlay = wrapUpOverlayLine(iterationsRemaining, maxIter);
+    if (overlay) extras.push(overlay);
+    return buildSystemReminder({
       sessionId,
       tasks: taskStore.list(),
-      extras: [iterationBudgetLine(iterationsRemaining, maxIter)],
+      extras,
     });
+  };
   const reminderText = buildIterReminder(maxIter);
   const userBlocks: ProviderContentBlock[] = [
     { type: "text", text: opts.prompt },
@@ -345,9 +379,23 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
   // identity / instructions that should still anchor the prompt, and the
   // skills block reads naturally as a final "and also, here's what tools
   // you have access to" section.
-  const augmentedSystemPrompt = skillsBlock
-    ? `${opts.systemPrompt}\n\n${skillsBlock}`
-    : opts.systemPrompt;
+  //
+  // The optional effort persona slots BETWEEN the caller's systemPrompt and
+  // the skills catalog. Three layers in fixed order:
+  //   1. caller identity / instructions    — anchors who the model is
+  //   2. effort persona (this layer)       — names the working mode + verbs
+  //   3. skills catalog                     — "tools you can reach for"
+  // Reading top-down, the model first knows what it's for, then how hard it
+  // should push, then what's available. The persona is a pure function of
+  // `resolvedEffort` so it stays prefix-cache stable across every call at a
+  // given level — same five strings cycle. Skipping the layer (undefined
+  // effort or `effortToPersonaPrompt` returning undefined) keeps the
+  // historical no-effort prompt byte-identical so existing callers don't
+  // see a cache miss after the upgrade.
+  const personaBlock = effortToPersonaPrompt(resolvedEffort);
+  const augmentedSystemPrompt = [opts.systemPrompt, personaBlock, skillsBlock]
+    .filter((s): s is string => typeof s === "string" && s.length > 0)
+    .join("\n\n");
 
   // Register the `Agent` tool last — it captures the resolved model,
   // effort, augmented system prompt (parent base for sub-agents), and the
@@ -504,23 +552,33 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
 
 /**
  * Compose the "Tool iterations remaining: N/M — <tone>" line that rides
- * inside the per-iteration `<system-reminder>` block. Tone shifts with
- * ABSOLUTE remaining count (not percentage of maxIter) — same threshold
- * fires the same urgency regardless of effort level, so the model gets a
- * consistent cue from a `low` run reaching 4-left as from a `xhigh` run
- * reaching 4-left.
+ * inside the per-iteration `<system-reminder>` block.
  *
- * Why absolute, not relative: at `low` (maxIter=5) the model crosses the
- * wrap-up line almost immediately; at `xhigh` (maxIter=90) 75% left lasts
- * ~22 turns. The user-visible behavior the threshold is targeting is "how
- * many tool calls before I MUST stop" — that's an absolute count, not a
- * fraction.
+ * Tone shifts with PROPORTION of `maxIter` remaining (v0.1.16+), not an
+ * absolute count. The previous v0.1.15 version keyed off raw `remaining`
+ * (>= 10 → "plenty of room", < 2 → "finalize NOW"), which made sense
+ * when the cap was effort-derived (5 / 20 / 50 / 90 / 200) but broke
+ * after v0.1.16 unified the cap on a host-tunable default (90). At
+ * `maxIter = 90`, `remaining = 15` is ~17% of the budget intact and the
+ * old absolute logic would emit "pace yourself" while the proportional
+ * one correctly routes to "start wrapping up" — the tone tracks the
+ * budget consistently across cap sizes now.
  *
- * Thresholds:
- *   - >= 10  → plenty of room. (no urgency)
- *   - 5..9   → pace yourself.
- *   - 2..4   → start wrapping up — consolidate, avoid new tool calls.
- *   - 0..1   → finalize NOW. Stop tooling, write the answer.
+ * Percentage thresholds (calibrated for both small and large caps):
+ *   - >= 50%  → plenty of room. (no urgency, explore freely)
+ *   - >= 20%  → pace yourself.
+ *   - >=  5%  → start wrapping up — consolidate, avoid new tool calls.
+ *   - <   5%  → finalize NOW. Stop tooling, write the answer.
+ *
+ * Each tier scales with the host's chosen budget: at `maxIter = 30`
+ * (chat-grade) the wrap-up tier kicks in around 6 turns left; at
+ * `maxIter = 90` (default) it kicks in around 18 left; at `maxIter =
+ * 200` (deep work) around 40. The model gets the same proportional cue
+ * regardless of cap, which matches Claude Code's pacing intuition.
+ *
+ * Edge case — `max <= 0`: defensive guard for callers passing nonsense.
+ * Falls back to absolute thresholds (the v0.1.15 behavior) so the line
+ * still renders something useful instead of dividing by zero.
  *
  * Imperative phrasing matters: passing a bare count ("3 remaining") gets
  * acknowledged but doesn't change behavior much. Pairing the count with a
@@ -530,17 +588,52 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
  * exact phrasing if they need parity.
  */
 export function iterationBudgetLine(remaining: number, max: number): string {
+  const pct = max > 0 ? remaining / max : 0;
   let tone: string;
-  if (remaining >= 10) {
+  if (pct >= 0.5) {
     tone = "plenty of room.";
-  } else if (remaining >= 5) {
+  } else if (pct >= 0.2) {
     tone = "pace yourself.";
-  } else if (remaining >= 2) {
+  } else if (pct >= 0.05) {
     tone = "start wrapping up — consolidate findings, avoid new tool calls unless essential.";
   } else {
     tone = "finalize NOW. Stop tooling and write the final answer.";
   }
   return `Tool iterations remaining: ${remaining}/${max} — ${tone}`;
+}
+
+/**
+ * Build the wrap-up overlay line that rides inside the `<system-reminder>`
+ * during the last 3 turns. Returns `null` when not in the wrap-up zone, so
+ * the caller can spread the result conditionally:
+ *
+ *   const overlay = wrapUpOverlayLine(remaining, maxIter);
+ *   extras = [iterLine, ...(overlay ? [overlay] : [])];
+ *
+ * Why pair this with the iteration-line:
+ *   - `thinkingBudgetForTurn` (anthropic.ts) trims thinking to base/4 in the
+ *     last 3 turns. Without an accompanying behavior cue the model doesn't
+ *     know its reasoning room shrank — the system-prompt persona is still
+ *     "be thorough" from turn 1. The overlay closes that gap by explicitly
+ *     telling the model: "wrap-up zone active, stop new tool calls, write
+ *     the final answer next."
+ *   - Threshold is aligned with `thinkingBudgetForTurn`'s
+ *     `maxIter - iter <= 3` rule. The loop passes
+ *     `remaining = maxIter - (iter + 1)`, so `remaining <= 2` matches the
+ *     same three-turn window from the iteration-reminder side.
+ *   - Skipped entirely when `maxIter <= 3` (tiny budgets don't have a
+ *     meaningful wrap-up zone to lead into — every turn is already a
+ *     wrap-up turn).
+ *
+ * Imperative phrasing matches Claude Code style: a short, action-named
+ * meta-annotation rather than a paragraph of explanation. The model
+ * recognizes `[wrap-up zone]` brackets as a behavior-overlay tag distinct
+ * from prose.
+ */
+export function wrapUpOverlayLine(remaining: number, max: number): string | null {
+  if (max <= 3) return null;
+  if (remaining > 2) return null;
+  return "[wrap-up zone] Thinking budget is now trimmed. Stop new tool calls — consolidate findings and write the final answer.";
 }
 
 /**

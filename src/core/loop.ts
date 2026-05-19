@@ -3,23 +3,15 @@ import { extractFileEvents } from "@/media/file-events";
 import { compressIfNeeded } from "@/memory/compressor";
 import { StreamingContextScrubber, scrubString } from "@/memory/scrubber";
 import { logger } from "@/platform/logger";
+import { thinkingBudgetForTurn } from "@/providers/anthropic";
 import type { ProviderContentBlock, ProviderMessage, ProviderResponse } from "@/providers/base";
-import type { EffortLevel, TokenUsage, UnifiedEvent } from "@/types";
+import type { TokenUsage, UnifiedEvent } from "@/types";
 
-const EFFORT_LEVELS: readonly EffortLevel[] = [
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
-] as const;
-
-function nextEffortLevel(current: EffortLevel | undefined): string | null {
-  const idx = EFFORT_LEVELS.indexOf(current ?? "medium");
-  if (idx < 0 || idx >= EFFORT_LEVELS.length - 1) return null;
-  return EFFORT_LEVELS[idx + 1];
-}
+// v0.1.16: removed `EFFORT_LEVELS` + `nextEffortLevel`. The previous
+// max_iterations result message recommended bumping effort to get more
+// turns, but the iteration cap is now decoupled from effort and
+// controlled directly by `AgentQueryOptions.maxIterations`. The message
+// surfaces that hint instead, so the helpers are no longer needed.
 
 /**
  * Cap applied to the `content` field of `tool_result` UnifiedEvents emitted to
@@ -109,13 +101,21 @@ export async function* runConversation(
     // progressive typing UX. complete() stays as the fallback for providers
     // that haven't implemented stream() yet (e.g. an early Phase 5 OpenAI
     // adapter could ship stream() in a follow-up).
+    // v0.1.16: thinking budget is turn-adaptive. The base budget on
+    // `agent.config.thinkingBudget` reflects the caller's effort; for the
+    // wire call we resolve it through `thinkingBudgetForTurn` so the
+    // wrap-up zone (last 3 turns) trims down to 1/4 base. First + middle
+    // turns get the full base. See `thinkingBudgetForTurn` for the
+    // rationale; the helper handles the undefined / zero base no-op and
+    // the Anthropic >= 1024 minimum internally.
+    const turnBudget = thinkingBudgetForTurn(agent.config.thinkingBudget, iterations, maxIter);
     const callOpts = {
       model: agent.config.model,
       messages: wireMessages,
       system: agent.config.systemPrompt,
       tools: agent.tools.schemas(),
       maxTokens: agent.config.maxTokens,
-      ...(agent.config.thinkingBudget ? { thinkingBudget: agent.config.thinkingBudget } : {}),
+      ...(turnBudget ? { thinkingBudget: turnBudget } : {}),
       ...(agent.config.effort ? { effort: agent.config.effort } : {}),
       ...(agent.config.abortSignal ? { abortSignal: agent.config.abortSignal } : {}),
     };
@@ -435,12 +435,15 @@ export async function* runConversation(
     iterations++;
   }
 
-  const nextEffort = nextEffortLevel(agent.config.effort);
+  // v0.1.16: the iteration cap is no longer derived from effort, so the
+  // "raise effort to get more turns" affordance from earlier versions is
+  // misleading. We still surface `effort` in the message for context (the
+  // host may want to raise reasoning depth too), but the actionable hint
+  // is to raise `maxIterations` via AgentQueryOptions, which is the only
+  // knob that controls the cap now.
   yield {
     type: "result",
-    content: nextEffort
-      ? `Task didn't finish within the ${maxIter}-turn budget at effort='${agent.config.effort ?? "default"}'. Try increasing effort to '${nextEffort}' — run: set_effort ${nextEffort}`
-      : `Task didn't finish within the ${maxIter}-turn budget at effort='${agent.config.effort ?? "default"}' (already at max).`,
+    content: `Task didn't finish within the ${maxIter}-turn budget at effort='${agent.config.effort ?? "default"}'. Raise the cap via AgentQueryOptions.maxIterations (currently defaulting to ${maxIter}) — and/or increase effort for deeper per-turn reasoning.`,
     stopReason: "max_iterations",
     usage: {
       inputTokens: usageAcc.inputTokens,

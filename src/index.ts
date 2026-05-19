@@ -35,12 +35,14 @@ export { type LogFn, type Logger, setLogger } from "@/platform/logger";
 export { type McpResolver, type McpServerMap, setMcpResolver } from "@/platform/mcp-config";
 export {
   applySkillAllowlist,
+  DEFAULT_MAX_ITERATIONS,
   isAbortError,
   iterationBudgetLine,
   MAESTRO_DEFAULT_SKILL_KEY,
   maestroProvider,
   providerForModel,
   resolveSkillsDir,
+  wrapUpOverlayLine,
 } from "@/provider";
 export {
   AnthropicProvider,
@@ -48,8 +50,9 @@ export {
   buildCacheableMessages,
   buildCacheableSystem,
   buildCacheableTools,
-  effortToMaxIter,
+  effortToPersonaPrompt,
   effortToThinkingBudget,
+  thinkingBudgetForTurn,
 } from "@/providers/anthropic";
 
 // ─── Providers ───────────────────────────────────────────────────────────────

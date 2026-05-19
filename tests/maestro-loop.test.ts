@@ -344,7 +344,7 @@ describe("runConversation", () => {
     expect(events.some((e) => e.type === "file")).toBe(false);
   });
 
-  test("max_iterations cap yields result with effort upgrade hint", async () => {
+  test("max_iterations cap yields result naming the budget and the maxIterations override knob", async () => {
     // Always return a tool_use → loop can never resolve
     const responses: ProviderResponse[] = Array(5)
       .fill(null)
@@ -374,7 +374,10 @@ describe("runConversation", () => {
     const last = events[events.length - 1];
     expect(last.type).toBe("result");
     expect(last.type === "result" && last.stopReason).toBe("max_iterations");
-    expect(last.type === "result" && last.content).toMatch(/turn budget|effort/);
+    expect(last.type === "result" && last.content).toMatch(/turn budget/);
+    // v0.1.16: the hint should mention the maxIterations knob (not effort
+    // upgrade) — the cap is no longer derived from effort.
+    expect(last.type === "result" && last.content).toMatch(/maxIterations/);
   });
 });
 
