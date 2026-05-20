@@ -112,7 +112,28 @@ const tools = new ToolRegistry();
 tools.register(createReadTool());
 ```
 
-### Background bash (v0.1.18+)
+### Background bash (v0.1.18+ / v0.1.19+ one-knob)
+
+**v0.1.19 (recommended — host uses `maestroProvider`):**
+
+```ts
+import { maestroProvider } from "maestro-agent-sdk";
+
+for await (const event of maestroProvider({
+  agent: "maestro",
+  prompt: "Start the dev server and tail it for errors",
+  cwd: "/repo",
+  systemPrompt: "...",
+  abortController: new AbortController(),
+  enableBackgroundBash: true,   // ← single knob
+})) {
+  // Bash(run_in_background:true) / BashOutput / KillBash all available.
+}
+```
+
+Cascade-kill on `abortController.abort()` is wired automatically.
+
+**v0.1.18 (host builds its own ToolRegistry):**
 
 ```ts
 import {

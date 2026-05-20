@@ -273,4 +273,28 @@ export interface AgentQueryOptions {
    * session across persistence.
    */
   sessionMetadata?: Record<string, unknown>;
+  /**
+   * v0.1.19+: enable the Claude-Code-style background bash triad.
+   *
+   * When `true`, `maestroProvider` swaps the default foreground-only
+   * `Bash` tool for one that also honors `run_in_background:true`, and
+   * additionally registers `BashOutput(bash_id)` + `KillBash(bash_id)`
+   * tools so the model can poll incremental output and selectively stop
+   * long-running shells. A `BackgroundBashRegistry` is built per call
+   * and bound to `opts.abortController?.signal` — when the loop aborts,
+   * every still-running background process registered under the call
+   * is cascade-killed (SIGTERM → 5s grace → SIGKILL).
+   *
+   * Omit / `false` (default) keeps the v0.1.18 behavior: the bash tool
+   * ignores `run_in_background` and runs every call foreground. This
+   * default is safe — a host that doesn't manage long-running shells
+   * gains no surface area, and `BashOutput`/`KillBash` never appear in
+   * the tool schema so the model has no way to call them by accident.
+   *
+   * The triad itself (`createBackgroundBashRegistry` /
+   * `createBashOutputTool` / `createKillBashTool`) is still exported
+   * for hosts that build their own `ToolRegistry` outside
+   * `maestroProvider` — this flag is just the one-knob convenience.
+   */
+  enableBackgroundBash?: boolean;
 }
