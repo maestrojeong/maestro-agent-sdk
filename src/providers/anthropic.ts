@@ -79,7 +79,7 @@ export class AnthropicProvider implements Provider {
       model: opts.model,
       max_tokens: opts.maxTokens ?? 4096,
       system: buildCacheableSystem(opts.system),
-      messages: buildCacheableMessages(opts.messages),
+      messages: buildCacheableMessages(sanitizeThinkingBlocksForWire(opts.messages)),
     };
     if (opts.tools && opts.tools.length > 0) {
       body.tools = buildCacheableTools(opts.tools);
@@ -133,7 +133,7 @@ export class AnthropicProvider implements Provider {
       model: opts.model,
       max_tokens: opts.maxTokens ?? 4096,
       system: buildCacheableSystem(opts.system),
-      messages: buildCacheableMessages(opts.messages),
+      messages: buildCacheableMessages(sanitizeThinkingBlocksForWire(opts.messages)),
       stream: true,
     };
     if (opts.tools && opts.tools.length > 0) {
@@ -274,14 +274,34 @@ export class AnthropicProvider implements Provider {
               name: meta.name ?? "",
             };
           } else if (meta?.type === "thinking") {
-            yield {
-              type: "thinking_complete",
-              block: {
-                type: "thinking",
-                thinking: meta.thinking ?? "",
-                ...(meta.signature ? { signature: meta.signature } : {}),
-              },
-            };
+            // CRITICAL: drop the block entirely when no signature was
+            // collected. Anthropic requires a `signature` field on every
+            // replayed `thinking` block — sending one without it 400s the
+            // next API call with
+            //   "messages.N.content.M.thinking.signature: Field required".
+            //
+            // Two paths lead here:
+            //   1. No `signature_delta` ever arrived (server-side hiccup,
+            //      mid-block stream interrupt — rare but observed).
+            //   2. `signature_delta` arrived with an empty string. The
+            //      concat `${meta.signature ?? ""}${delta.signature}` then
+            //      yielded "", which we treat the same as missing.
+            //
+            // An empty signature isn't a valid signature (Anthropic's
+            // verification would reject it anyway), so it's safer to drop
+            // the block from history. The model loses some reasoning
+            // continuity for this turn, but the conversation continues —
+            // strictly better than the alternative (whole turn fails).
+            if (typeof meta.signature === "string" && meta.signature.length > 0) {
+              yield {
+                type: "thinking_complete",
+                block: {
+                  type: "thinking",
+                  thinking: meta.thinking ?? "",
+                  signature: meta.signature,
+                },
+              };
+            }
           } else if (meta?.type === "redacted_thinking") {
             yield {
               type: "thinking_complete",
@@ -394,6 +414,65 @@ async function* parseSseStream(
     abortSignal?.removeEventListener("abort", onAbort);
     reader.releaseLock();
   }
+}
+
+/**
+ * Defensive scrub for thinking blocks that arrive at the wire builder without
+ * a usable `signature`. Anthropic's API requires every replayed `thinking`
+ * block to carry the original signature it produced; sending one without it
+ * trips a 400 `messages.N.content.M.thinking.signature: Field required`.
+ *
+ * In normal operation the streaming code already refuses to emit
+ * thinking blocks lacking a signature (see `content_block_stop` in the SSE
+ * handler), so this filter is belt-and-suspenders for two recovery cases:
+ *
+ *   1. A session persisted by an older SDK build (pre-v0.1.20) that DID
+ *      emit signatureless thinking blocks now loads from disk. Without this
+ *      filter, the first wire call after upgrading would 400 on the bad
+ *      block.
+ *
+ *   2. A future provider-side transformation (compaction, dedup) accidentally
+ *      drops the field. Filtering here gives us a single chokepoint to lock.
+ *
+ * Two complications the filter has to handle:
+ *
+ *   - **Anthropic forbids mixing `thinking` and `text` after `tool_use` /
+ *     `tool_result` in the same message.** Simply removing the bad thinking
+ *     block can leave a message starting with `text` + `tool_use`, which is
+ *     still valid. So we only drop the thinking block itself, not surrounding
+ *     blocks.
+ *
+ *   - **An assistant message can become content-empty after the filter.** A
+ *     turn like `[thinking(broken)]` reduces to `[]`. Anthropic rejects empty
+ *     content arrays, so we substitute a single empty text block as a
+ *     placeholder — same trick `loop.ts` already uses for the scrubber-drops-
+ *     everything case.
+ */
+export function sanitizeThinkingBlocksForWire(
+  messages: readonly ProviderMessage[],
+): ProviderMessage[] {
+  let mutated = false;
+  const out = messages.map((msg) => {
+    if (!Array.isArray(msg.content)) return msg;
+    let blockChanged = false;
+    const filtered = msg.content.filter((block) => {
+      if (block.type !== "thinking") return true;
+      const sig = (block as { signature?: unknown }).signature;
+      const valid = typeof sig === "string" && sig.length > 0;
+      if (!valid) {
+        blockChanged = true;
+        return false;
+      }
+      return true;
+    });
+    if (!blockChanged) return msg;
+    mutated = true;
+    // Empty content array isn't a valid Anthropic message — keep one
+    // placeholder text block so the turn stays well-formed.
+    const safe = filtered.length > 0 ? filtered : [{ type: "text" as const, text: "" }];
+    return { role: msg.role, content: safe };
+  });
+  return mutated ? out : (messages as ProviderMessage[]);
 }
 
 /**
@@ -518,45 +597,142 @@ function applyThinkingHeaders(headers: Record<string, string>, budget: number | 
  * `MAESTRO_EFFORT_VALUES`); other values return undefined so the caller skips
  * thinking entirely.
  *
- * Scale (v0.1.16):
- *   - low    →  2 048
- *   - medium →  8 192
- *   - high   → 16 384
- *   - xhigh  → 16 384   (same ceiling as `high` — the difference is persona,
- *                        not budget. `xhigh` tells the model to use the same
- *                        thinking allowance more broadly: hold multiple
- *                        hypotheses, survey, name edge cases. The ceiling
- *                        is shared because empirically thinking ROI above
- *                        ~16K drops sharply on sonnet-4-6 / haiku-4-5;
- *                        bumping the budget didn't change answer quality
- *                        as much as bumping the persona's instructions.)
- *   - max    → 32 768   (halved from v0.1.15's 65 536. 64K thinking is
- *                        almost never fully utilized in a single turn;
- *                        the latency penalty was unrecouped. 32K is the
- *                        ceiling for "really chew on this" without paying
- *                        for theoretical headroom the model doesn't reach.)
+ * Scale (v0.1.19+ — aligned with the prompt-keyword tier ladder):
+ *   - low    → undefined  (thinking off — latency-priority working mode)
+ *   - medium → undefined  (thinking off — default; matches Claude Code's
+ *                          "off unless asked" behavior. Persona text still
+ *                          shapes the model's working style, but the API
+ *                          ships without a `thinking` payload.)
+ *   - high   →  4 096    (T1 — same as the `think` / `생각해줘` keyword)
+ *   - xhigh  → 10 000    (T2 — same as `think hard` / `깊이 생각`)
+ *   - max    → 31 999    (T3 — same as `ultrathink` / `끝까지 생각`)
+ *
+ * Why only high/xhigh/max grant thinking: the lower three rungs are the
+ * conversational defaults where fast tool dispatch beats deeper reasoning
+ * (Telegram bot, chat UI, simple file ops). Users who want extended
+ * thinking either escalate via the effort knob explicitly or type the
+ * keyword in the prompt — both routes land on the same three tier budgets,
+ * so behavior is predictable across surfaces.
+ *
+ * Symmetry with `detectThinkingKeyword`: the three "on" tiers here mirror
+ * the three keyword tiers exactly. Whichever path activates thinking, the
+ * model sees one of {4096, 10000, 31999} — no fourth budget exists.
+ * `resolveThinkingBudget` (provider.ts) picks the higher of the two if
+ * both fire, so an `effort: "high"` call that happens to contain
+ * "ultrathink" in the prompt still gets T3, not T1.
  *
  * Budgets are *ceilings*, not enforced spending: the model decides how
- * much to actually emit inside the budget. So a 32K ceiling on a simple
- * task still costs almost nothing — the savings come from latency, not
- * tokens, since the model returns sooner when it knows the budget is
- * smaller.
+ * much to actually emit inside the budget. A 31999 ceiling on a simple
+ * task still costs almost nothing — the savings come from latency
+ * (model returns sooner when it knows the budget is smaller).
  */
 export function effortToThinkingBudget(e: string | undefined): number | undefined {
   switch (e) {
     case "low":
-      return 2048;
+      return undefined;
     case "medium":
-      return 8192;
+      return undefined;
     case "high":
-      return 16384;
+      return 4096;
     case "xhigh":
-      return 16384;
+      return 10000;
     case "max":
-      return 32768;
+      return 31999;
     default:
       return undefined;
   }
+}
+
+/**
+ * Claude Code-style think-keyword detection.
+ *
+ * Scans the caller's user prompt for an explicit "think harder" cue. When
+ * present, returns the matching thinking-budget tier; otherwise returns
+ * undefined (the loop then ships the call with thinking disabled — same
+ * default Claude Code uses).
+ *
+ * Why this exists alongside `effortToThinkingBudget`:
+ *   - `effort` is a *programmatic* knob set by the SDK consumer (CLI flag,
+ *     config file, server-side default). It's awkward to plumb through
+ *     conversational surfaces like a Telegram bot or chat UI where the user
+ *     just types text.
+ *   - The keyword path lets end-users toggle thinking via the prompt itself
+ *     ("think harder", "끝까지 생각해줘") without the host having to wire
+ *     UI for an effort selector. This matches Claude Code's behavior and
+ *     is what users coming from CC instinctively try.
+ *
+ * Tier mapping mirrors Claude Code's documented set:
+ *   tier 3 (max)   → 31999 tokens  — "ultrathink", "think harder",
+ *                                     "끝까지 생각", "심층 생각"
+ *   tier 2 (deep)  → 10000 tokens  — "think hard", "think a lot",
+ *                                     "깊이 생각", "깊게 생각"
+ *   tier 1 (basic) →  4096 tokens  — "think" (English), "생각해줘" /
+ *                                     "생각해봐" / "잘 생각" (Korean)
+ *
+ * Why 31999 (not 32768): Anthropic requires `max_tokens > budget`, and
+ * 31999 + 1024 = 33023 stays under the 64K max_tokens ceiling on sonnet-4-6
+ * while leaving room for the final text response. Picking 32768 would force
+ * max_tokens to ≥ 33792 which loses headroom for long answers.
+ *
+ * Why "think" word-boundary on English but substring on Korean:
+ * English splits with whitespace so `\bthink\b` cleanly avoids false hits
+ * on "thinking" / "rethink". Korean morphology glues particles to verbs
+ * ("생각해줘" / "생각해봐"), so we substring-match the verb stem and accept
+ * the false-positive rate (a Korean user saying "그는 잘 생각해" in a code
+ * snippet would unintentionally trigger — same trade-off CC made in
+ * English).
+ *
+ * Highest tier wins: if both "think" and "ultrathink" appear (e.g. "think
+ * about this — actually ultrathink"), we honor the higher budget. Tier
+ * ordering matters because tier-3 substrings contain tier-1's pattern.
+ *
+ * Pure helper — no side effects, safe to call on every turn. Exposed for
+ * tests and for hosts that want to compose their own keyword surfaces
+ * (e.g. add Japanese keywords without forking).
+ */
+export function detectThinkingKeyword(prompt: string | undefined): number | undefined {
+  if (!prompt) return undefined;
+  const lower = prompt.toLowerCase();
+
+  // Tier 3 — max. Order matters: check the highest tier first so a prompt
+  // containing "ultrathink" doesn't get downgraded by an earlier "think"
+  // match. Korean cues sit alongside the English set; substring match is
+  // intentional (see docstring).
+  if (
+    /\bultrathink\b/.test(lower) ||
+    /\bthink\s+harder\b/.test(lower) ||
+    /\bmegathink\b/.test(lower) ||
+    prompt.includes("끝까지 생각") ||
+    prompt.includes("심층 생각")
+  ) {
+    return 31999;
+  }
+
+  // Tier 2 — deep.
+  if (
+    /\bthink\s+hard\b/.test(lower) ||
+    /\bthink\s+a\s+lot\b/.test(lower) ||
+    prompt.includes("깊이 생각") ||
+    prompt.includes("깊게 생각")
+  ) {
+    return 10000;
+  }
+
+  // Tier 1 — basic. The English `\bthink\b` is broad and will fire on any
+  // standalone "think" mention; that's the documented Claude Code behavior
+  // and matches user intuition. For Korean we require an imperative-ish
+  // form ("생각해줘" / "생각해봐") or a deliberate modifier ("잘 생각") to
+  // avoid casual triggering on words like "생각" in a description.
+  if (
+    /\bthink\b/.test(lower) ||
+    prompt.includes("생각해줘") ||
+    prompt.includes("생각해봐") ||
+    prompt.includes("잘 생각")
+  ) {
+    return 4096;
+  }
+
+  return undefined;
 }
 
 /**
