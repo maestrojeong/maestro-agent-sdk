@@ -126,10 +126,41 @@ export async function compressIfNeeded(
   const tailProtect = opts.tailProtect ?? 6;
   const auxModel = opts.auxModel;
 
+  // v0.1.19+ fast-path: short conversations can never trigger compaction (we
+  // need at least `headProtect + 1 + tailProtect` messages to even slice a
+  // middle), AND at this size dedup/age-summary saves nothing (age threshold
+  // is 10 user-turns). Skipping the whole prune pipeline saves ~6 O(n) walks
+  // per turn during the first several iterations of every session — the
+  // exact window where the loop spends most of its short-conversation life.
+  // Trade-off: we forgo the cheap "string-content gets deduped immediately"
+  // win on duplicate tool results in the first few turns, but the model
+  // rarely re-issues an identical tool call inside a 9-message window.
+  const minSize = headProtect + 1 + tailProtect;
+  if (messages.length < minSize) {
+    return messages;
+  }
+
+  // v0.1.19+ cheap pre-gate: estimate raw tokens BEFORE running prune. If
+  // we're well under the trigger (≤ 50% of threshold) the conversation has
+  // nowhere near enough payload to need compaction, and prune's three passes
+  // wouldn't do anything an anti-thrash latch wouldn't catch on iteration 2.
+  // We skip prune entirely and return the input — same as the anti-thrash
+  // short-circuit, just gated on actual size rather than past behavior.
+  //
+  // 0.5 ratio picked empirically: at 200K window × 0.8 trigger × 0.5 gate =
+  // 80K tokens, which lands between "still actively gathering context" and
+  // "approaching compaction zone". Above the gate we run the full pipeline
+  // so an anti-thrash latch from earlier doesn't strand the loop without
+  // any pruning when the conversation actually grows large.
+  const threshold = contextWindow * triggerRatio;
+  const rawTokens = estimateTokens(messages);
+  if (rawTokens < threshold * 0.5) {
+    return messages;
+  }
+
   // Step 1: prune first. Cheap and often enough.
   const pruned = pruneMessages(messages);
   const prunedTokens = estimateTokens(pruned);
-  const threshold = contextWindow * triggerRatio;
 
   if (prunedTokens < threshold) {
     return pruned;
@@ -141,13 +172,11 @@ export async function compressIfNeeded(
     return pruned;
   }
 
-  // Step 2: validate we have something to compress. Need at least
-  // headProtect + 1 + tailProtect messages, otherwise the middle slice is
-  // empty and there's nothing to summarize.
-  const minSize = headProtect + 1 + tailProtect;
-  if (pruned.length < minSize) {
-    return pruned;
-  }
+  // (Step 2 short-conversation guard moved to the fast-path at the top of
+  // this function — pruneMessages preserves array length, so checking
+  // `messages.length < minSize` up there is equivalent and lets us skip
+  // the whole prune pipeline when the conversation is too small to ever
+  // need compaction.)
 
   // Snap head/tail boundaries to safe split points. Anthropic rejects a
   // request whose first message after the head isn't a user turn, and

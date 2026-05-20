@@ -493,15 +493,17 @@ describe("prompt caching breakpoints", () => {
 
 describe("extended thinking budget", () => {
   describe("effortToThinkingBudget", () => {
-    test("maps the five maestro effort levels to v0.1.16 budgets", () => {
-      // v0.1.16: xhigh shares high's ceiling (persona-only difference);
-      // max halved from 65 536 to 32 768 because the 32K → 64K range has
-      // poor ROI on sonnet-4-6 / haiku-4-5 in practice.
-      expect(effortToThinkingBudget("low")).toBe(2048);
-      expect(effortToThinkingBudget("medium")).toBe(8192);
-      expect(effortToThinkingBudget("high")).toBe(16384);
-      expect(effortToThinkingBudget("xhigh")).toBe(16384);
-      expect(effortToThinkingBudget("max")).toBe(32768);
+    test("maps the five maestro effort levels to v0.1.19 tier-aligned budgets", () => {
+      // v0.1.19: thinking gated to the top three rungs, aligning with the
+      // prompt-keyword tier ladder (T1=4096, T2=10000, T3=31999). low and
+      // medium return undefined so their default-config calls ship without
+      // a `thinking` payload — matches Claude Code's "off unless asked"
+      // default for conversational surfaces.
+      expect(effortToThinkingBudget("low")).toBeUndefined();
+      expect(effortToThinkingBudget("medium")).toBeUndefined();
+      expect(effortToThinkingBudget("high")).toBe(4096);
+      expect(effortToThinkingBudget("xhigh")).toBe(10000);
+      expect(effortToThinkingBudget("max")).toBe(31999);
     });
 
     test("returns undefined for unsupported / unset values", () => {

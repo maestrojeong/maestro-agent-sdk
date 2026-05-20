@@ -90,6 +90,24 @@ export function createBashTool(opts?: {
   const bgRegistry = opts?.background;
   return {
     schema: bashSchema as unknown as ProviderToolSchema,
+    // v0.1.19+: enable parallel dispatch. The model frequently emits batches
+    // of independent bash calls in one assistant turn (running tests across
+    // multiple solution dirs, checking git status + branch + log in one
+    // shot, kicking off independent builds). Sequential dispatch turned
+    // those into a chain that paid one round-trip latency per command;
+    // parallel execution drops that to max(t_i) for the batch.
+    //
+    // Safety stance: we trust the model to not emit racy bash batches
+    // (writing the same file from two calls, port-clobbering, etc.). The
+    // same trust we already extend to Read/Glob/Grep parallel batches —
+    // those tools can't cause data loss either, but they CAN race on
+    // shared resources (e.g. simultaneous Reads of a file being written
+    // by a third party). Pre-tool hooks can still gate side-effecting
+    // commands at the host level if policy needs hardening (e.g. block
+    // parallel calls that all match a `git commit` regex). Hosts that
+    // want stricter behavior can wrap with a registry that flips this
+    // back to false.
+    parallelSafe: true,
     async execute(input) {
       if (parentSignal?.aborted) {
         return JSON.stringify({ error: "aborted" });

@@ -19,6 +19,7 @@ bootstrapHostPath();
 
 import {
   AnthropicProvider,
+  detectThinkingKeyword,
   effortToPersonaPrompt,
   effortToThinkingBudget,
 } from "@/providers/anthropic";
@@ -441,7 +442,33 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
       },
     }),
   );
-  const thinkingBudget = effortToThinkingBudget(resolvedEffort);
+  // v0.1.19+: Claude Code-style thinking gating with effort-tier fallback.
+  // Two routes activate thinking; both land on the same {4096, 10000, 31999}
+  // tier ladder so behavior is predictable regardless of how the model got
+  // there:
+  //
+  //   1. Prompt keyword — end-user types "think harder" / "끝까지 생각" /
+  //      etc. (see `detectThinkingKeyword`). Conversational surfaces
+  //      (Telegram, chat UI) where the user can't reach an effort flag.
+  //   2. Effort escalation — caller pins `effort: "high" | "xhigh" | "max"`
+  //      via `AgentQueryOptions`. SDK consumers that want a working mode
+  //      with thinking on by default. `low` and `medium` map to undefined,
+  //      matching Claude Code's "off unless asked" defaults for the
+  //      conversational tiers.
+  //
+  // Resolution: keyword wins when both fire AND keyword's tier is higher.
+  // Otherwise the effort tier is used. This way an `effort: "high"` call
+  // whose prompt happens to contain "ultrathink" gets T3 (31999), not T1
+  // (4096) — the explicit keyword in the user's message reads as an
+  // intentional escalation past the caller's static config.
+  //
+  // Symmetry note: `effortToThinkingBudget` mirrors the keyword tiers
+  // exactly (high=T1, xhigh=T2, max=T3), so the maximum of the two values
+  // is always one of the three documented budgets — no fourth point on
+  // the ladder.
+  const keywordBudget = detectThinkingKeyword(opts.prompt);
+  const effortBudget = effortToThinkingBudget(resolvedEffort);
+  const thinkingBudget = pickHigherBudget(keywordBudget, effortBudget);
 
   const agent = new AIAgent(provider, tools, {
     model: resolvedModel,
@@ -750,6 +777,32 @@ export function providerForModel(resolvedModel: string): Provider {
     return DeepseekProvider.fromEnv();
   }
   return AnthropicProvider.fromEnv();
+}
+
+/**
+ * Combine two optional thinking budgets — keyword-derived and effort-derived
+ * — by picking the higher non-undefined value. Used by `maestroProvider` so
+ * an explicit keyword in the prompt can escalate past the caller's static
+ * effort config, but neither path silently downgrades the other.
+ *
+ * Truth table:
+ *   keyword=undef, effort=undef  → undef        (no thinking)
+ *   keyword=4096,  effort=undef  → 4096         (keyword only)
+ *   keyword=undef, effort=10000  → 10000        (effort only)
+ *   keyword=4096,  effort=10000  → 10000        (effort higher)
+ *   keyword=31999, effort=4096   → 31999        (keyword higher — user
+ *                                                 intent in prompt wins)
+ *
+ * Kept as a tiny helper rather than inlining so tests can exercise the
+ * priority rule without spinning up the full maestroProvider pipeline.
+ */
+export function pickHigherBudget(
+  a: number | undefined,
+  b: number | undefined,
+): number | undefined {
+  if (a === undefined) return b;
+  if (b === undefined) return a;
+  return Math.max(a, b);
 }
 
 /**

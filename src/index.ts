@@ -50,6 +50,7 @@ export {
   buildCacheableMessages,
   buildCacheableSystem,
   buildCacheableTools,
+  detectThinkingKeyword,
   effortToPersonaPrompt,
   effortToThinkingBudget,
   isWrapUpZone,
