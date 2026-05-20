@@ -109,6 +109,15 @@ export interface MaestroSessionMeta {
   /** Opaque host-controlled bag (topicId, groupId, anything). Passed through
    *  verbatim. The SDK only writes / reads it as a JSON value. */
   metadata?: Record<string, unknown>;
+  /** v0.1.18+: when this session was created by `forkSessionAt`, the
+   *  source sessionId of the parent. Lets a forensic sweep reconstruct
+   *  the fork tree and lets a host show "this is a branch from session X
+   *  at turn N" in the UI. */
+  parentSessionId?: string;
+  /** v0.1.18+: number of messages copied from the parent (= the slice
+   *  endpoint, exclusive). Combined with `parentSessionId` it tells the
+   *  host exactly where the branch point was. */
+  forkedAtMessageIndex?: number;
 }
 
 /** Discriminator key — the first line of a v0.1.5+ rollout starts with this. */
@@ -204,6 +213,10 @@ export interface SaveSessionMetaInput {
   skillsDir?: string;
   skillKey?: string;
   metadata?: Record<string, unknown>;
+  /** v0.1.18+: see `MaestroSessionMeta.parentSessionId`. Set by `forkSessionAt`. */
+  parentSessionId?: string;
+  /** v0.1.18+: see `MaestroSessionMeta.forkedAtMessageIndex`. */
+  forkedAtMessageIndex?: number;
 }
 
 /**
@@ -229,6 +242,10 @@ function buildMeta(sessionId: string, input: SaveSessionMetaInput): MaestroSessi
   if (skillKey !== undefined) meta.skillKey = skillKey;
   const metadata = input.metadata ?? existing?.metadata;
   if (metadata !== undefined) meta.metadata = metadata;
+  const parentSessionId = input.parentSessionId ?? existing?.parentSessionId;
+  if (parentSessionId !== undefined) meta.parentSessionId = parentSessionId;
+  const forkedAt = input.forkedAtMessageIndex ?? existing?.forkedAtMessageIndex;
+  if (forkedAt !== undefined) meta.forkedAtMessageIndex = forkedAt;
   return meta;
 }
 
@@ -283,6 +300,118 @@ export function deleteMaestroSession(sessionId: string): void {
   // Drops the in-memory store AND unlinks the on-disk `.tasks.json` sidecar
   // (plus the legacy `.todos.json` if a migration hasn't fired yet).
   dropTaskStore(sessionId);
+}
+
+/**
+ * Inputs for `forkSessionAt`.
+ *
+ * `messageIndex` is the number of messages to copy from the parent (0..N)
+ * exclusive — i.e. the new session starts with `parent.messages.slice(0,
+ * messageIndex)`. Pass `parent.length` to clone the entire history;
+ * pass 0 to inherit only the meta (cwd, skillKey, …) with no history.
+ *
+ * The slice is then run through `trimToSafePrefix` so the new session
+ * can't begin with an orphan `tool_use` (which would 400 Anthropic on the
+ * next API call). That guards against off-by-one slices the host might
+ * pass — the safest snapshot is always the last consistent prefix at or
+ * before `messageIndex`.
+ */
+export interface ForkSessionAtOptions {
+  /** sessionId of the parent JSONL to branch from. */
+  parentSessionId: string;
+  /** Number of parent messages to copy (slice end, exclusive). */
+  messageIndex: number;
+  /** Optional fixed UUID for the new session. Default = freshly generated. */
+  newSessionId?: string;
+  /** Override `cwd` on the fork's meta header. Defaults to the parent's cwd. */
+  cwd?: string;
+  /** Override `userId` on the fork. Defaults to the parent's. */
+  userId?: string;
+  /** Extra metadata bag to merge into the fork's meta. */
+  metadata?: Record<string, unknown>;
+}
+
+export interface ForkSessionAtResult {
+  /** sessionId of the new fork. */
+  sessionId: string;
+  /** Absolute path of the new JSONL on disk. */
+  rolloutPath: string;
+  /** Number of messages actually written (after `trimToSafePrefix`). May be
+   *  smaller than `messageIndex` when the slice ended on an orphan turn. */
+  messagesWritten: number;
+}
+
+/**
+ * Branch a Maestro session at message index N — Claude Code-style fork.
+ *
+ * Reads `~/.maestro/sessions/<parentSessionId>.jsonl`, takes the first
+ * `messageIndex` messages, runs them through `trimToSafePrefix` to drop
+ * orphan tool_use turns, and writes the result as a new JSONL with a
+ * fresh `sessionId`. The fork's `_meta` header records
+ * `parentSessionId` + `forkedAtMessageIndex` so a host UI can reconstruct
+ * the branch graph ("session B is a fork of session A at turn 12").
+ *
+ * Parent JSONL is **not modified** — the fork lives as a sibling file. A
+ * later `maestroProvider` call with the new `sessionId` continues from
+ * the forked prefix as if it were a fresh resume.
+ *
+ * Throws on missing parent or out-of-range `messageIndex` (negative or
+ * larger than the parent's message count). The "exceeds length" check
+ * fires AFTER load so the error message can name the actual count.
+ */
+export function forkSessionAt(opts: ForkSessionAtOptions): ForkSessionAtResult {
+  if (opts.messageIndex < 0) {
+    throw new Error(`forkSessionAt: messageIndex must be >= 0, got ${opts.messageIndex}`);
+  }
+  const parentMessages = loadMaestroSession(opts.parentSessionId);
+  if (parentMessages === null) {
+    throw new Error(`forkSessionAt: parent session not found: ${opts.parentSessionId}`);
+  }
+  if (opts.messageIndex > parentMessages.length) {
+    throw new Error(
+      `forkSessionAt: messageIndex ${opts.messageIndex} exceeds parent length ${parentMessages.length}`,
+    );
+  }
+  const parentMeta = loadMaestroSessionMeta(opts.parentSessionId);
+  const newSessionId = opts.newSessionId ?? randomUUID();
+  assertUuidLike("newSessionId", newSessionId);
+  if (newSessionId === opts.parentSessionId) {
+    throw new Error("forkSessionAt: newSessionId must differ from parentSessionId");
+  }
+  // Slice, then trim — guards against the model emitting an orphan
+  // tool_use at the cut point that would 400 the next API call.
+  const sliced = parentMessages.slice(0, opts.messageIndex);
+  const trimmed = trimToSafePrefix(sliced);
+
+  const cwd = opts.cwd ?? parentMeta?.cwd ?? "";
+  ensureCwdExists(cwd);
+  const metaInput: SaveSessionMetaInput = {
+    cwd,
+    parentSessionId: opts.parentSessionId,
+    forkedAtMessageIndex: trimmed.length,
+  };
+  const userId = opts.userId ?? parentMeta?.userId;
+  if (userId !== undefined) metaInput.userId = userId;
+  if (parentMeta?.skillsDir !== undefined) metaInput.skillsDir = parentMeta.skillsDir;
+  if (parentMeta?.skillKey !== undefined) metaInput.skillKey = parentMeta.skillKey;
+  if (opts.metadata !== undefined) {
+    metaInput.metadata = { ...(parentMeta?.metadata ?? {}), ...opts.metadata };
+  } else if (parentMeta?.metadata !== undefined) {
+    metaInput.metadata = parentMeta.metadata;
+  }
+  const meta = buildMeta(newSessionId, metaInput);
+  const path = maestroSessionPath(newSessionId);
+  writeJsonlFile(path, [{ [META_KEY]: meta }, ...trimmed]);
+  logger.info(
+    {
+      parentSessionId: opts.parentSessionId,
+      newSessionId,
+      requestedIndex: opts.messageIndex,
+      writtenCount: trimmed.length,
+    },
+    "forkSessionAt: branch created",
+  );
+  return { sessionId: newSessionId, rolloutPath: path, messagesWritten: trimmed.length };
 }
 
 /**

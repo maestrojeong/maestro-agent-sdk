@@ -211,10 +211,7 @@ export function htmlToMarkdown(html: string): string {
  * paragraphs / headings / list items don't run together. Inline elements
  * emit their content verbatim with markdown markers wrapped around them.
  */
-function renderNode(
-  $: cheerio.CheerioAPI,
-  $node: cheerio.Cheerio<AnyNode>,
-): string {
+function renderNode($: cheerio.CheerioAPI, $node: cheerio.Cheerio<AnyNode>): string {
   let buf = "";
   $node.contents().each((_, el) => {
     // text node

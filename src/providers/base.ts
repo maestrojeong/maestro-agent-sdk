@@ -24,12 +24,74 @@ export interface ProviderToolSchema {
   };
 }
 
+/**
+ * Multimodal source descriptors for image / document content blocks.
+ *
+ * v0.1.18+: Tool results may carry image (PNG/JPG/etc) and document (PDF)
+ * blocks alongside text. The internal shape mirrors Anthropic's native
+ * `image.source` and `document.source` field layout — base64-inlined with
+ * `media_type` + `data`, OR URL-referenced via `url`. Each provider
+ * adapter translates this internal shape into its own wire format
+ * (Anthropic passes through; DeepSeek wraps as OpenAI `image_url` data URI).
+ *
+ * Pure data shape (no methods) so adapters can deep-clone freely.
+ */
+export interface MaestroImageSource {
+  /** "base64" — `media_type` + `data` are required. "url" — `url` is required. */
+  type: "base64" | "url";
+  media_type?: string;
+  /** base64-encoded bytes (no `data:` prefix — adapters add the data URI scheme on demand). */
+  data?: string;
+  url?: string;
+}
+
+export interface MaestroDocumentSource {
+  type: "base64";
+  /** Currently only `application/pdf` is exercised end-to-end; the field stays
+   *  open so a future text/csv document type can land without a type break. */
+  media_type: "application/pdf";
+  data: string;
+}
+
+/**
+ * Content blocks legal inside a `tool_result.content` array.
+ *
+ * Anthropic accepts text + image inside tool_result (NOT document — document
+ * blocks must live at user-message top level). Tools that want to surface a
+ * PDF should extract text and return a text block; visual PDF understanding
+ * needs page-render-to-image at the tool layer.
+ *
+ * The `document` variant is included for symmetry with the top-level union
+ * but is currently never produced by built-in tools — keeping the surface
+ * uniform lets a future tool emit it without another type cascade.
+ */
+export type MaestroToolResultBlock =
+  | { type: "text"; text: string }
+  | { type: "image"; source: MaestroImageSource }
+  | { type: "document"; source: MaestroDocumentSource };
+
 export type ProviderContentBlock =
   | { type: "text"; text: string }
   | { type: "thinking"; thinking: string; signature?: string }
   | { type: "redacted_thinking"; data: string }
   | { type: "tool_use"; id: string; name: string; input: Record<string, unknown> }
-  | { type: "tool_result"; tool_use_id: string; content: string; is_error?: boolean };
+  | {
+      type: "tool_result";
+      tool_use_id: string;
+      /** v0.1.18+: array form carries multimodal blocks (text+image). String
+       *  form is kept as the legacy fast path — every existing tool returns
+       *  a string today and round-trips through the loop unchanged. */
+      content: string | MaestroToolResultBlock[];
+      is_error?: boolean;
+    }
+  /**
+   * v0.1.18+: top-level image / document blocks for direct user-message
+   * input (host attaches a photo or PDF). Read tool's PDF path returns a
+   * text block today, but the host pipeline (clawgram) drops images
+   * straight into the first user message via the `image` block here.
+   */
+  | { type: "image"; source: MaestroImageSource }
+  | { type: "document"; source: MaestroDocumentSource };
 
 export interface ProviderMessage {
   role: "user" | "assistant";

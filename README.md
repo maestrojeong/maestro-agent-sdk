@@ -15,7 +15,8 @@ A generalizable agent runtime. Swap providers, inject your own logger/MCP resolv
 
 - **Agent loop** — provider-driven tool-calling loop with iteration cap, abort signal, LLM pre/post guardrail hooks, and event stream.
 - **Pluggable providers** — first-class adapters for Anthropic (Claude) and DeepSeek V4; provider-neutral message schema so adding OpenAI / Gemini / Ollama is a thin file.
-- **Built-in tools** — `bash`, `Read`, `Write`, `Edit`, `MultiEdit`, `Glob`, `Grep`, `Agent` (sub-agent delegation), `TaskCreate`/`TaskUpdate`/`TaskList`/`TaskGet`, `WebFetch` (optional SSRF policy via `createWebFetchTool`), `skill_view`, `skill_write`. Bring your own via `ToolRegistry`. Grep shells out to ripgrep (`rg`) so install it if you want the tool active; the SDK surfaces a structured error pointing to the install path when missing. Tool primitives are also importable from the `maestro-agent-sdk/tools` subpath when you don't need the rest of the runtime.
+- **Built-in tools** — `bash` (foreground + optional background w/ `bash_id` as of v0.1.18), `Read` (text + images + PDF as of v0.1.18), `Write`, `Edit`, `MultiEdit`, `Glob`, `Grep`, `Agent` (sub-agent delegation), `TaskCreate`/`TaskUpdate`/`TaskList`/`TaskGet`, `WebFetch` (optional SSRF policy via `createWebFetchTool`), `BashOutput` / `KillBash` (background process polling + kill, v0.1.18+), `skill_view`, `skill_write`. Bring your own via `ToolRegistry`. Grep shells out to ripgrep (`rg`) so install it if you want the tool active; the SDK surfaces a structured error pointing to the install path when missing. Tool primitives are also importable from the `maestro-agent-sdk/tools` subpath when you don't need the rest of the runtime.
+- **Multimodal Read (v0.1.18+)** — `.png/.jpg/.webp/.gif` files return a native vision content block (Anthropic `image.source`, DeepSeek `image_url` data URI) so the model sees the image directly. `.pdf` text-extracts via `pdfjs-dist` and returns line-numbered text per page.
 - **MCP** — built-in client pool (stdio + SSE) so any MCP server (`@modelcontextprotocol/sdk`) shows up as tools.
 - **Skills** — per-workspace `.skills/<skillKey>/<name>/skill.md` packages with FTS-style indexing, on-demand body load (`skill_view`), and agent-autonomous authoring (`skill_write`).
 - **Memory** — automatic context compression (summarization + pruning) when the token budget is hit. Reuses the agent's own model for compaction — no separate model knob.
@@ -100,6 +101,72 @@ for await (const event of runConversation(agent, "Summarize today's news.")) {
 }
 ```
 
+### Multimodal Read (v0.1.18+)
+
+```ts
+import { ToolRegistry, createReadTool } from "maestro-agent-sdk";
+
+const tools = new ToolRegistry();
+// Read auto-detects images (PNG/JPG/WebP/GIF → native vision block) and PDFs
+// (text-extracted via pdfjs-dist, page-paginated by offset/limit).
+tools.register(createReadTool());
+```
+
+### Background bash (v0.1.18+)
+
+```ts
+import {
+  ToolRegistry,
+  createBashTool,
+  createBackgroundBashRegistry,
+  createBashOutputTool,
+  createKillBashTool,
+} from "maestro-agent-sdk";
+
+const ac = new AbortController();
+// One registry handle wires the three tools together — bash_id from
+// one plugs directly into the others. abortSignal cascade-kills every
+// still-running process when the loop aborts.
+const bgRegistry = createBackgroundBashRegistry({ abortSignal: ac.signal });
+
+const tools = new ToolRegistry();
+tools.register(createBashTool({ signal: ac.signal, background: bgRegistry }));
+tools.register(createBashOutputTool(bgRegistry));
+tools.register(createKillBashTool(bgRegistry));
+// Now the model can run `Bash(run_in_background:true, command:"npm run dev")`,
+// poll via `BashOutput(bash_id)`, and stop via `KillBash(bash_id)`.
+```
+
+### Session fork at message N (v0.1.18+)
+
+```ts
+import { forkSessionAt } from "maestro-agent-sdk";
+
+// "Branch session A at turn 12 and try a different question."
+const { sessionId: forkId } = forkSessionAt({
+  parentSessionId: "a1b2c3d4-...",
+  messageIndex: 12,                        // copy first 12 turns
+  metadata: { reason: "exploring alt path" },
+});
+// forkId is a brand-new sessionId. `maestroProvider.query({ sessionId: forkId, ... })`
+// resumes from the forked prefix as if it were a fresh resume.
+// The parent JSONL is untouched.
+```
+
+> **What happens on the wire.** Anthropic gets `tool_result.content` as an
+> array of `text` + `image` blocks (`source.type: "base64"`); DeepSeek gets
+> the same image as an OpenAI-style `image_url` content part with a
+> `data:image/<type>;base64,<bytes>` URI. Hosts don't see any of this —
+> the tool result UnifiedEvent carries a short text preview
+> (`<image image/png 12345B>`) so existing render code keeps working.
+>
+> **Web search?** Not a builtin — search backends vary too much (Tavily,
+> Brave, Serper, Anthropic-native `web_search_20250305`, …) and each has
+> its own auth + result shape. Hosts wire whichever they want as a
+> `ToolHandler` (or use Claude's server-side `web_search` via provider
+> config). Keeping it out of the SDK avoids forcing every consumer to
+> carry a search-API dep + key.
+
 > **Effort scale (v0.1.16+).** `effort` controls two orthogonal knobs:
 >
 > 1. **Reasoning depth** — thinking budget on Anthropic (`thinking.budget_tokens`),
@@ -170,6 +237,48 @@ for await (const event of runConversation(agent, "Summarize today's news.")) {
 > helper. Tiny caps (`maxIter <= 3`) opt out — at that scale every turn
 > is already a wrap-up turn and gating tools would defeat the cap's
 > purpose.
+>
+> **Multimodal Read + stop-reason fan-out + fork + bg bash (v0.1.18).**
+> Four additions land together:
+>
+> 1. **Multimodal Read.** `.png/.jpg/.webp/.gif` files return a
+>    `MaestroToolResultBlock[]` containing a text bookend + an `image`
+>    content block; PDFs text-extract via `pdfjs-dist` and return
+>    line-numbered text per page. `ToolHandler.execute` now returns
+>    `string | MaestroToolResultBlock[]` (non-breaking: every existing
+>    tool still returns a string). Each provider adapter serializes per
+>    its native wire shape — Anthropic uses `image.source: { type: "base64",
+>    media_type, data }`, DeepSeek wraps as an OpenAI `image_url` with
+>    `data:<mime>;base64,<bytes>` URI.
+> 2. **Stop-reason fan-out.** `pause_turn` now continues the loop with
+>    the same `messages` array (no new user turn), matching Anthropic's
+>    long-output contract; `refusal` propagates through `result.stopReason`
+>    as a distinct terminal so hosts can branch on safety-policy declines
+>    without confusing them with `end_turn`. Both bump the iteration
+>    counter so pathological runs still hit the `maxIterations` ceiling.
+> 3. **`forkSessionAt`.** Claude-Code-style message-N branching for
+>    `~/.maestro/sessions/<sessionId>.jsonl`. Given a parent session +
+>    message index, writes a new JSONL with `{parentSessionId, forkedAtMessageIndex}`
+>    in its `_meta` header. Parent JSONL is left untouched. The slice
+>    is run through `trimToSafePrefix` so an orphan `tool_use` at the
+>    cut point can't 400 the next API call. Lets a host UI render
+>    branch trees ("session B is a fork of A at turn 12") and lets the
+>    model retry an earlier turn without polluting the original history.
+> 4. **Background bash (`run_in_background:true` + `BashOutput` + `KillBash`).**
+>    Same triad Claude Code ships: start a long-running shell with
+>    `Bash(run_in_background:true)` → returns a `bash_id`; poll
+>    incremental output via `BashOutput(bash_id)`; selectively stop via
+>    `KillBash(bash_id)` (SIGTERM with a 5s SIGKILL escalation). When
+>    the parent agent loop's `AbortController` fires, every still-
+>    running background process registered under that loop is killed —
+>    no detached children left behind.
+>
+> **What's NOT in v0.1.18:** WebSearch tool. Search backends vary too
+> much (Tavily/Brave/Serper/Anthropic server-side) and forcing one keeps
+> the SDK opinion-heavy. Hosts wire their preferred search backend as a
+> `ToolHandler` directly — clawgram, for example, exposes the
+> Anthropic-native `web_search_20250305` via the provider call when the
+> active provider is Claude.
 
 More runnable scripts live under [`examples/`](./examples) — Anthropic, DeepSeek,
 a custom-tool walkthrough, and a `skill_write` demo.

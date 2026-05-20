@@ -58,6 +58,9 @@ export {
 
 // ─── Providers ───────────────────────────────────────────────────────────────
 export type {
+  MaestroDocumentSource,
+  MaestroImageSource,
+  MaestroToolResultBlock,
   Provider,
   ProviderCompleteOptions,
   ProviderContentBlock,
@@ -79,6 +82,9 @@ export {
   cleanupStaleMaestroSessions,
   DEFAULT_MAESTRO_SESSION_TTL_MS,
   deleteMaestroSession,
+  type ForkSessionAtOptions,
+  type ForkSessionAtResult,
+  forkSessionAt,
   loadMaestroSessionMeta,
   type MaestroSessionMeta,
   maestroSessionsDir,
@@ -94,7 +100,13 @@ export type { ConversationEntry } from "@/storage/conversations";
 export { type ConversationReader, setConversationReader } from "@/storage/conversations";
 export { createAgentTool } from "@/tools/builtin/agent";
 // ─── Built-in tools ──────────────────────────────────────────────────────────
-export { bashTool } from "@/tools/builtin/bash";
+export { bashTool, createBashTool } from "@/tools/builtin/bash";
+export {
+  type BackgroundBashRegistry,
+  createBackgroundBashRegistry,
+  createBashOutputTool,
+  createKillBashTool,
+} from "@/tools/builtin/bash_background";
 export { createEditTool } from "@/tools/builtin/edit";
 export { compileGlob, globTool } from "@/tools/builtin/glob";
 export { grepTool } from "@/tools/builtin/grep";
@@ -120,7 +132,7 @@ export {
   type PreToolUseContext,
   type PreToolUseDecision,
   type PreToolUseHook,
-
+  type ToolExecuteResult,
   type ToolHandler,
   ToolRegistry,
 } from "@/tools/registry";
