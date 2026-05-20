@@ -4,7 +4,13 @@ import { compressIfNeeded } from "@/memory/compressor";
 import { StreamingContextScrubber, scrubString } from "@/memory/scrubber";
 import { logger } from "@/platform/logger";
 import { isWrapUpZone, thinkingBudgetForTurn } from "@/providers/anthropic";
-import type { ProviderContentBlock, ProviderMessage, ProviderResponse } from "@/providers/base";
+import type {
+  MaestroToolResultBlock,
+  ProviderContentBlock,
+  ProviderMessage,
+  ProviderResponse,
+} from "@/providers/base";
+import type { ToolExecuteResult } from "@/tools/registry";
 import type { TokenUsage, UnifiedEvent } from "@/types";
 
 // v0.1.16: removed `EFFORT_LEVELS` + `nextEffortLevel`. The previous
@@ -323,7 +329,41 @@ export async function* runConversation(
     // history exactly once.
     messages.push({ role: "assistant", content: assistantBlocks });
 
+    // ─── pause_turn (v0.1.18+) ───
+    //
+    // Anthropic emits `stop_reason: "pause_turn"` when a single assistant
+    // turn would exceed the model's per-turn output budget — typical for
+    // long-form generation with extended thinking. The contract is: re-
+    // issue the next request with the SAME messages (no new user turn);
+    // the partial assistant message is already at the tail, and the API
+    // continues from where it stopped. We honor that by bumping iter and
+    // continuing the loop without dispatching tools (no tools were ever
+    // emitted) and without injecting a system reminder (the model didn't
+    // finish its current thought).
+    //
+    // The bump counts pause_turn against `maxIterations` so a pathological
+    // server-side loop can't drain context indefinitely; in practice a
+    // single turn rarely pauses more than once.
+    if (response.stopReason === "pause_turn") {
+      iterations++;
+      continue;
+    }
+
     if (toolUses.length === 0) {
+      // ─── refusal (v0.1.18+) ───
+      //
+      // Anthropic sets `stop_reason: "refusal"` when the model declines to
+      // continue (safety policy, prompt content, etc.). The assistant text
+      // typically carries a short user-facing rejection ("I can't help
+      // with that"). We still want to surface the `result` event so the
+      // host can render it, but distinct from `end_turn` so downstream
+      // code can branch on `stopReason === "refusal"` to e.g. skip
+      // archive recording or log to a moderation sink.
+      //
+      // No special branch needed beyond passing through the stopReason
+      // (the existing result emit below already does that); this comment
+      // documents the contract so a future contributor doesn't add a
+      // catch-all that flattens refusal into end_turn.
       // ─── LLM Post Hook ───
       // Host guardrail validates the final assistant text before the `result`
       // event. tripwire replaces the result with an error; reject_content
@@ -386,7 +426,7 @@ export async function* runConversation(
     // order. Anthropic requires `tool_result` blocks in one user turn to
     // align with their corresponding `tool_use` ids; preserving the order
     // also keeps the conversation log easier to read.
-    const results = new Array<string>(toolUses.length);
+    const results = new Array<ToolExecuteResult>(toolUses.length);
     const parallelIndices: number[] = [];
     const serialIndices: number[] = [];
     for (let i = 0; i < toolUses.length; i++) {
@@ -415,12 +455,17 @@ export async function* runConversation(
     // so the model sees complete tool output on the next turn — claude/codex
     // do the same (SDK feeds full payload to model, UnifiedEvent emit is the
     // only place truncation happens).
+    //
+    // v0.1.18+: A tool may return a `MaestroToolResultBlock[]` (image / mixed
+    // multimodal). The host-surfaced UnifiedEvent still carries a short text
+    // preview so existing dispatchers don't have to learn the binary shape;
+    // the full structured payload rides the next turn's tool_result content
+    // array verbatim, so the model sees the image natively.
     const toolResultBlocks: ProviderContentBlock[] = [];
     for (let i = 0; i < toolUses.length; i++) {
       const tu = toolUses[i];
       const result = results[i];
-      const preview =
-        result.length > TOOL_RESULT_PREVIEW_MAX ? result.slice(0, TOOL_RESULT_PREVIEW_MAX) : result;
+      const preview = previewToolResult(result);
       yield { type: "tool_result", toolUseId: tu.id, content: preview };
       toolResultBlocks.push({
         type: "tool_result",
@@ -477,4 +522,44 @@ export async function* runConversation(
         : {}),
     },
   };
+}
+
+/**
+ * Build the text preview a tool_result UnifiedEvent surfaces to the host
+ * dispatcher. Tools may return either a plain string (legacy / text-only
+ * path) or a structured `MaestroToolResultBlock[]` (multimodal — image
+ * bytes alongside an explanatory text bookend).
+ *
+ * String path: clip to `TOOL_RESULT_PREVIEW_MAX` so telegram renderers
+ * keep their layout assumptions — same ceiling as claude/codex.
+ *
+ * Array path: render a single-line summary that names the block types and
+ * approximate byte counts. Hosts that want to render images themselves
+ * should reach for the full structured payload that rides the next turn's
+ * `tool_result.content` array; the preview is only for log / chat-window
+ * confirmation that the tool fired.
+ */
+function previewToolResult(result: ToolExecuteResult): string {
+  if (typeof result === "string") {
+    return result.length > TOOL_RESULT_PREVIEW_MAX
+      ? result.slice(0, TOOL_RESULT_PREVIEW_MAX)
+      : result;
+  }
+  const parts = result.map((b: MaestroToolResultBlock) => {
+    if (b.type === "text") return b.text.slice(0, 80);
+    if (b.type === "image") {
+      const src = b.source;
+      if (src.type === "base64") {
+        const bytes = src.data ? Math.floor((src.data.length * 3) / 4) : 0;
+        return `<image ${src.media_type ?? "?"} ${bytes}B>`;
+      }
+      return `<image url ${src.url ?? ""}>`;
+    }
+    const bytes = b.source.data ? Math.floor((b.source.data.length * 3) / 4) : 0;
+    return `<document ${b.source.media_type} ${bytes}B>`;
+  });
+  const joined = parts.join(" ");
+  return joined.length > TOOL_RESULT_PREVIEW_MAX
+    ? joined.slice(0, TOOL_RESULT_PREVIEW_MAX)
+    : joined;
 }

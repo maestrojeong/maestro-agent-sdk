@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
-import type { ProviderMessage } from "@/providers/base";
+import type { MaestroToolResultBlock, ProviderMessage } from "@/providers/base";
 import {
   DeepseekProvider,
   effortForDeepseek,
@@ -7,6 +7,14 @@ import {
   translateMessagesToOpenAI,
   translateToolsToOpenAI,
 } from "@/providers/deepseek";
+
+/** Helper — extracts a content part array from an OpenAI chat message. */
+function partsOf(
+  msg: ReturnType<typeof translateMessagesToOpenAI>[number],
+): Array<{ type: string; text?: string; image_url?: { url: string } }> {
+  if (!msg || typeof msg.content === "string") return [];
+  return msg.content as Array<{ type: string; text?: string; image_url?: { url: string } }>;
+}
 
 const ORIGINAL_FETCH = globalThis.fetch;
 const ORIGINAL_KEY = process.env.DEEPSEEK_API_KEY;
@@ -580,5 +588,164 @@ describe("DeepseekProvider.stream (mocked SSE)", () => {
       stopReason: "tool_use",
       usage: { inputTokens: 1, outputTokens: 1 },
     });
+  });
+});
+
+// ─── v0.1.18: multimodal translation ─────────────────────────────────────
+//
+// User-message-level image blocks become `image_url` content parts; PDF
+// (document) blocks become a `[document …]` text placeholder because
+// DeepSeek can't view PDFs natively. tool_result blocks carrying image
+// blocks become OpenAI-style multimodal `tool` content parts.
+
+describe("DeepSeek multimodal translation (v0.1.18+)", () => {
+  test("user-message image → image_url content part (data URI)", () => {
+    const messages: ProviderMessage[] = [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "what is in this picture?" },
+          {
+            type: "image",
+            source: {
+              type: "base64",
+              media_type: "image/png",
+              data: "iVBORw0KGgo=",
+            },
+          },
+        ],
+      },
+    ];
+    const out = translateMessagesToOpenAI("", messages);
+    // One multimodal user message — text + image_url, in source order.
+    expect(out).toHaveLength(1);
+    const parts = partsOf(out[0]);
+    expect(parts).toEqual([
+      { type: "text", text: "what is in this picture?" },
+      {
+        type: "image_url",
+        image_url: { url: "data:image/png;base64,iVBORw0KGgo=" },
+      },
+    ]);
+  });
+
+  test("user-message URL image → image_url passthrough", () => {
+    const messages: ProviderMessage[] = [
+      {
+        role: "user",
+        content: [
+          {
+            type: "image",
+            source: { type: "url", url: "https://example.com/img.jpg" },
+          },
+        ],
+      },
+    ];
+    const out = translateMessagesToOpenAI("", messages);
+    const parts = partsOf(out[0]);
+    expect(parts).toEqual([
+      {
+        type: "image_url",
+        image_url: { url: "https://example.com/img.jpg" },
+      },
+    ]);
+  });
+
+  test("user-message PDF document → text placeholder (DeepSeek can't view PDF)", () => {
+    const messages: ProviderMessage[] = [
+      {
+        role: "user",
+        content: [
+          {
+            type: "document",
+            source: {
+              type: "base64",
+              media_type: "application/pdf",
+              // 12 base64 chars → ~9 bytes; placeholder mentions size.
+              data: "QUJDREVGR0g=",
+            },
+          },
+        ],
+      },
+    ];
+    const out = translateMessagesToOpenAI("", messages);
+    // Single text content collapses to a string (condenseUserParts behavior).
+    expect(typeof out[0].content).toBe("string");
+    expect(out[0].content).toContain("application/pdf");
+    expect(out[0].content).toContain("not visible to DeepSeek");
+  });
+
+  test("tool_result with image block → tool role with multimodal parts", () => {
+    const toolResult: MaestroToolResultBlock[] = [
+      { type: "text", text: "screenshot loaded" },
+      {
+        type: "image",
+        source: {
+          type: "base64",
+          media_type: "image/jpeg",
+          data: "/9j/4AAQ",
+        },
+      },
+    ];
+    const messages: ProviderMessage[] = [
+      {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "tu_1",
+            content: toolResult,
+          },
+        ],
+      },
+    ];
+    const out = translateMessagesToOpenAI("", messages);
+    // One tool message — no surrounding user message because the input
+    // had no separate text.
+    expect(out).toHaveLength(1);
+    expect(out[0].role).toBe("tool");
+    expect(out[0].tool_call_id).toBe("tu_1");
+    const parts = partsOf(out[0]);
+    expect(parts).toEqual([
+      { type: "text", text: "screenshot loaded" },
+      {
+        type: "image_url",
+        image_url: { url: "data:image/jpeg;base64,/9j/4AAQ" },
+      },
+    ]);
+  });
+
+  test("tool_result with text-only structured array collapses to string", () => {
+    const messages: ProviderMessage[] = [
+      {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "tu_x",
+            content: [
+              { type: "text", text: "line one" },
+              { type: "text", text: "line two" },
+            ],
+          },
+        ],
+      },
+    ];
+    const out = translateMessagesToOpenAI("", messages);
+    expect(out[0].role).toBe("tool");
+    // Text-only → joined string, matching v0.1.17 wire shape (some
+    // OpenAI-compatible servers reject array `tool` content).
+    expect(out[0].content).toBe("line one\nline two");
+  });
+
+  test("tool_result with plain string content unchanged (legacy path)", () => {
+    const messages: ProviderMessage[] = [
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "tu_y", content: "plain string" }],
+      },
+    ];
+    const out = translateMessagesToOpenAI("", messages);
+    expect(out[0].content).toBe("plain string");
   });
 });

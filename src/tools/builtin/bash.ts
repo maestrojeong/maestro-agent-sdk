@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { isAbsolute, normalize } from "node:path";
 import type { ProviderToolSchema } from "@/providers/base";
+import type { BackgroundBashRegistry } from "@/tools/builtin/bash_background";
 import type { ToolHandler } from "@/tools/registry";
 
 /** Shared Bash schema — extracted as a named constant so both the bare
@@ -48,6 +49,16 @@ const bashSchema = {
         type: "string",
         description: "Working directory (optional).",
       },
+      run_in_background: {
+        type: "boolean",
+        description:
+          "When true, start the command as a long-running background process " +
+          "instead of waiting for it. Returns immediately with a `bash_id`; " +
+          "poll its output via `BashOutput(bash_id)` and stop it via " +
+          "`KillBash(bash_id)`. Requires a host that registered a background " +
+          "registry — without one, this option falls back to the foreground " +
+          "(awaited) path so the model still gets a usable result.",
+      },
     },
     required: ["command"],
   },
@@ -60,14 +71,56 @@ const bashSchema = {
 //
 // Usage in runner.ts:
 //   tools.register(createBashTool({ signal: abortSignal }));
+//
+// v0.1.18+: pass `background` to enable the
+// `run_in_background:true` branch. The same registry handle
+// should also be passed to `createBashOutputTool` /
+// `createKillBashTool` so the three tools share state.
+// Omitting `background` keeps the v0.1.17 behavior — every
+// call awaits in the foreground regardless of the
+// `run_in_background` input flag (the model gets the same
+// foreground result so it can still make progress, just
+// without a bash_id).
 // ───────────────────────────────────────────────
-export function createBashTool(opts?: { signal?: AbortSignal }): ToolHandler {
+export function createBashTool(opts?: {
+  signal?: AbortSignal;
+  background?: BackgroundBashRegistry;
+}): ToolHandler {
   const parentSignal = opts?.signal;
+  const bgRegistry = opts?.background;
   return {
     schema: bashSchema as unknown as ProviderToolSchema,
     async execute(input) {
       if (parentSignal?.aborted) {
         return JSON.stringify({ error: "aborted" });
+      }
+      // v0.1.18+: background branch. Requires a registry — without one
+      // we fall through to the foreground path so the model still gets
+      // a result (and a host that wants to opt out of bg can simply not
+      // wire the registry).
+      if (input.run_in_background === true && bgRegistry) {
+        const command = String(input.command ?? "");
+        const cwd = typeof input.cwd === "string" ? input.cwd : undefined;
+        const maxOutputBytes =
+          typeof input.max_output_bytes === "number" &&
+          Number.isFinite(input.max_output_bytes) &&
+          input.max_output_bytes > 0
+            ? Math.floor(input.max_output_bytes)
+            : undefined;
+        const spawnRes = bgRegistry.spawn({
+          command,
+          ...(cwd ? { cwd } : {}),
+          ...(maxOutputBytes !== undefined ? { maxOutputBytes } : {}),
+        });
+        if ("error" in spawnRes) {
+          return JSON.stringify({ error: spawnRes.error });
+        }
+        return JSON.stringify({
+          bash_id: spawnRes.bashId,
+          started: true,
+          startedAt: spawnRes.startedAt,
+          hint: `Poll output via BashOutput(bash_id='${spawnRes.bashId}'); stop via KillBash(bash_id='${spawnRes.bashId}').`,
+        });
       }
       return executeBash(input, parentSignal);
     },

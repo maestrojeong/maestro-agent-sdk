@@ -1,4 +1,6 @@
 import type {
+  MaestroImageSource,
+  MaestroToolResultBlock,
   Provider,
   ProviderCompleteOptions,
   ProviderContentBlock,
@@ -45,9 +47,26 @@ interface OpenAIToolCall {
   function: { name: string; arguments: string };
 }
 
+/**
+ * OpenAI Chat Completions content-part shape.
+ *
+ * v0.1.18+: user / tool messages may carry image inputs by interleaving
+ * `image_url` parts alongside text. DeepSeek V4 follows the same shape
+ * (their public Vision API mirrors OpenAI's content-parts contract:
+ * `{type:"image_url", image_url:{url}}`). Older DeepSeek text-only
+ * endpoints will reject these arrays — callers using image input must
+ * pick a vision-capable model (`deepseek-v4-pro` / `deepseek-v4-flash`).
+ */
+type OpenAIContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } };
+
 interface OpenAIChatMessage {
   role: "system" | "user" | "assistant" | "tool";
-  content?: string | null;
+  /** Plain string OR multimodal content-parts array. Tool / user roles can
+   *  carry the array form; system / assistant stay string-only because
+   *  DeepSeek (and OpenAI) reject arrays in those slots for chat models. */
+  content?: string | OpenAIContentPart[] | null;
   reasoning_content?: string;
   tool_calls?: OpenAIToolCall[];
   tool_call_id?: string;
@@ -464,28 +483,48 @@ export function translateMessagesToOpenAI(
       // Split user content into text portion + per-tool_result messages,
       // preserving the order the blocks appear in. tool_result blocks need
       // their own role:"tool" messages with `tool_call_id`.
-      let userText = "";
+      //
+      // v0.1.18+: image / document blocks at user message level become
+      // OpenAI `image_url` parts. We buffer text + image parts together
+      // until we hit a tool_result (which must emit its own message), so
+      // a "look at this photo" user turn lands as one multimodal message
+      // rather than fragmenting across two.
+      let userParts: OpenAIContentPart[] = [];
       for (const block of msg.content) {
         if (block.type === "text") {
-          userText += userText.length > 0 ? `\n${block.text}` : block.text;
+          userParts.push({ type: "text", text: block.text });
+        } else if (block.type === "image") {
+          const url = imageBlockToDataUrl(block.source);
+          if (url) userParts.push({ type: "image_url", image_url: { url } });
+        } else if (block.type === "document") {
+          // DeepSeek/OpenAI Vision doesn't accept native PDF blocks; the
+          // closest path is "extract text and inject as a text part". The
+          // host already had a chance to do that upstream (Read tool's PDF
+          // branch returns text); for raw user-message-level documents we
+          // surface a placeholder so the model knows a PDF was attached
+          // but can't see it directly.
+          userParts.push({
+            type: "text",
+            text: `[Document attached: ${block.source.media_type}, ${Math.floor((block.source.data.length * 3) / 4)} bytes — not visible to DeepSeek; extract text via Read or OCR.]`,
+          });
         } else if (block.type === "tool_result") {
-          // Flush any text accumulated before this tool_result so ordering
-          // with the tool messages is preserved.
-          if (userText.length > 0) {
-            out.push({ role: "user", content: userText });
-            userText = "";
+          // Flush any user content accumulated before this tool_result so
+          // ordering with the tool messages is preserved.
+          if (userParts.length > 0) {
+            out.push({ role: "user", content: condenseUserParts(userParts) });
+            userParts = [];
           }
           out.push({
             role: "tool",
             tool_call_id: block.tool_use_id,
-            content: block.content,
+            content: toolResultToOpenAI(block.content),
           });
         }
         // Other block types (tool_use, thinking) don't legally appear in
         // user messages under our pipeline — silently skip if encountered.
       }
-      if (userText.length > 0) {
-        out.push({ role: "user", content: userText });
+      if (userParts.length > 0) {
+        out.push({ role: "user", content: condenseUserParts(userParts) });
       }
       continue;
     }
@@ -526,6 +565,73 @@ export function translateMessagesToOpenAI(
     out.push(assistantMsg);
   }
   return out;
+}
+
+/**
+ * Convert a `MaestroImageSource` into a single OpenAI-style `image_url`
+ * string. Base64 sources become `data:<media_type>;base64,<bytes>`; URL
+ * sources pass through. Returns `null` when the source is malformed (no
+ * data + no url) so the caller can skip without injecting an empty part.
+ */
+function imageBlockToDataUrl(src: MaestroImageSource): string | null {
+  if (src.type === "url" && src.url) return src.url;
+  if (src.type === "base64" && src.data) {
+    const mt = src.media_type ?? "application/octet-stream";
+    return `data:${mt};base64,${src.data}`;
+  }
+  return null;
+}
+
+/**
+ * If a user message ends up as a single text part, collapse to a plain
+ * string — keeps the wire shape identical to v0.1.17 for the (overwhelming)
+ * text-only case and avoids tripping any strict server-side validator that
+ * insists on string content for non-vision models. Mixed / image-bearing
+ * messages keep the array form.
+ */
+function condenseUserParts(parts: OpenAIContentPart[]): string | OpenAIContentPart[] {
+  if (parts.length === 1 && parts[0].type === "text") return parts[0].text;
+  return parts;
+}
+
+/**
+ * Translate a Maestro `tool_result.content` (string | structured blocks)
+ * into the OpenAI `tool` message content shape.
+ *
+ * Text-only structured arrays collapse to a single string for maximum
+ * server compatibility (some OpenAI-compatible providers reject array
+ * `tool` content). Arrays containing images keep the structured form —
+ * those calls are explicitly opting into a vision-capable model.
+ *
+ * Document blocks inside tool_result are unusual (the Read tool's PDF
+ * branch returns text, not document blocks), but if one shows up we
+ * render a `[document …]` text placeholder rather than dropping it
+ * silently — symmetric with the user-message handling above.
+ */
+function toolResultToOpenAI(
+  content: string | MaestroToolResultBlock[],
+): string | OpenAIContentPart[] {
+  if (typeof content === "string") return content;
+  const parts: OpenAIContentPart[] = [];
+  for (const b of content) {
+    if (b.type === "text") {
+      parts.push({ type: "text", text: b.text });
+    } else if (b.type === "image") {
+      const url = imageBlockToDataUrl(b.source);
+      if (url) parts.push({ type: "image_url", image_url: { url } });
+    } else if (b.type === "document") {
+      const bytes = b.source.data ? Math.floor((b.source.data.length * 3) / 4) : 0;
+      parts.push({
+        type: "text",
+        text: `[document ${b.source.media_type} ${bytes} bytes — DeepSeek cannot view PDFs natively; extract text first.]`,
+      });
+    }
+  }
+  // All-text → collapse for compatibility (see condenseUserParts).
+  if (parts.every((p) => p.type === "text")) {
+    return parts.map((p) => (p as { type: "text"; text: string }).text).join("\n");
+  }
+  return parts;
 }
 
 /** One parsed OpenAI SSE event. Mirrors the loose-shape pattern from

@@ -849,4 +849,127 @@ describe("runConversation (streaming path)", () => {
     expect(maxInFlight).toBe(1);
     expect(order).toEqual(["write1:start", "write1:end", "write2:start", "write2:end"]);
   });
+
+  // ─── v0.1.18: pause_turn continuation ─────────────────────────────────
+  //
+  // Anthropic emits `stop_reason: "pause_turn"` when a single assistant
+  // response would exceed per-turn output budget. The loop must re-issue
+  // the next call with the SAME messages (no new user turn) and treat
+  // the iteration against the maxIterations budget. After the second
+  // call completes with `end_turn`, the loop emits the final result.
+  test("pause_turn continues the loop without injecting a new user turn", async () => {
+    const { provider, calls } = makeProvider([
+      {
+        content: [{ type: "text", text: "part one — " }],
+        stopReason: "pause_turn",
+        usage: { inputTokens: 10, outputTokens: 5 },
+      },
+      {
+        content: [{ type: "text", text: "part two." }],
+        stopReason: "end_turn",
+        usage: { inputTokens: 15, outputTokens: 4 },
+      },
+    ]);
+    const tools = new ToolRegistry();
+    const agent = new AIAgent(provider, tools, {
+      model: "x",
+      systemPrompt: "",
+      maxIterations: 10,
+    });
+    const events = await collect(runConversation(agent, initialMessages("write a poem")));
+    // Provider invoked twice; second call's messages contain the partial
+    // assistant turn from the first.
+    expect(calls).toHaveLength(2);
+    // Second call sees [user, assistant(partial)] — no extra user injected.
+    const secondCallRoles = calls[1].messages.map((m) => m.role);
+    expect(secondCallRoles).toEqual(["user", "assistant"]);
+    // Final result event uses the LAST stopReason (end_turn) and contains
+    // only the second-turn assistant text (the host concatenates if it
+    // wants the full chain — the loop emits per-turn events along the way).
+    const result = events.find((e) => e.type === "result");
+    if (!result || result.type !== "result") throw new Error("expected result");
+    expect(result.stopReason).toBe("end_turn");
+    expect(result.content).toBe("part two.");
+  });
+
+  test("refusal propagates through result.stopReason (terminal)", async () => {
+    const { provider } = makeProvider([
+      {
+        content: [{ type: "text", text: "I can't help with that." }],
+        stopReason: "refusal",
+        usage: { inputTokens: 5, outputTokens: 8 },
+      },
+    ]);
+    const tools = new ToolRegistry();
+    const agent = new AIAgent(provider, tools, { model: "x", systemPrompt: "" });
+    const events = await collect(runConversation(agent, initialMessages("...")));
+    const result = events.find((e) => e.type === "result");
+    if (!result || result.type !== "result") throw new Error("expected result");
+    expect(result.stopReason).toBe("refusal");
+    expect(result.content).toBe("I can't help with that.");
+  });
+
+  // ─── v0.1.18: structured tool_result (image) round-trip ───────────────
+  //
+  // A tool returning a `MaestroToolResultBlock[]` must reach the next turn's
+  // user message as `tool_result.content: <array>` (verbatim), and the loop
+  // must surface a text preview UnifiedEvent for the host. No bytes leak
+  // into the preview.
+  test("tool returning structured blocks round-trips to provider as array content", async () => {
+    const imageBlock = {
+      type: "image" as const,
+      source: {
+        type: "base64" as const,
+        media_type: "image/png",
+        data: "iVBORw0KGgo=",
+      },
+    };
+    const { provider, calls } = makeProvider([
+      {
+        content: [
+          {
+            type: "tool_use",
+            id: "tu_1",
+            name: "Read",
+            input: { file_path: "/x.png" },
+          },
+        ],
+        stopReason: "tool_use",
+        usage: { inputTokens: 5, outputTokens: 3 },
+      },
+      {
+        content: [{ type: "text", text: "it's a tiny image." }],
+        stopReason: "end_turn",
+        usage: { inputTokens: 8, outputTokens: 4 },
+      },
+    ]);
+    const tools = new ToolRegistry();
+    tools.register({
+      schema: {
+        name: "Read",
+        description: "stub",
+        input_schema: { type: "object", properties: {}, required: [] },
+      },
+      async execute() {
+        return [{ type: "text", text: "<image png>" }, imageBlock];
+      },
+    });
+    const agent = new AIAgent(provider, tools, { model: "x", systemPrompt: "" });
+    const events = await collect(runConversation(agent, initialMessages("show me")));
+    // Preview shape — text bookend + bytes summary, no raw base64.
+    const tr = events.find((e) => e.type === "tool_result");
+    if (!tr || tr.type !== "tool_result") throw new Error("expected tool_result");
+    expect(tr.content).toContain("<image image/png");
+    expect(tr.content).not.toContain("iVBORw0KGgo");
+    // Second provider call: user message has tool_result with array content.
+    const secondCall = calls[1];
+    const userBlock = (secondCall.messages.at(-1)?.content as Array<{ type: string }>)[0];
+    expect(userBlock.type).toBe("tool_result");
+    const trBlock = userBlock as {
+      type: "tool_result";
+      content: Array<{ type: string }>;
+    };
+    expect(Array.isArray(trBlock.content)).toBe(true);
+    expect(trBlock.content[1].type).toBe("image");
+  });
 });

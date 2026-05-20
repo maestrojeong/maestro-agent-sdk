@@ -22,6 +22,12 @@
 // ─── Built-in tools ────────────────────────────────────────────────────────
 export { createAgentTool } from "@/tools/builtin/agent";
 export { bashTool, createBashTool } from "@/tools/builtin/bash";
+export {
+  type BackgroundBashRegistry,
+  createBackgroundBashRegistry,
+  createBashOutputTool,
+  createKillBashTool,
+} from "@/tools/builtin/bash_background";
 export { createEditTool, editTool } from "@/tools/builtin/edit";
 export { compileGlob, globTool } from "@/tools/builtin/glob";
 export { grepTool } from "@/tools/builtin/grep";
@@ -59,7 +65,6 @@ export {
   type PreToolUseContext,
   type PreToolUseDecision,
   type PreToolUseHook,
-
   type ToolHandler,
   ToolRegistry,
 } from "@/tools/registry";
