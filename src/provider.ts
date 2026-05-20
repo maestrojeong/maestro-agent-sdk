@@ -36,7 +36,12 @@ import { buildSkillsIndex } from "@/skills/index-builder";
 import { loadSkillsCached } from "@/skills/loader";
 import { getTaskStore } from "@/state/tasks";
 import { createAgentTool } from "@/tools/builtin/agent";
-import { bashTool } from "@/tools/builtin/bash";
+import { bashTool, createBashTool } from "@/tools/builtin/bash";
+import {
+  createBackgroundBashRegistry,
+  createBashOutputTool,
+  createKillBashTool,
+} from "@/tools/builtin/bash_background";
 import { createEditTool } from "@/tools/builtin/edit";
 import { globTool } from "@/tools/builtin/glob";
 import { grepTool } from "@/tools/builtin/grep";
@@ -129,7 +134,29 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
 
   const tools = new ToolRegistry();
 
-  tools.register(bashTool);
+  // v0.1.19+: when `opts.enableBackgroundBash` is set, swap the default
+  // foreground-only bash for one that honors `run_in_background:true`
+  // AND register the polling + kill tools. The registry handle is bound
+  // to the loop's abort signal so an interrupted run cascade-kills every
+  // still-running background process — no detached children.
+  //
+  // Default (flag omitted/false): exactly the v0.1.18 behavior — plain
+  // `bashTool`, no `BashOutput`/`KillBash` exposed to the model.
+  if (opts.enableBackgroundBash) {
+    const bgRegistry = createBackgroundBashRegistry({
+      ...(opts.abortController ? { abortSignal: opts.abortController.signal } : {}),
+    });
+    tools.register(
+      createBashTool({
+        ...(opts.abortController ? { signal: opts.abortController.signal } : {}),
+        background: bgRegistry,
+      }),
+    );
+    tools.register(createBashOutputTool(bgRegistry));
+    tools.register(createKillBashTool(bgRegistry));
+  } else {
+    tools.register(bashTool);
+  }
   // Read/Write/Edit/WebFetch/Glob/Grep — claude SDK parity builtins. Same
   // names + schemas so the model's pretrained instinct calls them with the
   // right shape, and prompt cache keys line up across agents when a topic
