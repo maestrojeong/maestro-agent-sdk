@@ -300,6 +300,39 @@ const { sessionId: forkId } = forkSessionAt({
 > `ToolHandler` directly — clawgram, for example, exposes the
 > Anthropic-native `web_search_20250305` via the provider call when the
 > active provider is Claude.
+>
+> **`maxTokens` wire-through + model-aware default (v0.1.21).** Prior
+> versions exposed `maxIterations` on `AgentQueryOptions` but not
+> `maxTokens`, and `AIAgent` silently fell back to a flat 4096 on every
+> call. Long outputs got truncated mid-string and Write/Edit tool calls
+> generating large file bodies failed to parse their tool_input JSON
+> (the truncation landed inside an unclosed string). Two fixes ship
+> together:
+>
+> 1. **`AgentQueryOptions.maxTokens`** — caller surface for the
+>    per-call output ceiling. Wired through `provider.ts` → `AIAgent`
+>    → provider request body for both Anthropic and DeepSeek.
+> 2. **Model-catalog default** — when the caller omits `maxTokens`,
+>    `AIAgent` resolves the default through
+>    `getNativeMaxOutputTokens(model)`: Sonnet 4.6 → 64K, Opus 4.7 →
+>    128K, Haiku 4.5 → 64K, DeepSeek V4-Pro → 64K, V4-Flash → 32K,
+>    unknown model → 32K. Claude entries match Anthropic's native cap
+>    (same behavior as `@anthropic-ai/claude-agent-sdk`); DeepSeek
+>    entries are conservative because the V4 native ceiling (384K)
+>    would let one runaway turn rack up cost / wall time before the
+>    iteration cap notices — Pro is pinned to 64K so it lines up with
+>    the Claude Sonnet/Haiku reference point (a topic switching
+>    providers sees the same default ceiling), Flash sits one tier
+>    lower at 32K because the latency-tier user intent is "snappy
+>    first answer, escalate to Pro if you need length". Callers
+>    wanting the full 384K still get it via the explicit `maxTokens`
+>    override.
+>
+> Migration: zero-config callers see a higher implicit ceiling
+> (4096 → 16K-128K depending on model). Cost per call only goes up
+> on responses that previously truncated at 4K — those are the cases
+> the fix targets. Callers that want the old behavior can pin
+> `maxTokens: 4096` explicitly.
 
 More runnable scripts live under [`examples/`](./examples) — Anthropic, DeepSeek,
 a custom-tool walkthrough, and a `skill_write` demo.
@@ -313,6 +346,7 @@ Per-call options on `AgentQueryOptions`:
 | `cwd` | ✓ | Workspace root. Drives `.skills/` location, rollout `_meta`, and the `mkdir` invariant. |
 | `effort` | — | Reasoning depth + working-mode persona (`low`/`medium`/`high`/`xhigh`/`max`). See the effort table above. |
 | `maxIterations` | — | Tool-iteration cap. Omit for `DEFAULT_MAX_ITERATIONS = 90`. Decoupled from `effort` as of v0.1.16 — controls turn budget, not reasoning depth. |
+| `maxTokens` | — | Per-call `max_tokens` ceiling on assistant output. Omit for the model-catalog default (`getNativeMaxOutputTokens`): sonnet=64K, opus=128K, deepseek-pro=64K, deepseek-flash=32K, unknown=32K. v0.1.21+. |
 | `skillKey` | — | Named skill profile within `<cwd>/.skills/`. Omit for `default`. |
 | `allowedSkills` | — | Per-call name whitelist applied before curation. |
 | `sessionMetadata` | — | Opaque host bag round-tripped via the rollout `_meta` header. |

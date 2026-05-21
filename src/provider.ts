@@ -479,6 +479,17 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
     // gives it room to dig.
     maxIterations: maxIter,
     buildIterReminder,
+    // v0.1.21+: caller-supplied per-call `maxTokens` rides through to the
+    // provider request body. Omitting it lets `AIAgent` fall back to the
+    // model-catalog default (`getNativeMaxOutputTokens(resolvedModel)`):
+    // sonnet=64K, opus=128K, deepseek-pro=32K, deepseek-flash=16K.
+    //
+    // Prior versions silently capped every call at 4096 because this
+    // field never traveled from `AgentQueryOptions` into `AIAgent` — long
+    // outputs got mid-string truncated and Write/Edit tool input JSON
+    // failed to parse. See the v0.1.21 changelog entry for the full
+    // bug write-up.
+    ...(opts.maxTokens !== undefined ? { maxTokens: opts.maxTokens } : {}),
     ...(thinkingBudget ? { thinkingBudget } : {}),
     ...(resolvedEffort ? { effort: resolvedEffort } : {}),
     ...(opts.abortController?.signal ? { abortSignal: opts.abortController.signal } : {}),
@@ -796,10 +807,7 @@ export function providerForModel(resolvedModel: string): Provider {
  * Kept as a tiny helper rather than inlining so tests can exercise the
  * priority rule without spinning up the full maestroProvider pipeline.
  */
-export function pickHigherBudget(
-  a: number | undefined,
-  b: number | undefined,
-): number | undefined {
+export function pickHigherBudget(a: number | undefined, b: number | undefined): number | undefined {
   if (a === undefined) return b;
   if (b === undefined) return a;
   return Math.max(a, b);

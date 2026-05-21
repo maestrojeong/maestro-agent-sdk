@@ -217,6 +217,32 @@ export interface AgentQueryOptions {
    * but stay snappy).
    */
   maxIterations?: number;
+  /**
+   * Per-API-call `max_tokens` ceiling for the assistant's output. Wired
+   * through to the provider's request body (`max_tokens` on Anthropic,
+   * `max_tokens` on the OpenAI-compatible DeepSeek endpoint).
+   *
+   * Omit to inherit the per-model default from the registry catalog
+   * (`getNativeMaxOutputTokens`) — Sonnet 4.6 → 64K, Opus 4.7 → 128K,
+   * DeepSeek V4-Pro → 32K, V4-Flash → 16K, unknown model → 32K. Pass an
+   * explicit number to clamp tighter (latency-sensitive surfaces, cost
+   * caps) or to push higher up to the model's native ceiling (DeepSeek V4
+   * supports up to 384K natively; the catalog default is conservative).
+   *
+   * v0.1.21+: prior versions silently fell back to a flat 4096 when the
+   * caller didn't pass this through, which truncated long-form outputs
+   * mid-string and broke tool-input JSON parsing on Write/Edit calls
+   * generating large file bodies. The catalog-based default removes that
+   * footgun — the catalog ships realistic native ceilings, so callers no
+   * longer need to remember to pass `maxTokens` just to avoid truncation.
+   *
+   * Note on extended thinking: when `effort: "high" | "xhigh" | "max"`
+   * activates Anthropic thinking, the provider auto-bumps `max_tokens`
+   * past `thinking.budget_tokens + 1024` (Anthropic API requirement). The
+   * caller's `maxTokens` is the floor — the SDK raises it as needed and
+   * never silently shrinks it.
+   */
+  maxTokens?: number;
   mcpEnabled?: string[] | null;
   mcpExtra?: Record<string, unknown>;
   isCron?: boolean;
