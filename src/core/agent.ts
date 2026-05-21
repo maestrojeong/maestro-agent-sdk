@@ -1,4 +1,5 @@
 import type { Provider } from "@/providers/base";
+import { getNativeMaxOutputTokens } from "@/registry";
 import type { ToolRegistry } from "@/tools/registry";
 import type { EffortLevel, LlmPostHook, LlmPreHook } from "@/types";
 
@@ -20,7 +21,22 @@ export interface AIAgentConfig {
   systemPrompt: string;
   /** Hard cap on tool-calling iterations. Default 90 to match upstream. */
   maxIterations?: number;
-  /** Per-API-call max output tokens. Default 4096. */
+  /**
+   * Per-API-call max output tokens.
+   *
+   * Omitted → resolved via `getNativeMaxOutputTokens(model)` against the
+   * registry catalog (sonnet → 64K, opus → 128K, deepseek-v4-pro → 32K,
+   * deepseek-v4-flash → 16K, unknown → 32K).
+   *
+   * v0.1.21+: prior versions defaulted to a flat 4096, which silently
+   * truncated long-form outputs and broke tool-input JSON for Write/Edit
+   * generating large file bodies. The catalog-based default removes that
+   * footgun. Pass an explicit number to clamp tighter or push higher.
+   *
+   * Extended-thinking calls auto-raise this past
+   * `thinking.budget_tokens + 1024` inside the Anthropic adapter — the
+   * configured value is the floor, never silently shrunk.
+   */
   maxTokens?: number;
   /**
    * Extended thinking budget in tokens. When > 0 the Anthropic provider sends
@@ -85,7 +101,10 @@ export class AIAgent {
       model: config.model,
       systemPrompt: config.systemPrompt,
       maxIterations: config.maxIterations ?? 90,
-      maxTokens: config.maxTokens ?? 4096,
+      // v0.1.21+: model-aware default replaces the flat 4096 fallback. See
+      // `getNativeMaxOutputTokens` for the per-model catalog and the
+      // `AIAgentConfig.maxTokens` docstring for the rationale.
+      maxTokens: config.maxTokens ?? getNativeMaxOutputTokens(config.model),
       ...(config.thinkingBudget && config.thinkingBudget > 0
         ? { thinkingBudget: config.thinkingBudget }
         : {}),

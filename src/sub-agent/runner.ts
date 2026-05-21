@@ -10,6 +10,7 @@ import { logger } from "@/platform/logger";
 import { providerForModel } from "@/provider";
 import { effortToThinkingBudget } from "@/providers/anthropic";
 import type { Provider, ProviderContentBlock, ProviderMessage } from "@/providers/base";
+import { getNativeMaxOutputTokens } from "@/registry";
 import { deleteMaestroSession } from "@/session-store";
 import { loadSkillsCached, type SkillEntry } from "@/skills/loader";
 import { createBashTool } from "@/tools/builtin/bash";
@@ -88,16 +89,31 @@ export interface RunSubAgentResult {
   aborted: boolean;
 }
 
-/** Hard cap on the sub-agent's per-API-call max output tokens. Defaults
- *  to 4096 (same as parent's default in AIAgent.config). Env-override for
- *  large delegated reports. */
-function resolveMaxTokens(): number {
+/**
+ * Hard cap on the sub-agent's per-API-call max output tokens.
+ *
+ * Resolution order (v0.1.21+):
+ *   1. `MAESTRO_SUBAGENT_MAX_TOKENS` env var — operator escape hatch for
+ *      a globally-larger or globally-smaller cap without touching code.
+ *      Parsed as a positive integer; non-numeric or non-positive values
+ *      are ignored.
+ *   2. `getNativeMaxOutputTokens(parentModel)` — the registry catalog
+ *      default (sonnet=64K, opus=128K, deepseek-pro=32K, deepseek-flash=16K,
+ *      unknown=32K). Matches the parent's default in `AIAgent`.
+ *
+ * The previous v0.1.20 implementation returned 4096 when the env var was
+ * unset, which silently truncated long delegated reports the same way the
+ * top-level loop did. Switching to the catalog mirrors the parent's
+ * v0.1.21 default so a sub-agent never has a lower output ceiling than
+ * its parent simply because it didn't read the env var.
+ */
+function resolveMaxTokens(parentModel: string): number {
   const env = process.env.MAESTRO_SUBAGENT_MAX_TOKENS;
   if (env) {
     const n = Number.parseInt(env, 10);
     if (Number.isFinite(n) && n > 0) return n;
   }
-  return 4096;
+  return getNativeMaxOutputTokens(parentModel);
 }
 
 /** Where the sub-agent overlay prompts live on disk. Co-located with the
@@ -216,7 +232,7 @@ export async function runSubAgent(opts: RunSubAgentOptions): Promise<RunSubAgent
   );
   const overlay = loadOverlay(opts.subagentType);
   const systemPrompt = `${opts.parentSystemPrompt}\n\n${overlay}`;
-  const maxTokens = resolveMaxTokens();
+  const maxTokens = resolveMaxTokens(opts.parentModel);
   const thinkingBudget = opts.parentEffort ? effortToThinkingBudget(opts.parentEffort) : undefined;
 
   // Sub-agent's user message follows the parent contract: prompt + own
