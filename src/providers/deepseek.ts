@@ -240,7 +240,7 @@ export class DeepseekProvider implements Provider {
     const indexes = [...toolAccum.keys()].sort((a, b) => a - b);
     for (const idx of indexes) {
       const entry = toolAccum.get(idx);
-      if (!entry || entry.id.length === 0) continue;
+      if (!entry || entry.id.length === 0 || entry.name.length === 0) continue;
       if (!entry.startEmitted) {
         yield { type: "tool_use_start", id: entry.id, name: entry.name };
         if (entry.args.length > 0) {
