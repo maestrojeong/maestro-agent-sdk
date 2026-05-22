@@ -98,12 +98,12 @@ export function extractChatPairs(
         break;
       case "tool_use": {
         const u = ev as { name: string; input: Record<string, unknown> };
-        toolBuffer.push(`[Tool: ${u.name} ${truncate(JSON.stringify(u.input), 200)}]`);
+        toolBuffer.push(`<!-- Tool: ${u.name} ${truncate(JSON.stringify(u.input), 200)} -->`);
         break;
       }
       case "tool_result": {
         const u = ev as { content: string };
-        toolBuffer.push(`[Tool result: ${truncate(u.content, 200)}]`);
+        toolBuffer.push(`<!-- Tool result: ${truncate(u.content, 200)} -->`);
         break;
       }
       case "error": {
