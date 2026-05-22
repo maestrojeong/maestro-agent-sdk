@@ -97,16 +97,66 @@ export interface ToolHandler {
   execute(input: Record<string, unknown>): Promise<ToolExecuteResult>;
 }
 
+/**
+ * v0.1.22+: per-registration options. Currently the only knob is `deferred`
+ * but the shape is open so future extensions (per-tool max-iter cost,
+ * cost class, etc.) can land non-breaking.
+ */
+export interface RegisterOptions {
+  /**
+   * When true, the tool is registered but its schema is NOT wired into the
+   * `schemas()` slice the loop sends to the provider until something calls
+   * `markActive(name)`. The intended activator is the `ToolSearch` built-in
+   * (model calls it with a name or keyword → registry promotes the match
+   * to active).
+   *
+   * Two reasons a tool ships deferred:
+   *   1. Token budget — a topic with many MCP servers can easily declare
+   *      200+ tools; sending every schema every turn would burn 50K+
+   *      input tokens before the conversation starts.
+   *   2. Selection accuracy — the model picks better tools when the menu
+   *      is short; deferred tools live in the system-reminder catalog (one
+   *      line per tool: name + 60-char summary) so the model still knows
+   *      they exist and can fetch the schema on demand via ToolSearch.
+   *
+   * Default false — pre-v0.1.22 callers see no behavior change.
+   */
+  deferred?: boolean;
+}
+
 export class ToolRegistry {
   private readonly tools = new Map<string, ToolHandler>();
   private readonly hooks: HookRegistration[] = [];
+  /**
+   * v0.1.22+: names of tools registered with `{deferred:true}`. Membership in
+   * this set means the schema is hidden from `schemas()` until either:
+   *   - `markActive(name)` is called (typically from the ToolSearch tool), OR
+   *   - `restoreActive(names[])` rehydrates a previously-saved active set
+   *     after a session resume.
+   *
+   * Once a name is "promoted" (moved from `deferredNames` → `activeDeferred`)
+   * it stays active for the rest of the loop's lifetime; persisting +
+   * restoring is handled at the session-store layer so a multi-turn
+   * conversation doesn't have to re-search the same tools every resume.
+   */
+  private readonly deferredNames = new Set<string>();
+  /**
+   * Names of deferred tools that have been activated this loop. Distinct from
+   * `deferredNames` so the catalog rendering (system-reminder) can still
+   * surface the still-deferred subset while `schemas()` exposes the active
+   * subset on the wire.
+   */
+  private readonly activeDeferred = new Set<string>();
 
-  register(handler: ToolHandler): void {
+  register(handler: ToolHandler, options?: RegisterOptions): void {
     const name = handler.schema.name;
     if (this.tools.has(name)) {
       throw new Error(`Maestro ToolRegistry: tool '${name}' is already registered`);
     }
     this.tools.set(name, handler);
+    if (options?.deferred) {
+      this.deferredNames.add(name);
+    }
   }
 
   /**
@@ -129,8 +179,102 @@ export class ToolRegistry {
     return this.tools.has(name);
   }
 
+  /**
+   * Tool schemas the loop should send on this turn's wire body. v0.1.22+:
+   * deferred tools are excluded unless `markActive(name)` (or
+   * `restoreActive([…])`) has already promoted them. Always-loaded tools
+   * (`register(t)` without `{deferred:true}`) are unconditionally included.
+   *
+   * Ordering: always-loaded first, then active-deferred — keeps the
+   * always-loaded prefix byte-stable across turns regardless of which
+   * deferred tools the model has activated, so Anthropic's prompt cache
+   * doesn't churn every time the model promotes a new tool.
+   */
   schemas(): ProviderToolSchema[] {
-    return Array.from(this.tools.values()).map((h) => h.schema);
+    const out: ProviderToolSchema[] = [];
+    for (const [name, h] of this.tools) {
+      if (this.deferredNames.has(name) && !this.activeDeferred.has(name)) continue;
+      out.push(h.schema);
+    }
+    return out;
+  }
+
+  /**
+   * Promote a deferred tool to active so its schema starts riding the wire.
+   * Idempotent — calling on an already-active or unknown name is a no-op.
+   * Returns true on a state change (deferred → active), false otherwise so
+   * the `ToolSearch` tool can tell the model exactly which selections took
+   * effect vs were already active / unknown.
+   */
+  markActive(name: string): boolean {
+    if (!this.deferredNames.has(name)) return false;
+    if (this.activeDeferred.has(name)) return false;
+    this.activeDeferred.add(name);
+    return true;
+  }
+
+  /**
+   * The deferred tools the model can still discover this turn. The result
+   * is `{name, summary}` pairs sized for the system-reminder catalog —
+   * `summary` is the first 80 chars of the schema description, clipped on
+   * a word boundary when possible. Activated tools are excluded (they're
+   * already visible via `schemas()`) so the catalog only ever advertises
+   * what hasn't been pulled in yet.
+   */
+  deferredCatalog(): Array<{ name: string; summary: string }> {
+    const out: Array<{ name: string; summary: string }> = [];
+    for (const name of this.deferredNames) {
+      if (this.activeDeferred.has(name)) continue;
+      const handler = this.tools.get(name);
+      if (!handler) continue;
+      out.push({ name, summary: clipSummary(handler.schema.description) });
+    }
+    return out;
+  }
+
+  /**
+   * Look up a deferred tool's full schema by name. Used by `ToolSearch` to
+   * render the activated tool's schema back to the model in the same turn
+   * (Claude-Code-style — once selected, the model sees the schema in the
+   * tool result and can call it next turn).
+   *
+   * Returns `null` for unknown names so callers can render a "not found"
+   * line per requested name instead of throwing.
+   */
+  schemaFor(name: string): ProviderToolSchema | null {
+    return this.tools.get(name)?.schema ?? null;
+  }
+
+  /** Snapshot of currently-active deferred-tool names (for session-store
+   *  persistence). Stable iteration order so JSONL diffs stay clean. */
+  serializeActive(): string[] {
+    return Array.from(this.activeDeferred).sort();
+  }
+
+  /**
+   * Rehydrate the active-deferred set after a session resume. Names that
+   * aren't currently registered as deferred are silently skipped — that
+   * covers the legitimate cases where the host shut down an MCP server
+   * between turns or renamed a tool. Idempotent: repeated calls converge
+   * to the supplied set's intersection with `deferredNames`.
+   */
+  restoreActive(names: readonly string[]): void {
+    for (const name of names) {
+      if (this.deferredNames.has(name)) this.activeDeferred.add(name);
+    }
+  }
+
+  /** True when the tool is registered AND currently deferred (not yet
+   *  activated). Exported so tests and ToolSearch can branch cleanly. */
+  isDeferred(name: string): boolean {
+    return this.deferredNames.has(name) && !this.activeDeferred.has(name);
+  }
+
+  /** True when the registry has any deferred tools at all (active or not).
+   *  Used by the system-reminder builder to decide whether to render the
+   *  deferred-catalog section. */
+  hasDeferred(): boolean {
+    return this.deferredNames.size > 0;
   }
 
   /**
@@ -226,6 +370,31 @@ export class ToolRegistry {
  * structured payload themselves once we expose the array to post hooks
  * in a future iteration.
  */
+/**
+ * Clip a tool description to a short one-line summary for the deferred-
+ * catalog block inside `<system-reminder>`. v0.1.22+.
+ *
+ * Target length: 80 chars. We prefer a word boundary so the truncation
+ * doesn't fall mid-token (the line is what the model uses to decide
+ * whether to ToolSearch the full schema; a clean ellipsis reads better
+ * than a sliced word).
+ *
+ * Newlines collapse to spaces — tool descriptions sometimes contain
+ * multi-line docblocks and we want every catalog entry to be exactly
+ * one line.
+ */
+function clipSummary(description: string): string {
+  const flat = description.replace(/\s+/g, " ").trim();
+  if (flat.length <= 80) return flat;
+  // Find the last word boundary inside the budget so the truncation lands
+  // on a space, not a token. Fall back to a hard slice if no space exists
+  // inside the budget (rare — tool descriptions are written prose).
+  const slice = flat.slice(0, 80);
+  const lastSpace = slice.lastIndexOf(" ");
+  if (lastSpace > 40) return `${slice.slice(0, lastSpace)}…`;
+  return `${slice}…`;
+}
+
 function previewOfBlocks(blocks: MaestroToolResultBlock[]): string {
   return blocks
     .map((b) => {

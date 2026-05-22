@@ -323,4 +323,31 @@ export interface AgentQueryOptions {
    * `maestroProvider` — this flag is just the one-knob convenience.
    */
   enableBackgroundBash?: boolean;
+  /**
+   * v0.1.22+: Claude-Code-style deferred tool catalog + `ToolSearch` built-in.
+   *
+   * When `true`, every MCP tool spawned for this call is registered as
+   * **deferred** — its schema does NOT ride the wire on each turn. The
+   * model sees a compact `name → 80-char summary` catalog inside the
+   * `<system-reminder>` block and promotes the tools it actually needs
+   * by calling `ToolSearch("select:Name1,Name2")` (exact-name selection)
+   * or `ToolSearch("keyword")` (fuzzy match against name + description).
+   * Promoted tools become callable from the next turn onward, and the
+   * active set survives session resume via the rollout `_meta` header.
+   *
+   * Built-in tools (Read/Write/Edit/Bash/Glob/Grep/Task family/skills) are
+   * **never** deferred — they always ride the wire. The flag only controls
+   * the MCP path.
+   *
+   * Token economics: a topic with 50 MCP tools costs ~25K tokens of full
+   * schema every turn vs ~1.5K tokens of catalog. The trade is one extra
+   * turn (the ToolSearch call) the first time a deferred tool is needed.
+   * On long sessions and large MCP setups the savings dominate; on short
+   * sessions with few MCP servers the overhead isn't worth it — hence the
+   * opt-in flag. Default false preserves pre-v0.1.22 behavior exactly.
+   *
+   * The `ToolSearch` built-in is itself always-loaded when this flag is
+   * set (it must be callable for the model to discover anything else).
+   */
+  enableToolSearch?: boolean;
 }

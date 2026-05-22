@@ -107,12 +107,21 @@ export async function startMcpPool(
  * Maestro-level abort cancels in-flight JSON-RPC requests instead of leaving
  * them blocked on a dead/slow server. The cached client itself stays alive —
  * only the in-flight RPC is cancelled, so the next turn can reuse it.
+ *
+ * v0.1.22+: `deferred` flag (default false). When true, every registered
+ * MCP tool ships as deferred — its schema stays out of the wire body until
+ * the model promotes it via `ToolSearch`. Used by `maestroProvider` when
+ * `AgentQueryOptions.enableToolSearch` is set, so a topic with many MCP
+ * servers doesn't burn 10K+ tokens declaring tools the model might never
+ * call. Built-in tools are unaffected — they always ride the wire.
  */
 export function registerMcpTools(
   registry: ToolRegistry,
   pool: MaestroMcpPool,
   abortSignal?: AbortSignal,
+  options?: { deferred?: boolean },
 ): void {
+  const deferred = options?.deferred === true;
   const byName = new Map(pool.clients.map((c) => [c.name, c]));
   for (const t of pool.tools) {
     if (registry.has(t.schema.name)) {
@@ -134,6 +143,6 @@ export function registerMcpTools(
         return client.callTool(t.originalName, input, abortSignal);
       },
     };
-    registry.register(handler);
+    registry.register(handler, { deferred });
   }
 }

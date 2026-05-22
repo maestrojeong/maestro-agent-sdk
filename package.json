@@ -1,6 +1,6 @@
 {
   "name": "maestro-agent-sdk",
-  "version": "0.1.21",
+  "version": "0.1.22",
   "description": "Embeddable, provider-agnostic TypeScript agent SDK — pluggable providers, built-in tools, skills, memory, and MCP.",
   "license": "MIT",
   "author": "Yeonwoo Jeong <aadd4020@gmail.com>",
