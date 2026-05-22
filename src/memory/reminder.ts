@@ -42,6 +42,19 @@ export interface SystemReminderContext {
    */
   tasks?: readonly TaskEntry[];
   /**
+   * v0.1.22+: deferred-tool catalog. When non-empty, the reminder renders a
+   * compact `name → summary` block so the model knows which tools exist
+   * without their full schemas on the wire. The model promotes any
+   * needed entries to active by calling `ToolSearch("select:Name1,Name2")`
+   * (or by keyword); active tools drop off this list automatically so the
+   * catalog only ever advertises what hasn't been pulled in yet.
+   *
+   * Token cost: roughly `tools.length × ~100 chars` per turn. A topic with
+   * 50 deferred MCP tools costs ~1.5K tokens of reminder vs ~25K tokens of
+   * full schema — order-of-magnitude savings, hence the indirection.
+   */
+  deferredTools?: ReadonlyArray<{ name: string; summary: string }>;
+  /**
    * Anything additional the caller wants to render verbatim. Each entry
    * becomes one line at the tail of the reminder. Caller owns formatting.
    */
@@ -83,6 +96,23 @@ export function buildSystemReminder(ctx: SystemReminderContext): string {
         "TaskUpdate(taskId, addBlockedBy/addBlocks) for dependencies. Only ONE " +
         "task may be in_progress at a time — setting another flips the prior one " +
         "back to pending.",
+    );
+  }
+
+  // v0.1.22+: deferred-tool catalog. Rendered AFTER the task list (which is
+  // the highest-signal block — what should I be working on?) but BEFORE
+  // caller extras (which carry the iter budget / wrap-up overlay — those
+  // need to be the last thing the model reads). Compact format keeps the
+  // per-turn token cost bounded even with 50+ deferred tools.
+  if (ctx.deferredTools && ctx.deferredTools.length > 0) {
+    lines.push(`Deferred tools (${ctx.deferredTools.length}):`);
+    for (const t of ctx.deferredTools) {
+      lines.push(`  - ${t.name}: ${t.summary}`);
+    }
+    lines.push(
+      'These tools\' schemas are NOT loaded yet. Call ToolSearch("select:Name1,Name2,...") ' +
+        'to activate exact tools by name, or ToolSearch("keyword") to fuzzy-match by ' +
+        "description. Activated tools become callable from the next turn.",
     );
   }
 

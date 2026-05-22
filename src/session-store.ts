@@ -118,6 +118,19 @@ export interface MaestroSessionMeta {
    *  endpoint, exclusive). Combined with `parentSessionId` it tells the
    *  host exactly where the branch point was. */
   forkedAtMessageIndex?: number;
+  /**
+   * v0.1.22+: names of deferred tools the model has promoted to active via
+   * `ToolSearch` within this session. Persisted so a subsequent resume can
+   * rehydrate the active set immediately — without this the model would
+   * have to ToolSearch the same tools again every turn-1 of every resume,
+   * burning an iteration for state the SDK already knows.
+   *
+   * Names that are no longer registered as deferred at restore time (host
+   * disabled the MCP server, renamed a tool) are silently dropped by
+   * `ToolRegistry.restoreActive`. Omitted from the meta header when empty
+   * to keep the line short for callers that don't use `enableToolSearch`.
+   */
+  activeDeferredTools?: string[];
 }
 
 /** Discriminator key — the first line of a v0.1.5+ rollout starts with this. */
@@ -217,6 +230,9 @@ export interface SaveSessionMetaInput {
   parentSessionId?: string;
   /** v0.1.18+: see `MaestroSessionMeta.forkedAtMessageIndex`. */
   forkedAtMessageIndex?: number;
+  /** v0.1.22+: see `MaestroSessionMeta.activeDeferredTools`. Passed by
+   *  `maestroProvider` on every save when `enableToolSearch` is on. */
+  activeDeferredTools?: string[];
 }
 
 /**
@@ -246,6 +262,21 @@ function buildMeta(sessionId: string, input: SaveSessionMetaInput): MaestroSessi
   if (parentSessionId !== undefined) meta.parentSessionId = parentSessionId;
   const forkedAt = input.forkedAtMessageIndex ?? existing?.forkedAtMessageIndex;
   if (forkedAt !== undefined) meta.forkedAtMessageIndex = forkedAt;
+  // v0.1.22+: persist the ToolSearch-activated set ONLY when the caller
+  // explicitly passes it. Without the explicit branch a save that omits
+  // `activeDeferredTools` would silently inherit the previous value
+  // even if the live registry had nothing active — that's wrong because
+  // the active set is loop-owned state (no MCP servers / no flag → no
+  // active tools should be persisted). When the caller passes `[]` we
+  // drop the field entirely so the next resume sees a clean slate;
+  // when they pass a populated array we record it.
+  if (input.activeDeferredTools !== undefined) {
+    if (input.activeDeferredTools.length > 0) {
+      meta.activeDeferredTools = [...input.activeDeferredTools];
+    }
+  } else if (existing?.activeDeferredTools && existing.activeDeferredTools.length > 0) {
+    meta.activeDeferredTools = existing.activeDeferredTools;
+  }
   return meta;
 }
 

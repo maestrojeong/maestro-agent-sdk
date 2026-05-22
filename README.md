@@ -333,6 +333,33 @@ const { sessionId: forkId } = forkSessionAt({
 > on responses that previously truncated at 4K — those are the cases
 > the fix targets. Callers that want the old behavior can pin
 > `maxTokens: 4096` explicitly.
+>
+> **ToolSearch + MCP auto-defer (v0.1.22).** Claude-Code-style two-tier
+> tool surface: built-in tools (Read/Write/Edit/Bash/Glob/Grep/Task/skills)
+> always ride the wire; MCP tools register as **deferred** when
+> `AgentQueryOptions.enableToolSearch` is set, and their schemas stay off
+> the wire until the model activates them. The system-reminder grows a
+> compact `name → 80-char summary` catalog of still-deferred tools; the
+> model promotes the ones it needs by calling
+> `ToolSearch("select:Name1,Name2")` (exact-name) or
+> `ToolSearch("keyword")` (fuzzy match against name + description).
+> Activated tools become callable from the next turn, and the active set
+> persists across resume via the rollout `_meta` header — a multi-turn
+> conversation doesn't re-promote the same tools every resume.
+>
+> Token economics: a topic with 50 deferred MCP tools spends ~1.5K
+> tokens/turn on the catalog vs ~25K tokens/turn on full schemas — order-
+> of-magnitude savings. The trade is one extra turn the first time a
+> deferred tool is needed (the `ToolSearch` call itself), which is
+> usually worth it on long sessions with large MCP setups. Pre-v0.1.22
+> callers opt out by leaving `enableToolSearch` unset (default false) —
+> behavior is byte-identical to v0.1.21.
+>
+> The `ToolSearch` built-in is always-loaded when the flag is set (it has
+> to be callable for the model to discover anything else) and itself
+> reuses the claude-SDK `<functions>{...}</functions>` response envelope
+> so the model's pretrained instincts for Claude-Code transcripts
+> transfer cleanly.
 
 More runnable scripts live under [`examples/`](./examples) — Anthropic, DeepSeek,
 a custom-tool walkthrough, and a `skill_write` demo.
@@ -347,6 +374,7 @@ Per-call options on `AgentQueryOptions`:
 | `effort` | — | Reasoning depth + working-mode persona (`low`/`medium`/`high`/`xhigh`/`max`). See the effort table above. |
 | `maxIterations` | — | Tool-iteration cap. Omit for `DEFAULT_MAX_ITERATIONS = 90`. Decoupled from `effort` as of v0.1.16 — controls turn budget, not reasoning depth. |
 | `maxTokens` | — | Per-call `max_tokens` ceiling on assistant output. Omit for the model-catalog default (`getNativeMaxOutputTokens`): sonnet=64K, opus=128K, deepseek-pro=64K, deepseek-flash=32K, unknown=32K. v0.1.21+. |
+| `enableToolSearch` | — | Claude-Code-style deferred tool catalog. When `true`, every MCP tool registers as deferred — schemas stay off the wire until the model promotes them via `ToolSearch("select:Name1,Name2")` or `ToolSearch("keyword")`. Active set persists across resume. Built-ins are never deferred. v0.1.22+. |
 | `skillKey` | — | Named skill profile within `<cwd>/.skills/`. Omit for `default`. |
 | `allowedSkills` | — | Per-call name whitelist applied before curation. |
 | `sessionMetadata` | — | Opaque host bag round-tripped via the rollout `_meta` header. |

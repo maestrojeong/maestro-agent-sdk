@@ -29,6 +29,7 @@ import { maestroRegistry } from "@/registry";
 import {
   isWellFormedMessage,
   loadMaestroSession,
+  loadMaestroSessionMeta,
   saveMaestroSession,
   trimToSafePrefix,
 } from "@/session-store";
@@ -56,6 +57,7 @@ import {
   createTaskListTool,
   createTaskUpdateTool,
 } from "@/tools/builtin/tasks";
+import { createToolSearchTool } from "@/tools/builtin/tool_search";
 import { webFetchTool } from "@/tools/builtin/web_fetch";
 import { createWriteTool } from "@/tools/builtin/write";
 import { getFileStateTracker } from "@/tools/file-state";
@@ -283,17 +285,33 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
       groupId: opts.groupId,
       agentKind: "maestro",
     });
-    registerMcpTools(tools, mcpPool, opts.abortController?.signal);
+    // v0.1.22+: when `enableToolSearch` is set, MCP tools register as
+    // deferred — their schemas stay off the wire until the model promotes
+    // them via `ToolSearch`. Built-ins are unaffected. See the
+    // `AgentQueryOptions.enableToolSearch` docstring for the rationale.
+    registerMcpTools(tools, mcpPool, opts.abortController?.signal, {
+      deferred: opts.enableToolSearch === true,
+    });
     logger.info(
       {
         agent: "maestro",
         mcpServerCount: mcpPool.clients.length,
         mcpToolCount: mcpPool.tools.length,
+        deferred: opts.enableToolSearch === true,
       },
       "maestroProvider: MCP pool ready",
     );
   } catch (e) {
     logger.warn({ err: e }, "maestroProvider: MCP pool start failed — continuing without MCP");
+  }
+
+  // v0.1.22+: register `ToolSearch` AFTER MCP tools so it has the full
+  // deferred catalog to discover. Always-loaded (never itself deferred) —
+  // the model has to be able to call it to discover anything else.
+  // Skipped when `enableToolSearch` is false so the historical wire body
+  // (no extra tool exposed to the model) stays byte-identical.
+  if (opts.enableToolSearch === true) {
+    tools.register(createToolSearchTool({ registry: tools }));
   }
 
   const requestedModel = opts.model ?? maestroRegistry.defaultModel;
@@ -348,6 +366,29 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
   const persisted = opts.sessionId ? loadMaestroSession(opts.sessionId) : null;
   const priorMessages: ProviderMessage[] = (persisted ?? []).filter(isWellFormedMessage);
 
+  // v0.1.22+: rehydrate the previously-activated deferred-tool set from the
+  // rollout `_meta` header. Tools that aren't currently registered as
+  // deferred (host disabled the MCP server, renamed a tool) are silently
+  // skipped by `restoreActive`. Skipped entirely when `enableToolSearch`
+  // is off — no deferred tools exist in the registry, so restoreActive
+  // would no-op anyway, but the early exit keeps the load path identical
+  // for v0.1.21- callers.
+  if (opts.sessionId && opts.enableToolSearch === true) {
+    const meta = loadMaestroSessionMeta(opts.sessionId);
+    const previouslyActive = meta?.activeDeferredTools;
+    if (previouslyActive && previouslyActive.length > 0) {
+      tools.restoreActive(previouslyActive);
+      logger.info(
+        {
+          sessionId: opts.sessionId,
+          restored: previouslyActive.length,
+          stillAvailable: tools.serializeActive().length,
+        },
+        "maestroProvider: restored ToolSearch active set from session meta",
+      );
+    }
+  }
+
   // Attach a `<system-reminder>` text block AFTER the user prompt on every
   // new turn. Two reasons this lives at push time rather than on-wire:
   //   1. Anthropic's automatic prompt cache breaks at the first byte
@@ -375,9 +416,16 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
     const extras: string[] = [iterationBudgetLine(iterationsRemaining, maxIter)];
     const overlay = wrapUpOverlayLine(iterationsRemaining, maxIter);
     if (overlay) extras.push(overlay);
+    // v0.1.22+: deferred-tool catalog. Recomputed every turn so any tool the
+    // model promoted via ToolSearch last turn falls off the list (the model
+    // no longer needs to be reminded a tool exists once it can call it
+    // directly). Skipped when no deferred tools — keeps the reminder byte-
+    // identical to v0.1.21 for callers who don't opt into enableToolSearch.
+    const deferredTools = tools.hasDeferred() ? tools.deferredCatalog() : undefined;
     return buildSystemReminder({
       sessionId,
       tasks: taskStore.list(),
+      ...(deferredTools !== undefined ? { deferredTools } : {}),
       extras,
     });
   };
@@ -573,12 +621,19 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
         // userId, and any host-supplied `sessionMetadata`. The session-store
         // preserves `createdAt` from any prior write so subsequent saves
         // don't reset the "first write" timestamp.
+        // v0.1.22+: persist the ToolSearch-activated set so the next resume
+        // doesn't have to re-promote the same tools. Only included when the
+        // caller enabled the flag — otherwise the field stays absent in the
+        // meta header, preserving the v0.1.21 byte-shape for non-opt-in
+        // callers (one less line in the JSONL diff per save).
+        const activeDeferred = opts.enableToolSearch === true ? tools.serializeActive() : undefined;
         saveMaestroSession(sessionId, safePrefix, {
           cwd: opts.cwd,
           skillsDir,
           ...(opts.skillKey !== undefined ? { skillKey: opts.skillKey } : {}),
           ...(opts.userId !== undefined ? { userId: opts.userId } : {}),
           ...(opts.sessionMetadata !== undefined ? { metadata: opts.sessionMetadata } : {}),
+          ...(activeDeferred !== undefined ? { activeDeferredTools: activeDeferred } : {}),
         });
         if (!drained && safePrefix.length < messages.length) {
           logger.info(
