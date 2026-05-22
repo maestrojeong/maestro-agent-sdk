@@ -1,5 +1,4 @@
 import type {
-  MaestroImageSource,
   MaestroToolResultBlock,
   Provider,
   ProviderCompleteOptions,
@@ -494,8 +493,15 @@ export function translateMessagesToOpenAI(
         if (block.type === "text") {
           userParts.push({ type: "text", text: block.text });
         } else if (block.type === "image") {
-          const url = imageBlockToDataUrl(block.source);
-          if (url) userParts.push({ type: "image_url", image_url: { url } });
+          // DeepSeek V4 text-only endpoints reject `image_url` parts. Instead
+          // of converting to an OpenAI image_url (which triggers 400 on non-
+          // vision models), we inject a text placeholder so the model knows
+          // an image was attached. Callers who need vision should pick a
+          // vision-capable model or extract text via Read/OCR first.
+          userParts.push({
+            type: "text",
+            text: `[Image attached — not visible to DeepSeek; describe it first or use a vision-capable model.]`,
+          });
         } else if (block.type === "document") {
           // DeepSeek/OpenAI Vision doesn't accept native PDF blocks; the
           // closest path is "extract text and inject as a text part". The
@@ -568,21 +574,6 @@ export function translateMessagesToOpenAI(
 }
 
 /**
- * Convert a `MaestroImageSource` into a single OpenAI-style `image_url`
- * string. Base64 sources become `data:<media_type>;base64,<bytes>`; URL
- * sources pass through. Returns `null` when the source is malformed (no
- * data + no url) so the caller can skip without injecting an empty part.
- */
-function imageBlockToDataUrl(src: MaestroImageSource): string | null {
-  if (src.type === "url" && src.url) return src.url;
-  if (src.type === "base64" && src.data) {
-    const mt = src.media_type ?? "application/octet-stream";
-    return `data:${mt};base64,${src.data}`;
-  }
-  return null;
-}
-
-/**
  * If a user message ends up as a single text part, collapse to a plain
  * string — keeps the wire shape identical to v0.1.17 for the (overwhelming)
  * text-only case and avoids tripping any strict server-side validator that
@@ -617,8 +608,12 @@ function toolResultToOpenAI(
     if (b.type === "text") {
       parts.push({ type: "text", text: b.text });
     } else if (b.type === "image") {
-      const url = imageBlockToDataUrl(b.source);
-      if (url) parts.push({ type: "image_url", image_url: { url } });
+      // Same rationale as user-message image handling — DeepSeek text-only
+      // endpoints reject `image_url` parts. Convert to text placeholder.
+      parts.push({
+        type: "text",
+        text: `[Image attached — not visible to DeepSeek; describe it first or use a vision-capable model.]`,
+      });
     } else if (b.type === "document") {
       const bytes = b.source.data ? Math.floor((b.source.data.length * 3) / 4) : 0;
       parts.push({

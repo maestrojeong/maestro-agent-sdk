@@ -593,13 +593,13 @@ describe("DeepseekProvider.stream (mocked SSE)", () => {
 
 // ─── v0.1.18: multimodal translation ─────────────────────────────────────
 //
-// User-message-level image blocks become `image_url` content parts; PDF
-// (document) blocks become a `[document …]` text placeholder because
-// DeepSeek can't view PDFs natively. tool_result blocks carrying image
-// blocks become OpenAI-style multimodal `tool` content parts.
+// v0.1.23+: image blocks (both user-message and tool_result) become text
+// placeholders instead of `image_url` parts — DeepSeek's text-only endpoints
+// reject `image_url` with a 400. PDF (document) blocks also become text
+// placeholders (unchanged from v0.1.18).
 
 describe("DeepSeek multimodal translation (v0.1.18+)", () => {
-  test("user-message image → image_url content part (data URI)", () => {
+  test("user-message image → text placeholder (DeepSeek rejects image_url)", () => {
     const messages: ProviderMessage[] = [
       {
         role: "user",
@@ -617,19 +617,17 @@ describe("DeepSeek multimodal translation (v0.1.18+)", () => {
       },
     ];
     const out = translateMessagesToOpenAI("", messages);
-    // One multimodal user message — text + image_url, in source order.
-    expect(out).toHaveLength(1);
-    const parts = partsOf(out[0]);
-    expect(parts).toEqual([
-      { type: "text", text: "what is in this picture?" },
-      {
-        type: "image_url",
-        image_url: { url: "data:image/png;base64,iVBORw0KGgo=" },
-      },
-    ]);
+    // Two text blocks stay as array — condenseUserParts only collapses a
+    // single text part (two parts = array retained).
+    expect(Array.isArray(out[0].content)).toBe(true);
+    const textParts = out[0].content as Array<{ type: string; text?: string }>;
+    expect(textParts).toHaveLength(2);
+    expect(textParts[0]).toEqual({ type: "text", text: "what is in this picture?" });
+    expect(textParts[1].text).toContain("Image attached");
+    expect(textParts[1].text).toContain("not visible to DeepSeek");
   });
 
-  test("user-message URL image → image_url passthrough", () => {
+  test("user-message URL image → text placeholder", () => {
     const messages: ProviderMessage[] = [
       {
         role: "user",
@@ -642,13 +640,10 @@ describe("DeepSeek multimodal translation (v0.1.18+)", () => {
       },
     ];
     const out = translateMessagesToOpenAI("", messages);
-    const parts = partsOf(out[0]);
-    expect(parts).toEqual([
-      {
-        type: "image_url",
-        image_url: { url: "https://example.com/img.jpg" },
-      },
-    ]);
+    // Single text content collapses to a string (condenseUserParts).
+    expect(typeof out[0].content).toBe("string");
+    expect(out[0].content).toContain("Image attached");
+    expect(out[0].content).toContain("not visible to DeepSeek");
   });
 
   test("user-message PDF document → text placeholder (DeepSeek can't view PDF)", () => {
@@ -675,7 +670,7 @@ describe("DeepSeek multimodal translation (v0.1.18+)", () => {
     expect(out[0].content).toContain("not visible to DeepSeek");
   });
 
-  test("tool_result with image block → tool role with multimodal parts", () => {
+  test("tool_result with image block → text placeholders collapse to string", () => {
     const toolResult: MaestroToolResultBlock[] = [
       { type: "text", text: "screenshot loaded" },
       {
@@ -700,19 +695,14 @@ describe("DeepSeek multimodal translation (v0.1.18+)", () => {
       },
     ];
     const out = translateMessagesToOpenAI("", messages);
-    // One tool message — no surrounding user message because the input
-    // had no separate text.
+    // One tool message — all-text parts collapse to string.
     expect(out).toHaveLength(1);
     expect(out[0].role).toBe("tool");
     expect(out[0].tool_call_id).toBe("tu_1");
-    const parts = partsOf(out[0]);
-    expect(parts).toEqual([
-      { type: "text", text: "screenshot loaded" },
-      {
-        type: "image_url",
-        image_url: { url: "data:image/jpeg;base64,/9j/4AAQ" },
-      },
-    ]);
+    expect(typeof out[0].content).toBe("string");
+    expect(out[0].content).toContain("screenshot loaded");
+    expect(out[0].content).toContain("Image attached");
+    expect(out[0].content).toContain("not visible to DeepSeek");
   });
 
   test("tool_result with text-only structured array collapses to string", () => {
