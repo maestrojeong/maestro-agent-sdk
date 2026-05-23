@@ -59,6 +59,7 @@ import {
 } from "@/tools/builtin/tasks";
 import { createToolSearchTool } from "@/tools/builtin/tool_search";
 import { webFetchTool } from "@/tools/builtin/web_fetch";
+import { askUserQuestionTool } from "@/tools/builtin/ask_user_question";
 import { createWriteTool } from "@/tools/builtin/write";
 import { getFileStateTracker } from "@/tools/file-state";
 import { ToolRegistry } from "@/tools/registry";
@@ -177,6 +178,8 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
   tools.register(globTool);
   tools.register(grepTool);
   tools.register(webFetchTool);
+  // AskUserQuestion — ask the user a question mid-task, get answer next turn
+  tools.register(askUserQuestionTool);
   // Task family — granular CRUD replacing the v0.1.x TodoWrite. All four
   // share the same per-session store; the system reminder renders the list
   // every turn so the model rarely needs to call TaskList explicitly.
