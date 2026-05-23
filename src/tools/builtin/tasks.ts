@@ -17,10 +17,10 @@ import type { ToolHandler } from "@/tools/registry";
  * `TaskGet` returns the full entry — including description, owner, and
  * metadata — which the reminder summary intentionally omits.
  *
- * Side-effecting tools (`TaskCreate`, `TaskUpdate`) are `parallelSafe: false`
- * because two concurrent writes would race on the in-progress sweep and
- * dependency-edge maintenance. Reads (`TaskList`, `TaskGet`) are safe to
- * parallelise — they snapshot the in-memory map.
+ * Side-effecting tools (`TaskCreate`, `TaskUpdate`, `TaskOutput`, `TaskStop`)
+ * are `parallelSafe: false` because two concurrent writes would race on the
+ * in-progress sweep and dependency-edge maintenance. Reads (`TaskList`,
+ * `TaskGet`) are safe to parallelise — they snapshot the in-memory map.
  */
 
 export interface TaskToolsOptions {
@@ -140,7 +140,7 @@ export function createTaskUpdateTool(opts: TaskToolsOptions): ToolHandler {
       description:
         "Update a single existing task by id. Any subset of fields can change " +
         "in one call (status, subject, description, activeForm, owner, " +
-        "metadata, dependency edges). Status transitions:\n" +
+        "metadata, output, dependency edges). Status transitions:\n" +
         "  - → 'in_progress': the store demotes any other in_progress task to " +
         "'pending' (1-in-progress invariant) and reports the demoted id back.\n" +
         "  - → 'deleted': permanent. The task disappears from TaskList output " +
@@ -170,6 +170,11 @@ export function createTaskUpdateTool(opts: TaskToolsOptions): ToolHandler {
             type: "object",
             description: "New metadata bag (overwrites previous).",
             additionalProperties: true,
+          },
+          output: {
+            type: "string",
+            description:
+              "Optional task result / output string. Useful with status='completed' to save the deliverable in one call.",
           },
           addBlockedBy: {
             type: "array",
@@ -217,6 +222,7 @@ export function createTaskUpdateTool(opts: TaskToolsOptions): ToolHandler {
       if (input.metadata && typeof input.metadata === "object" && !Array.isArray(input.metadata)) {
         update.metadata = input.metadata as Record<string, unknown>;
       }
+      if (typeof input.output === "string") update.output = input.output;
       if (Array.isArray(input.addBlockedBy)) {
         update.addBlockedBy = input.addBlockedBy.filter((x): x is string => typeof x === "string");
       }
@@ -322,6 +328,7 @@ export function createTaskGetTool(opts: TaskToolsOptions): ToolHandler {
  */
 export function createTaskOutputTool(store: TaskStore): ToolHandler {
   return {
+    parallelSafe: false,
     schema: {
       name: "TaskOutput",
       description:
@@ -342,13 +349,15 @@ export function createTaskOutputTool(store: TaskStore): ToolHandler {
       },
     },
     async execute(input: Record<string, unknown>) {
-      const id = String(input.taskId ?? "");
-      if (!id) return JSON.stringify({ error: "TaskOutput: taskId is required" });
-      const task = store.get(id);
-      if (!task) return JSON.stringify({ error: `TaskOutput: no task with id '${id}'` });
-      const output = typeof input.output === "string" ? input.output : "";
-      store.update(id, { output });
-      return JSON.stringify({ ok: true, taskId: id, output });
+      const taskId = typeof input.taskId === "string" ? input.taskId.trim() : "";
+      if (!taskId) return JSON.stringify({ error: "TaskOutput: taskId is required" });
+      const task = store.get(taskId);
+      if (!task) return JSON.stringify({ error: `TaskOutput: no task with id '${taskId}'` });
+      if (typeof input.output !== "string") {
+        return JSON.stringify({ error: "TaskOutput: output must be a string" });
+      }
+      store.update(taskId, { output: input.output });
+      return JSON.stringify({ ok: true, taskId, output: input.output });
     },
   };
 }
@@ -362,6 +371,7 @@ export function createTaskOutputTool(store: TaskStore): ToolHandler {
  */
 export function createTaskStopTool(store: TaskStore): ToolHandler {
   return {
+    parallelSafe: false,
     schema: {
       name: "TaskStop",
       description:
@@ -375,22 +385,30 @@ export function createTaskStopTool(store: TaskStore): ToolHandler {
           },
           reason: {
             type: "string" as const,
-            description: "Optional reason why the task is being stopped (e.g. blocked, timed out, needs more info).",
+            description:
+              "Optional reason why the task is being stopped (e.g. blocked, timed out, needs more info).",
           },
         },
         required: ["taskId"],
       },
     },
     async execute(input: Record<string, unknown>) {
-      const id = String(input.taskId ?? "");
-      if (!id) return JSON.stringify({ error: "TaskStop: taskId is required" });
-      const task = store.get(id);
-      if (!task) return JSON.stringify({ error: `TaskStop: no task with id '${id}'` });
-      const reason = typeof input.reason === "string" && input.reason.trim()
-        ? input.reason.trim()
-        : undefined;
-      store.update(id, { status: "pending", output: reason ? `stopped: ${reason}` : undefined });
-      return JSON.stringify({ ok: true, taskId: id, status: "pending", reason: reason ?? null });
+      const taskId = typeof input.taskId === "string" ? input.taskId.trim() : "";
+      if (!taskId) return JSON.stringify({ error: "TaskStop: taskId is required" });
+      const task = store.get(taskId);
+      if (!task) return JSON.stringify({ error: `TaskStop: no task with id '${taskId}'` });
+      if (task.status !== "in_progress") {
+        return JSON.stringify({
+          error: `TaskStop: task '${taskId}' is ${task.status}, expected in_progress`,
+        });
+      }
+      const reason =
+        typeof input.reason === "string" && input.reason.trim() ? input.reason.trim() : undefined;
+      store.update(taskId, {
+        status: "pending",
+        output: reason ? `stopped: ${reason}` : undefined,
+      });
+      return JSON.stringify({ ok: true, taskId, status: "pending", reason: reason ?? null });
     },
   };
 }
