@@ -1,5 +1,5 @@
 /**
- * Path-guard utilities shared across file-mutation tools (Write, Edit, MultiEdit).
+ * Path-guard utilities shared across file-mutation tools (Write, Edit).
  *
  * Centralises two concerns:
  *  1. `checkBlockedPath` — rejects writes to sensitive files (.env, .ssh, etc.)
@@ -16,7 +16,7 @@
  * Patterns for files that must never be mutated by the agent's file tools.
  * The check runs on the *normalized* absolute path, so `..` traversal cannot
  * bypass it (normalization is the caller's responsibility — see edit.ts /
- * write.ts / multi_edit.ts).
+ * write.ts).
  *
  * Deliberately conservative: prefer false negatives over silently blocking
  * legitimate writes. The model can still reach these files through bash if

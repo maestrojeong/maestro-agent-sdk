@@ -199,22 +199,27 @@ export interface AgentQueryOptions {
    * with `stopReason: "max_iterations"` and surfaces the budget to the
    * model in the final result event.
    *
-   * Omit to use `DEFAULT_MAX_ITERATIONS` (90) — calibrated as a single
-   * default that comfortably covers research / multi-file edit chains
-   * without strangling longer investigations. The value matches the
-   * previous `xhigh` cap from v0.1.15's effort-derived table, which was
-   * the de facto "extended exploration" baseline before the decoupling.
-   * Pass a number to override up or down per call (e.g. a webhook that
-   * wants a hard 20-turn ceiling, or a deep-research session at 200).
+   * Omit to use `DEFAULT_MAX_ITERATIONS`, which is **unbounded**
+   * (`Number.POSITIVE_INFINITY`) as of v0.1.26 — the loop runs until the
+   * model emits `end_turn` or the host aborts via `abortSignal`. When
+   * unbounded, the v0.1.16 "iterations remaining: N/M" reminder line and
+   * the v0.1.17 wrap-up zone (last 3 turns) are skipped, since both rely
+   * on a finite ceiling. Pass a number to opt into a hard cap (a webhook
+   * that wants a 20-turn ceiling, a deep-research session at 200) — the
+   * tone line and wrap-up gates re-engage automatically.
    *
    * Decoupled from `effort` as of v0.1.16: prior versions derived the cap
-   * from effort (5 / 20 / 50 / 90 / 200), but in practice the cap and the
-   * reasoning-depth knob serve different needs — effort signals how hard
-   * the model should push within a turn, the cap signals how many turns
-   * the host is willing to fund. Splitting them lets a host run, say,
-   * `effort=low` + `maxIterations=90` (be terse, but don't trip on a
-   * surprise sub-task) or `effort=max` + `maxIterations=30` (think hard,
-   * but stay snappy).
+   * from effort, but in practice the cap and the reasoning-depth knob
+   * serve different needs — effort signals how hard the model should
+   * push within a turn, the cap signals how many turns the host is
+   * willing to fund. Splitting them lets a host run, say, `effort=low` +
+   * `maxIterations=50` (be terse, but bound the turn budget) or
+   * `effort=max` + `maxIterations=30` (think hard, but stay snappy).
+   *
+   * History: prior versions used a hardcoded turn default. v0.1.26 lifted
+   * the cap because the in-loop tone line was nudging models to wrap up
+   * early on legitimate long-running tasks; hosts that need a ceiling
+   * now supply one explicitly, which is the less surprising default.
    */
   maxIterations?: number;
   /**

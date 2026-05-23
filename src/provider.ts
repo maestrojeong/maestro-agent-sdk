@@ -47,11 +47,12 @@ import {
 import { createEditTool } from "@/tools/builtin/edit";
 import { globTool } from "@/tools/builtin/glob";
 import { grepTool } from "@/tools/builtin/grep";
-import { createMultiEditTool } from "@/tools/builtin/multi_edit";
 import { createReadTool } from "@/tools/builtin/read";
 import { createSkillViewTool } from "@/tools/builtin/skill_view";
 import { createSkillWriteTool } from "@/tools/builtin/skill_write";
 import {
+  createTaskOutputTool,
+  createTaskStopTool,
   createTaskCreateTool,
   createTaskGetTool,
   createTaskListTool,
@@ -97,20 +98,25 @@ import type { AgentQueryOptions, TokenUsage, UnifiedEvent } from "@/types";
 
 /**
  * Default tool-iteration cap when the caller doesn't supply
- * `opts.maxIterations`. 90 was picked as a single comfortable ceiling:
- * large enough to absorb research + multi-file edit chains without
- * strangling longer investigations, small enough that a runaway loop
- * still terminates in bounded wall-clock time on a typical model. The
- * choice matches the previous `xhigh` cap from v0.1.15's effort-derived
- * table — the level that was effectively the "extended exploration"
- * baseline before maxIter was decoupled from effort.
+ * `opts.maxIterations`. **No cap** is the default as of v0.1.26: the SDK
+ * runs until the model emits `end_turn`, the host aborts via
+ * `AgentQueryOptions.abortSignal`, or a hard wall (token budget, network
+ * error) trips. Use `AgentQueryOptions.maxIterations` per call when a
+ * host genuinely needs a turn ceiling — interactive surfaces with a
+ * tight latency contract, sub-agents with a sub-task slice, etc.
  *
- * As of v0.1.16 this is decoupled from `effort` — effort drives reasoning
- * depth (thinking budget + persona), the iteration cap is a separate
- * orthogonal budget the host owns. Override per call with
- * `AgentQueryOptions.maxIterations`.
+ * Earlier versions shipped a fixed turn default. v0.1.26 lifted the cap
+ * because (a) the in-loop tone line ("finalize NOW", "pace yourself")
+ * was nudging models to stop early on long, legitimate multi-file
+ * tasks, and (b) hosts that need a ceiling can supply one cheaply —
+ * keeping the SDK default unlimited is the less surprising baseline.
+ * When `maxIterations` is finite the v0.1.17 wrap-up zone (last 3
+ * turns) still fires; when unlimited the wrap-up gates and the
+ * iteration-remaining reminder line are all skipped (see
+ * `buildIterReminder` below — `isFinite(maxIter)` guards the iteration
+ * line so the model isn't told "1/Infinity remaining — finalize NOW").
  */
-export const DEFAULT_MAX_ITERATIONS = 90;
+export const DEFAULT_MAX_ITERATIONS = Number.POSITIVE_INFINITY;
 
 export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<UnifiedEvent> {
   // Provider instantiation is deferred until after model resolution so the
@@ -171,10 +177,6 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
   tools.register(createReadTool({ tracker: fileTracker }));
   tools.register(createWriteTool({ tracker: fileTracker }));
   tools.register(createEditTool({ tracker: fileTracker }));
-  // MultiEdit: same Read-before-Edit gate as Edit, but batches N replacements
-  // atomically in a single pass — halves round-trips for the "fix many spots
-  // in one file" refactor.
-  tools.register(createMultiEditTool({ tracker: fileTracker }));
   tools.register(globTool);
   tools.register(grepTool);
   tools.register(webFetchTool);
@@ -187,6 +189,8 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
   tools.register(createTaskUpdateTool({ store: taskStore }));
   tools.register(createTaskListTool({ store: taskStore }));
   tools.register(createTaskGetTool({ store: taskStore }));
+  tools.register(createTaskOutputTool(taskStore));
+  tools.register(createTaskStopTool(taskStore));
 
   // --- Skills: load SKILL.md catalog + register `skill_view` ---------------
   //
@@ -326,10 +330,12 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
   // `AIAgent` below. Default is the registry's `medium`, matching how
   // claude-provider hands effort to its SDK when the caller doesn't pin one.
   const resolvedEffort = opts.effort ?? maestroRegistry.defaultEffort;
-  // v0.1.16: maxIter is no longer derived from effort. The cap is a single
-  // host-tunable default (`DEFAULT_MAX_ITERATIONS = 90`) that the caller
-  // overrides per call via `opts.maxIterations`. See the AgentQueryOptions
-  // docstring for the split rationale (reasoning depth vs turn budget).
+  // v0.1.16: maxIter is no longer derived from effort. As of v0.1.26 the
+  // SDK default is unlimited (`Number.POSITIVE_INFINITY`) — the loop runs
+  // until the model emits `end_turn` or the host aborts. The caller pins a
+  // finite ceiling per call via `opts.maxIterations`; see the
+  // AgentQueryOptions docstring for the split rationale (reasoning depth
+  // vs turn budget).
   const maxIter = opts.maxIterations ?? DEFAULT_MAX_ITERATIONS;
   logger.info(
     { effort: opts.effort, resolved: resolvedEffort, maxIter, callerOverride: opts.maxIterations },
@@ -416,9 +422,20 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
     // adds an explicit behavior cue for the last 3 turns, synchronized with
     // `thinkingBudgetForTurn`'s budget trim so the model sees thinking AND
     // behavior shrink together instead of one without the other.
-    const extras: string[] = [iterationBudgetLine(iterationsRemaining, maxIter)];
-    const overlay = wrapUpOverlayLine(iterationsRemaining, maxIter);
-    if (overlay) extras.push(overlay);
+    //
+    // Skip both when `maxIter` is unbounded (the v0.1.26 default): the tone
+    // selector in `iterationBudgetLine` divides by `max`, so an `Infinity`
+    // cap produces `NaN` and the fall-through tone is "finalize NOW" — the
+    // exact opposite of what an "unlimited iterations" caller wants. The
+    // wrap-up overlay is already a no-op when `maxIter > iter + 3` (which
+    // is always true for `Infinity`), so we drop both lines together to
+    // keep the reminder shape coherent.
+    const extras: string[] = [];
+    if (Number.isFinite(maxIter)) {
+      extras.push(iterationBudgetLine(iterationsRemaining, maxIter));
+      const overlay = wrapUpOverlayLine(iterationsRemaining, maxIter);
+      if (overlay) extras.push(overlay);
+    }
     // v0.1.22+: deferred-tool catalog. Recomputed every turn so any tool the
     // model promoted via ToolSearch last turn falls off the list (the model
     // no longer needs to be reminded a tool exists once it can call it
@@ -680,12 +697,10 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
  * Tone shifts with PROPORTION of `maxIter` remaining (v0.1.16+), not an
  * absolute count. The previous v0.1.15 version keyed off raw `remaining`
  * (>= 10 → "plenty of room", < 2 → "finalize NOW"), which made sense
- * when the cap was effort-derived (5 / 20 / 50 / 90 / 200) but broke
- * after v0.1.16 unified the cap on a host-tunable default (90). At
- * `maxIter = 90`, `remaining = 15` is ~17% of the budget intact and the
- * old absolute logic would emit "pace yourself" while the proportional
- * one correctly routes to "start wrapping up" — the tone tracks the
- * budget consistently across cap sizes now.
+ * when the cap was effort-derived and small but broke once v0.1.16
+ * unified the cap on a host-tunable budget. The proportional logic now
+ * tracks the budget consistently regardless of whether the host pins a
+ * 30-turn ceiling or a 200-turn one.
  *
  * Percentage thresholds (calibrated for both small and large caps):
  *   - >= 50%  → plenty of room. (no urgency, explore freely)
@@ -695,9 +710,12 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
  *
  * Each tier scales with the host's chosen budget: at `maxIter = 30`
  * (chat-grade) the wrap-up tier kicks in around 6 turns left; at
- * `maxIter = 90` (default) it kicks in around 18 left; at `maxIter =
- * 200` (deep work) around 40. The model gets the same proportional cue
- * regardless of cap, which matches Claude Code's pacing intuition.
+ * `maxIter = 100` it kicks in around 20 left; at `maxIter = 200`
+ * (deep work) around 40. The model gets the same proportional cue
+ * regardless of cap, which matches Claude Code's pacing intuition. This
+ * whole pacing path is bypassed when `maxIter` is unbounded — the
+ * v0.1.26 default — so the line never reaches the model unless the host
+ * supplies a finite cap.
  *
  * Edge case — `max <= 0`: defensive guard for callers passing nonsense.
  * Falls back to absolute thresholds (the v0.1.15 behavior) so the line

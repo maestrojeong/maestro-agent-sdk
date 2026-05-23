@@ -139,9 +139,18 @@ export async function getOrStartClient(
 
   // Race check: a concurrent acquire of the same key could have raced ahead
   // while we were in `await client.start()`. If so, drop ours and use theirs.
+  // Swallowing a `close()` failure here used to be silent, but if it fails
+  // the just-spawned MCP subprocess leaks — surface it at warn so a leak
+  // pattern is visible in logs without escalating to an error that callers
+  // would have to handle (the race winner is already returned successfully).
   const racer = cache.get(key);
   if (racer) {
-    await client.close().catch(() => {});
+    await client.close().catch((err) => {
+      logger.warn(
+        { err, serverName, key },
+        "mcp pool-cache: race-win client.close() failed — subprocess may leak",
+      );
+    });
     racer.refcount++;
     racer.lastUsed = Date.now();
     return racer.client;

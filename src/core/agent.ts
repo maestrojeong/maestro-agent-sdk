@@ -19,7 +19,9 @@ export interface AIAgentConfig {
   model: string;
   /** System prompt — usually composed by the host before each query. */
   systemPrompt: string;
-  /** Hard cap on tool-calling iterations. Default 90 to match upstream. */
+  /** Hard cap on tool-calling iterations. Omit for unbounded (the loop
+   *  runs until `end_turn` / abort). Set a finite number when the host
+   *  needs to bound turn budget. */
   maxIterations?: number;
   /**
    * Per-API-call max output tokens.
@@ -100,7 +102,11 @@ export class AIAgent {
     this.config = {
       model: config.model,
       systemPrompt: config.systemPrompt,
-      maxIterations: config.maxIterations ?? 90,
+      // v0.1.26+: default is unbounded so the loop runs until the model
+      // ends the turn or the host aborts. Callers that need a finite cap
+      // pin one via `AIAgentConfig.maxIterations` (mirrored to
+      // `AgentQueryOptions.maxIterations` in the provider layer).
+      maxIterations: config.maxIterations ?? Number.POSITIVE_INFINITY,
       // v0.1.21+: model-aware default replaces the flat 4096 fallback. See
       // `getNativeMaxOutputTokens` for the per-model catalog and the
       // `AIAgentConfig.maxTokens` docstring for the rationale.

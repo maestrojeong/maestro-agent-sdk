@@ -17,10 +17,10 @@ import type { ToolHandler } from "@/tools/registry";
  * `TaskGet` returns the full entry — including description, owner, and
  * metadata — which the reminder summary intentionally omits.
  *
- * Side-effecting tools (`TaskCreate`, `TaskUpdate`) are `parallelSafe: false`
- * because two concurrent writes would race on the in-progress sweep and
- * dependency-edge maintenance. Reads (`TaskList`, `TaskGet`) are safe to
- * parallelise — they snapshot the in-memory map.
+ * Side-effecting tools (`TaskCreate`, `TaskUpdate`, `TaskOutput`, `TaskStop`)
+ * are `parallelSafe: false` because two concurrent writes would race on the
+ * in-progress sweep and dependency-edge maintenance. Reads (`TaskList`,
+ * `TaskGet`) are safe to parallelise — they snapshot the in-memory map.
  */
 
 export interface TaskToolsOptions {
@@ -140,7 +140,7 @@ export function createTaskUpdateTool(opts: TaskToolsOptions): ToolHandler {
       description:
         "Update a single existing task by id. Any subset of fields can change " +
         "in one call (status, subject, description, activeForm, owner, " +
-        "metadata, dependency edges). Status transitions:\n" +
+        "metadata, output, dependency edges). Status transitions:\n" +
         "  - → 'in_progress': the store demotes any other in_progress task to " +
         "'pending' (1-in-progress invariant) and reports the demoted id back.\n" +
         "  - → 'deleted': permanent. The task disappears from TaskList output " +
@@ -170,6 +170,11 @@ export function createTaskUpdateTool(opts: TaskToolsOptions): ToolHandler {
             type: "object",
             description: "New metadata bag (overwrites previous).",
             additionalProperties: true,
+          },
+          output: {
+            type: "string",
+            description:
+              "Optional task result / output string. Useful with status='completed' to save the deliverable in one call.",
           },
           addBlockedBy: {
             type: "array",
@@ -217,6 +222,7 @@ export function createTaskUpdateTool(opts: TaskToolsOptions): ToolHandler {
       if (input.metadata && typeof input.metadata === "object" && !Array.isArray(input.metadata)) {
         update.metadata = input.metadata as Record<string, unknown>;
       }
+      if (typeof input.output === "string") update.output = input.output;
       if (Array.isArray(input.addBlockedBy)) {
         update.addBlockedBy = input.addBlockedBy.filter((x): x is string => typeof x === "string");
       }
@@ -309,6 +315,100 @@ export function createTaskGetTool(opts: TaskToolsOptions): ToolHandler {
         return JSON.stringify({ error: `TaskGet: no task with id '${taskId}'` });
       }
       return JSON.stringify({ ok: true, task });
+    },
+  };
+}
+
+/**
+ * TaskOutput — store a result/output string against an existing task.
+ *
+ * Used to save a deliverable when a task produces output. Combine with
+ * TaskUpdate(status:"completed") to close the task atomically, or call
+ * this first and close later.
+ */
+export function createTaskOutputTool(store: TaskStore): ToolHandler {
+  return {
+    parallelSafe: false,
+    schema: {
+      name: "TaskOutput",
+      description:
+        "Attach an output / result string to a task. Use this when a task completes to save its deliverable. Combine with TaskUpdate(status:'completed') if you want to close it at the same time.",
+      input_schema: {
+        type: "object" as const,
+        properties: {
+          taskId: {
+            type: "string" as const,
+            description: "Id of the task to attach output to.",
+          },
+          output: {
+            type: "string" as const,
+            description: "Result / output string to store on the task.",
+          },
+        },
+        required: ["taskId", "output"],
+      },
+    },
+    async execute(input: Record<string, unknown>) {
+      const taskId = typeof input.taskId === "string" ? input.taskId.trim() : "";
+      if (!taskId) return JSON.stringify({ error: "TaskOutput: taskId is required" });
+      const task = store.get(taskId);
+      if (!task) return JSON.stringify({ error: `TaskOutput: no task with id '${taskId}'` });
+      if (typeof input.output !== "string") {
+        return JSON.stringify({ error: "TaskOutput: output must be a string" });
+      }
+      store.update(taskId, { output: input.output });
+      return JSON.stringify({ ok: true, taskId, output: input.output });
+    },
+  };
+}
+
+/**
+ * TaskStop — stop an in-progress task (move back to pending).
+ *
+ * Useful when a task cannot be completed, a sub-agent times out,
+ * or the agent decides to abandon a task mid-way. The task stays
+ * in the list (not deleted) so it can be retried later.
+ */
+export function createTaskStopTool(store: TaskStore): ToolHandler {
+  return {
+    parallelSafe: false,
+    schema: {
+      name: "TaskStop",
+      description:
+        "Stop an in-progress task, moving it back to pending. Use when a task cannot be completed right now but should stay in the task list for later retry.",
+      input_schema: {
+        type: "object" as const,
+        properties: {
+          taskId: {
+            type: "string" as const,
+            description: "Id of the task to stop.",
+          },
+          reason: {
+            type: "string" as const,
+            description:
+              "Optional reason why the task is being stopped (e.g. blocked, timed out, needs more info).",
+          },
+        },
+        required: ["taskId"],
+      },
+    },
+    async execute(input: Record<string, unknown>) {
+      const taskId = typeof input.taskId === "string" ? input.taskId.trim() : "";
+      if (!taskId) return JSON.stringify({ error: "TaskStop: taskId is required" });
+      const task = store.get(taskId);
+      if (!task) return JSON.stringify({ error: `TaskStop: no task with id '${taskId}'` });
+      if (task.status !== "in_progress") {
+        return JSON.stringify({
+          error: `TaskStop: task '${taskId}' is ${task.status}, expected in_progress`,
+        });
+      }
+      const reason =
+        typeof input.reason === "string" && input.reason.trim() ? input.reason.trim() : undefined;
+      store.update(taskId, {
+        status: "pending",
+        output: reason ? `stopped: ${reason}` : undefined,
+      });
+      return JSON.stringify({ ok: true, taskId, status: "pending", reason: reason ?? null });
     },
   };
 }

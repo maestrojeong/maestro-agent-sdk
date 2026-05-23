@@ -16,6 +16,8 @@ import {
   createTaskCreateTool,
   createTaskGetTool,
   createTaskListTool,
+  createTaskOutputTool,
+  createTaskStopTool,
   createTaskUpdateTool,
 } from "@/tools/builtin/tasks";
 
@@ -149,6 +151,17 @@ describe("TaskStore", () => {
     s1.create({ subject: "x", metadata: { topicId: "t-1", ticket: 42 } });
     const s2 = new TaskStore(path);
     expect(s2.get("1")!.metadata).toEqual({ topicId: "t-1", ticket: 42 });
+  });
+
+  test("output round-trips through persistence", () => {
+    const path = join(dir, "out.tasks.json");
+    const s1 = new TaskStore(path);
+    s1.create({ subject: "x" });
+    s1.update("1", { status: "completed", output: "done result" });
+
+    const s2 = new TaskStore(path);
+    expect(s2.get("1")!.status).toBe("completed");
+    expect(s2.get("1")!.output).toBe("done result");
   });
 });
 
@@ -331,6 +344,96 @@ describe("TaskUpdate tool", () => {
     await tool.execute({ taskId: "1", description: "new detail" });
     expect(store.get("1")!.subject).toBe("alpha"); // unchanged
     expect(store.get("1")!.description).toBe("new detail");
+  });
+
+  test("can complete and attach output in one call", async () => {
+    const tool = createTaskUpdateTool({ store });
+    const out = JSON.parse(
+      await tool.execute({ taskId: "1", status: "completed", output: "implemented" }),
+    );
+
+    expect(out.ok).toBe(true);
+    expect(store.get("1")!.status).toBe("completed");
+    expect(store.get("1")!.output).toBe("implemented");
+  });
+});
+
+describe("TaskOutput tool", () => {
+  let dir: string;
+  let store: TaskStore;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "maestro-task-tool-output-"));
+    store = new TaskStore(join(dir, "x.tasks.json"));
+    store.create({ subject: "alpha" });
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  test("attaches output to an existing task", async () => {
+    const tool = createTaskOutputTool(store);
+    const out = JSON.parse(await tool.execute({ taskId: "1", output: "artifact path" }));
+
+    expect(out.ok).toBe(true);
+    expect(out.output).toBe("artifact path");
+    expect(store.get("1")!.output).toBe("artifact path");
+  });
+
+  test("rejects missing taskId, unknown task, and non-string output", async () => {
+    const tool = createTaskOutputTool(store);
+
+    expect(JSON.parse(await tool.execute({ output: "x" })).error).toMatch(/taskId/);
+    expect(JSON.parse(await tool.execute({ taskId: "99", output: "x" })).error).toMatch(
+      /no task with id/,
+    );
+    expect(JSON.parse(await tool.execute({ taskId: "1", output: 123 })).error).toMatch(
+      /output must be a string/,
+    );
+  });
+
+  test("parallelSafe is false (writer)", () => {
+    expect(createTaskOutputTool(store).parallelSafe).toBe(false);
+  });
+});
+
+describe("TaskStop tool", () => {
+  let dir: string;
+  let store: TaskStore;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "maestro-task-tool-stop-"));
+    store = new TaskStore(join(dir, "x.tasks.json"));
+    store.create({ subject: "alpha" });
+    store.create({ subject: "beta" });
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  test("moves only an in-progress task back to pending and records reason", async () => {
+    store.update("1", { status: "in_progress" });
+    const tool = createTaskStopTool(store);
+    const out = JSON.parse(await tool.execute({ taskId: "1", reason: "blocked" }));
+
+    expect(out.ok).toBe(true);
+    expect(out.status).toBe("pending");
+    expect(out.reason).toBe("blocked");
+    expect(store.get("1")!.status).toBe("pending");
+    expect(store.get("1")!.output).toBe("stopped: blocked");
+  });
+
+  test("rejects pending, completed, deleted, missing, and unknown tasks", async () => {
+    const tool = createTaskStopTool(store);
+
+    expect(JSON.parse(await tool.execute({})).error).toMatch(/taskId/);
+    expect(JSON.parse(await tool.execute({ taskId: "99" })).error).toMatch(/no task with id/);
+    expect(JSON.parse(await tool.execute({ taskId: "1" })).error).toMatch(/expected in_progress/);
+
+    store.update("1", { status: "completed" });
+    expect(JSON.parse(await tool.execute({ taskId: "1" })).error).toMatch(/expected in_progress/);
+
+    store.update("2", { status: "deleted" });
+    expect(JSON.parse(await tool.execute({ taskId: "2" })).error).toMatch(/expected in_progress/);
+    expect(store.get("2")!.status).toBe("deleted");
+  });
+
+  test("parallelSafe is false (writer)", () => {
+    expect(createTaskStopTool(store).parallelSafe).toBe(false);
   });
 });
 

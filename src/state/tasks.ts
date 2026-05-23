@@ -86,6 +86,10 @@ export interface TaskEntry {
   owner?: string;
   /** Arbitrary host-controlled bag. Round-tripped verbatim. */
   metadata?: Record<string, unknown>;
+  /** Optional task result / output string set via TaskOutput. Typically
+   *  populated when a task reaches `completed`. Nullable — absent on create,
+   *  set once when the result is ready. */
+  output?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -96,6 +100,9 @@ export interface CreateInput {
   activeForm?: string;
   owner?: string;
   metadata?: Record<string, unknown>;
+  /** Optional initial output / result string. Typically set when the task is
+   *  created with a pre-known result or via TaskOutput later. */
+  output?: string | null;
 }
 
 export interface UpdateInput {
@@ -111,6 +118,9 @@ export interface UpdateInput {
   /** Add these task ids to this task's `blocks` list (and update the
    *  other side's `blockedBy`). */
   addBlocks?: string[];
+  /** Output / result string to attach to the task. Set via TaskOutput but
+   *  also accepted by TaskUpdate for convenience (one call to complete+output). */
+  output?: string | null;
 }
 
 export interface UpdateResult {
@@ -193,6 +203,7 @@ export class TaskStore {
     if (input.activeForm !== undefined) entry.activeForm = input.activeForm;
     if (input.owner !== undefined) entry.owner = input.owner;
     if (input.metadata !== undefined) entry.metadata = input.metadata;
+    if (input.output !== undefined) entry.output = input.output;
     this.tasks.set(id, entry);
     this.persist();
     return entry;
@@ -238,6 +249,7 @@ export class TaskStore {
     if (input.activeForm !== undefined) entry.activeForm = input.activeForm;
     if (input.owner !== undefined) entry.owner = input.owner;
     if (input.metadata !== undefined) entry.metadata = input.metadata;
+    if (input.output !== undefined) entry.output = input.output;
 
     if (input.addBlockedBy && input.addBlockedBy.length > 0) {
       for (const blockerId of input.addBlockedBy) {
@@ -414,6 +426,7 @@ function isWellFormedEntry(v: unknown): v is TaskEntry {
   if (o.description !== undefined && typeof o.description !== "string") return false;
   if (o.activeForm !== undefined && typeof o.activeForm !== "string") return false;
   if (o.owner !== undefined && typeof o.owner !== "string") return false;
+  if (o.output !== undefined && o.output !== null && typeof o.output !== "string") return false;
   return true;
 }
 
