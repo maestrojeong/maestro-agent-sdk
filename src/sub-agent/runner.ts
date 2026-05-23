@@ -17,7 +17,6 @@ import { createBashTool } from "@/tools/builtin/bash";
 import { createEditTool } from "@/tools/builtin/edit";
 import { globTool } from "@/tools/builtin/glob";
 import { grepTool } from "@/tools/builtin/grep";
-import { createMultiEditTool } from "@/tools/builtin/multi_edit";
 import { createReadTool } from "@/tools/builtin/read";
 import { createSkillViewTool } from "@/tools/builtin/skill_view";
 import { webFetchTool } from "@/tools/builtin/web_fetch";
@@ -137,11 +136,11 @@ function loadOverlay(kind: SubagentType): string {
 /**
  * Build the per-subagent-type tool registry.
  *
- * `general` — bash + Read + Write + Edit + MultiEdit + Glob + Grep + WebFetch + skill_view.
+ * `general` — bash + Read + Write + Edit + Glob + Grep + WebFetch + skill_view.
  * `explore` — Read + Glob + Grep + WebFetch + skill_view only. NO bash, write, edit —
  *             the role is read-only by construction.
  * `plan`    — bash (read-only usage: ls/tree/git log/etc.) + Read + Glob + Grep +
- *             WebFetch + skill_view. NO Write/Edit/MultiEdit — the role is to
+ *             WebFetch + skill_view. NO Write/Edit — the role is to
  *             produce a plan document, not to implement it.
  *
  * Neither registers `Agent` (recursion cap) or the Task* family
@@ -150,7 +149,6 @@ function loadOverlay(kind: SubagentType): string {
  * Glob and Grep are registered for ALL types: they are read-only filesystem
  * tools that carry no mutation risk.
  *
- * MultiEdit is registered for `general` only (it batches Edit calls, so it
  * belongs wherever Edit is available).
  */
 function buildToolRegistry(
@@ -181,15 +179,12 @@ function buildToolRegistry(
     tools.register(createBashTool({ signal: abortSignal }));
     tools.register(createWriteTool({ tracker: fileTracker }));
     tools.register(createEditTool({ tracker: fileTracker }));
-    // MultiEdit: same Read-before-Edit gate as Edit, batches N replacements
-    // atomically — registered wherever Edit is available.
-    tools.register(createMultiEditTool({ tracker: fileTracker }));
   }
 
   if (kind === "plan") {
     // bash is useful for read-only structural queries (ls, tree, git log,
     // cargo tree, npm ls, …) that help the planner understand the codebase.
-    // Write/Edit/MultiEdit are intentionally excluded — the plan sub-agent
+    // Write/Edit are intentionally excluded — the plan sub-agent
     // produces a plan document, not implementation code.
     tools.register(createBashTool({ signal: abortSignal }));
   }

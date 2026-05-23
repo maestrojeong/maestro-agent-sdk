@@ -89,7 +89,7 @@ export class FileStateTracker {
    * "file does not exist, use Write to create". Read-before-Mutate is about
    * content drift, not existence.
    */
-  checkBeforeMutate(absPath: string, tool: "Edit" | "Write" | "MultiEdit"): string | null {
+  checkBeforeMutate(absPath: string, tool: "Edit" | "Write"): string | null {
     if (!existsSync(absPath)) return null;
 
     // Write on an existing file requires prior Read — same invariant as Edit.

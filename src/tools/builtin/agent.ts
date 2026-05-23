@@ -9,7 +9,7 @@ import type { ToolHandler } from "@/tools/registry";
  * mid-stream. This is the same contract Claude Code's Task tool exposes.
  *
  * Three scoped types:
- *   - `general` — full builtin toolkit (bash + Read + Write + Edit + MultiEdit +
+ *   - `general` — full builtin toolkit (bash + Read + Write + Edit +
  *     Glob + Grep + WebFetch + skill_view). Use for self-contained units of work.
  *   - `explore` — read-only (Read + Glob + Grep + WebFetch + skill_view). Use for
  *     finding / surveying / reporting tasks where you don't want the
@@ -81,7 +81,7 @@ export function createAgentTool(opts: AgentToolFactoryOptions): ToolHandler {
           subagent_type: {
             type: "string",
             description:
-              "Sub-agent role. 'general' = full builtin toolkit (bash/Read/Write/Edit/MultiEdit/Glob/Grep/WebFetch/skill_view). " +
+              "Sub-agent role. 'general' = full builtin toolkit (bash/Read/Write/Edit/Glob/Grep/WebFetch/skill_view). " +
               "'explore' = read-only (Read/Glob/Grep/WebFetch/skill_view — no bash, no write, no edit). " +
               "'plan' = architect mode (bash[read-only]/Read/Glob/Grep/WebFetch/skill_view — no write, no edit); outputs a structured plan document.",
           },

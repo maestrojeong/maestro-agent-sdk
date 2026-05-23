@@ -47,7 +47,6 @@ import {
 import { createEditTool } from "@/tools/builtin/edit";
 import { globTool } from "@/tools/builtin/glob";
 import { grepTool } from "@/tools/builtin/grep";
-import { createMultiEditTool } from "@/tools/builtin/multi_edit";
 import { createReadTool } from "@/tools/builtin/read";
 import { createSkillViewTool } from "@/tools/builtin/skill_view";
 import { createSkillWriteTool } from "@/tools/builtin/skill_write";
@@ -179,10 +178,6 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
   tools.register(createReadTool({ tracker: fileTracker }));
   tools.register(createWriteTool({ tracker: fileTracker }));
   tools.register(createEditTool({ tracker: fileTracker }));
-  // MultiEdit: same Read-before-Edit gate as Edit, but batches N replacements
-  // atomically in a single pass — halves round-trips for the "fix many spots
-  // in one file" refactor.
-  tools.register(createMultiEditTool({ tracker: fileTracker }));
   tools.register(globTool);
   tools.register(grepTool);
   tools.register(webFetchTool);

@@ -111,7 +111,6 @@ export {
 export { createEditTool } from "@/tools/builtin/edit";
 export { compileGlob, globTool } from "@/tools/builtin/glob";
 export { grepTool } from "@/tools/builtin/grep";
-export { createMultiEditTool } from "@/tools/builtin/multi_edit";
 export { createReadTool } from "@/tools/builtin/read";
 export { createSkillViewTool } from "@/tools/builtin/skill_view";
 export { createSkillWriteTool } from "@/tools/builtin/skill_write";
