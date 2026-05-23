@@ -40,7 +40,10 @@ export {
   createTaskGetTool,
   createTaskListTool,
   createTaskUpdateTool,
+  createTaskOutputTool,
+  createTaskStopTool,
 } from "@/tools/builtin/tasks";
+export { enterPlanModeTool, exitPlanModeTool, resetPlanMode } from "@/tools/builtin/plan_mode";
 export {
   htmlToMarkdown,
   htmlToText,

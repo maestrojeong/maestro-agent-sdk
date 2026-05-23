@@ -52,6 +52,8 @@ import { createReadTool } from "@/tools/builtin/read";
 import { createSkillViewTool } from "@/tools/builtin/skill_view";
 import { createSkillWriteTool } from "@/tools/builtin/skill_write";
 import {
+  createTaskOutputTool,
+  createTaskStopTool,
   createTaskCreateTool,
   createTaskGetTool,
   createTaskListTool,
@@ -60,6 +62,7 @@ import {
 import { createToolSearchTool } from "@/tools/builtin/tool_search";
 import { webFetchTool } from "@/tools/builtin/web_fetch";
 import { askUserQuestionTool } from "@/tools/builtin/ask_user_question";
+import { enterPlanModeTool, exitPlanModeTool, resetPlanMode } from "@/tools/builtin/plan_mode";
 import { createWriteTool } from "@/tools/builtin/write";
 import { getFileStateTracker } from "@/tools/file-state";
 import { ToolRegistry } from "@/tools/registry";
@@ -185,6 +188,10 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
   tools.register(webFetchTool);
   // AskUserQuestion — ask the user a question mid-task, get answer next turn
   tools.register(askUserQuestionTool);
+  // EnterPlanMode / ExitPlanMode — plan-first workflow
+  tools.register(enterPlanModeTool);
+  tools.register(exitPlanModeTool);
+  resetPlanMode(); // reset on agent init
   // Task family — granular CRUD replacing the v0.1.x TodoWrite. All four
   // share the same per-session store; the system reminder renders the list
   // every turn so the model rarely needs to call TaskList explicitly.
@@ -192,6 +199,8 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
   tools.register(createTaskUpdateTool({ store: taskStore }));
   tools.register(createTaskListTool({ store: taskStore }));
   tools.register(createTaskGetTool({ store: taskStore }));
+  tools.register(createTaskOutputTool(taskStore));
+  tools.register(createTaskStopTool(taskStore));
 
   // --- Skills: load SKILL.md catalog + register `skill_view` ---------------
   //

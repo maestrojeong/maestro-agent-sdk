@@ -312,3 +312,85 @@ export function createTaskGetTool(opts: TaskToolsOptions): ToolHandler {
     },
   };
 }
+
+/**
+ * TaskOutput — store a result/output string against an existing task.
+ *
+ * Used to save a deliverable when a task produces output. Combine with
+ * TaskUpdate(status:"completed") to close the task atomically, or call
+ * this first and close later.
+ */
+export function createTaskOutputTool(store: TaskStore): ToolHandler {
+  return {
+    schema: {
+      name: "TaskOutput",
+      description:
+        "Attach an output / result string to a task. Use this when a task completes to save its deliverable. Combine with TaskUpdate(status:'completed') if you want to close it at the same time.",
+      input_schema: {
+        type: "object" as const,
+        properties: {
+          taskId: {
+            type: "string" as const,
+            description: "Id of the task to attach output to.",
+          },
+          output: {
+            type: "string" as const,
+            description: "Result / output string to store on the task.",
+          },
+        },
+        required: ["taskId", "output"],
+      },
+    },
+    async execute(input: Record<string, unknown>) {
+      const id = String(input.taskId ?? "");
+      if (!id) return JSON.stringify({ error: "TaskOutput: taskId is required" });
+      const task = store.get(id);
+      if (!task) return JSON.stringify({ error: `TaskOutput: no task with id '${id}'` });
+      const output = typeof input.output === "string" ? input.output : "";
+      store.update(id, { output });
+      return JSON.stringify({ ok: true, taskId: id, output });
+    },
+  };
+}
+
+/**
+ * TaskStop — stop an in-progress task (move back to pending).
+ *
+ * Useful when a task cannot be completed, a sub-agent times out,
+ * or the agent decides to abandon a task mid-way. The task stays
+ * in the list (not deleted) so it can be retried later.
+ */
+export function createTaskStopTool(store: TaskStore): ToolHandler {
+  return {
+    schema: {
+      name: "TaskStop",
+      description:
+        "Stop an in-progress task, moving it back to pending. Use when a task cannot be completed right now but should stay in the task list for later retry.",
+      input_schema: {
+        type: "object" as const,
+        properties: {
+          taskId: {
+            type: "string" as const,
+            description: "Id of the task to stop.",
+          },
+          reason: {
+            type: "string" as const,
+            description: "Optional reason why the task is being stopped (e.g. blocked, timed out, needs more info).",
+          },
+        },
+        required: ["taskId"],
+      },
+    },
+    async execute(input: Record<string, unknown>) {
+      const id = String(input.taskId ?? "");
+      if (!id) return JSON.stringify({ error: "TaskStop: taskId is required" });
+      const task = store.get(id);
+      if (!task) return JSON.stringify({ error: `TaskStop: no task with id '${id}'` });
+      const reason = typeof input.reason === "string" && input.reason.trim()
+        ? input.reason.trim()
+        : undefined;
+      store.update(id, { status: "pending", output: reason ? `stopped: ${reason}` : undefined });
+      return JSON.stringify({ ok: true, taskId: id, status: "pending", reason: reason ?? null });
+    },
+  };
+}
