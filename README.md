@@ -7,6 +7,10 @@
 **Embeddable agent SDK — skills, memory, MCP, and host-controlled guardrails out of the box.**
 Anthropic + DeepSeek today, BYO-provider in one file. No CLI, no gateway, no host lock-in.
 
+![Multi-Agent SDK comparison](./assets/multi-agent-comparison.jpg)
+
+> The only slot that is both a **pure library** and **multi-vendor** — harness ships inside the SDK, you `import` it into any host and pick the provider per call. ([details](#positioning--a-building-block-not-a-product))
+
 > **Status:** Early port (v0.1.x). Active development. API surface may change before 1.0.
 
 A generalizable agent runtime. Swap providers, inject your own logger/MCP resolver/hooks, and embed it in any host process — no framework, no lock-in.
@@ -219,9 +223,7 @@ maestro-agent-sdk is an agent *runtime*, not an agent *product*. You pick the UI
 
 ### Where it sits in the stack
 
-![Multi-Agent SDK comparison](./assets/multi-agent-comparison.jpg)
-
-Top → bottom is caller → callee. Anthropic and OpenAI ship an SDK that spawns their own CLI as a subprocess — you inherit the harness, but you also inherit the binary and the single-vendor model API. Indie coding agents (OpenClaude, OpenClaw, Hermes, Nanoclaw) keep the harness but bolt on a multi-vendor API slot. **Maestro is the only slot that is both a pure library *and* multi-vendor** — the harness lives inside the SDK, so you `import` it into any host and pick the provider per call.
+Refer to the architecture chart at the top of this README. Top → bottom is caller → callee. Anthropic and OpenAI ship an SDK that spawns their own CLI as a subprocess — you inherit the harness, but you also inherit the binary and the single-vendor model API. Indie coding agents (OpenClaude, OpenClaw, Hermes, Nanoclaw) keep the harness but bolt on a multi-vendor API slot. **Maestro is the only slot that is both a pure library *and* multi-vendor** — the harness lives inside the SDK, so you `import` it into any host and pick the provider per call.
 
 | Capability                                       | Anthropic         | OpenAI            | Indie         | Maestro         |
 | ------------------------------------------------ | ----------------- | ----------------- | ------------- | --------------- |
