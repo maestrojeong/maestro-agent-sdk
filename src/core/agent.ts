@@ -1,3 +1,4 @@
+import type { ToolResultTruncationConfig } from "@/core/tool-result-truncation";
 import type { Provider } from "@/providers/base";
 import { getNativeMaxOutputTokens } from "@/registry";
 import type { ToolRegistry } from "@/tools/registry";
@@ -94,6 +95,13 @@ export interface AIAgentConfig {
   llmPreHook?: LlmPreHook;
   /** LLM Post Hook — fires on turn-complete (no tool calls) before `result` event. */
   llmPostHook?: LlmPostHook;
+  /**
+   * Tool result truncation — when enabled, string tool outputs that exceed
+   * `maxBytes` are truncated to head+tail before being fed back into the model
+   * context. The full output is optionally persisted to disk. Disabled by
+   * default (opt-in).
+   */
+  toolResultTruncation?: ToolResultTruncationConfig;
 }
 
 export class AIAgent {
@@ -111,6 +119,9 @@ export class AIAgent {
     /** Optional aux model override; consumed by the loop's compressIfNeeded
      *  call. When omitted the loop falls back to `resolveAuxModel(model)`. */
     auxModel?: string;
+    /** Tool result truncation config; consumed by `runConversation` each
+     *  tool-result turn. Omitted (undefined) → truncation disabled. */
+    toolResultTruncation?: ToolResultTruncationConfig;
   };
 
   constructor(provider: Provider, tools: ToolRegistry, config: AIAgentConfig) {
@@ -137,6 +148,7 @@ export class AIAgent {
       ...(config.llmPreHook ? { llmPreHook: config.llmPreHook } : {}),
       ...(config.llmPostHook ? { llmPostHook: config.llmPostHook } : {}),
       ...(config.auxModel ? { auxModel: config.auxModel } : {}),
+      ...(config.toolResultTruncation ? { toolResultTruncation: config.toolResultTruncation } : {}),
     };
   }
 }

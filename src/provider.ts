@@ -39,6 +39,7 @@ import { buildSkillsIndex } from "@/skills/index-builder";
 import { loadSkillsCached } from "@/skills/loader";
 import { getTaskStore } from "@/state/tasks";
 import { createAgentTool } from "@/tools/builtin/agent";
+import { askUserQuestionTool } from "@/tools/builtin/ask_user_question";
 import { bashTool, createBashTool } from "@/tools/builtin/bash";
 import {
   createBackgroundBashRegistry,
@@ -52,16 +53,15 @@ import { createReadTool } from "@/tools/builtin/read";
 import { createSkillViewTool } from "@/tools/builtin/skill_view";
 import { createSkillWriteTool } from "@/tools/builtin/skill_write";
 import {
-  createTaskOutputTool,
-  createTaskStopTool,
   createTaskCreateTool,
   createTaskGetTool,
   createTaskListTool,
+  createTaskOutputTool,
+  createTaskStopTool,
   createTaskUpdateTool,
 } from "@/tools/builtin/tasks";
 import { createToolSearchTool } from "@/tools/builtin/tool_search";
 import { webFetchTool } from "@/tools/builtin/web_fetch";
-import { askUserQuestionTool } from "@/tools/builtin/ask_user_question";
 import { createWriteTool } from "@/tools/builtin/write";
 import { getFileStateTracker } from "@/tools/file-state";
 import { ToolRegistry } from "@/tools/registry";
@@ -567,6 +567,7 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
     // back to `resolveAuxModel(resolvedModel)`, which routes heavy tiers
     // (gpt-5.5, opus, deepseek-v4-pro) to their cheapest sibling.
     ...(opts.auxModel ? { auxModel: opts.auxModel } : {}),
+    ...(opts.toolResultTruncation ? { toolResultTruncation: opts.toolResultTruncation } : {}),
   });
 
   // Wire abort → close MCP pool early. Without this, an aborted turn could

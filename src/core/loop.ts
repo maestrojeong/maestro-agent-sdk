@@ -1,6 +1,6 @@
 import type { AIAgent } from "@/core/agent";
-import { maybeTruncateToolResultForModel } from "@/core/tool-result-truncation";
 import type { ToolResultTruncationMetadata } from "@/core/tool-result-truncation";
+import { maybeTruncateToolResultForModel } from "@/core/tool-result-truncation";
 import { extractFileEvents } from "@/media/file-events";
 import { resolveAuxModel } from "@/memory/aux-model-map";
 import { compressIfNeeded } from "@/memory/compressor";
@@ -91,9 +91,15 @@ export async function* runConversation(
     //   2. compressIfNeeded already prunes — no second pruneMessages call.
     //
     // Pure with respect to `messages` (canonical history kept intact for
-    // resume); only the on-wire slice is reshaped. Anti-thrashing on the
-    // array reference (both in prune.ts and compressor.ts) keeps back-to-
-    // back iterations near-zero CPU once the conversation stabilizes.
+    // resume); only the on-wire slice is reshaped.
+    // NOTE: compressIfNeeded now appends compaction summary blocks
+    // (⌛compaction user + summary assistant) to the canonical `messages`
+    // array for persistence (OpenCode-style incremental). On resume the
+    // aux LLM receives an incremental "update the anchored summary"
+    // prompt instead of re-summarizing from scratch. Anti-thrashing on
+    // the array reference (both in prune.ts and compressor.ts) keeps
+    // back-to-back iterations near-zero CPU once the conversation
+    // stabilizes.
     //
     // Aux provider stays the same (intra-provider remap), but the aux MODEL
     // routes through `resolveAuxModel` so heavy tiers (gpt-5.5, opus,
