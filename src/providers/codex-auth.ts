@@ -23,6 +23,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { logger } from "@/platform/logger";
 
 /**
  * Disk layout of `~/.codex/auth.json` as written by the upstream codex CLI.
@@ -239,6 +240,16 @@ export async function refreshAccessToken(
     client_id: CODEX_OAUTH_CLIENT_ID,
   });
 
+  // v0.1.28 diagnostic logging — instrument the OAuth refresh hop so we can
+  // tell from the logs whether "The operation timed out" was raised here
+  // (auth.openai.com hang) versus later in `stream()`'s `/responses` fetch.
+  // No behavior change beyond the log lines and timing.
+  const refreshStart = Date.now();
+  logger.info(
+    { url: CODEX_OAUTH_TOKEN_URL, timeoutMs, refreshTokenLen: refreshToken.length },
+    "codex-auth: refreshAccessToken start",
+  );
+
   let response: Response;
   try {
     response = await fetch(CODEX_OAUTH_TOKEN_URL, {
@@ -250,7 +261,26 @@ export async function refreshAccessToken(
       body,
       signal: AbortSignal.timeout(timeoutMs),
     });
+    logger.info(
+      {
+        status: response.status,
+        elapsedMs: Date.now() - refreshStart,
+      },
+      "codex-auth: refreshAccessToken fetch returned",
+    );
   } catch (e) {
+    logger.error(
+      {
+        elapsedMs: Date.now() - refreshStart,
+        timeoutMs,
+        errName: e instanceof Error ? e.name : typeof e,
+        errCode: (e as { code?: unknown } | null)?.code,
+        errMessage: e instanceof Error ? e.message : String(e),
+        errCause: (e as { cause?: unknown } | null)?.cause,
+        stack: e instanceof Error ? e.stack : undefined,
+      },
+      "codex-auth: refreshAccessToken fetch THREW (likely the source of 'The operation timed out')",
+    );
     throw new CodexAuthError(
       `Codex token refresh network error: ${e instanceof Error ? e.message : String(e)}`,
       "codex_refresh_network",

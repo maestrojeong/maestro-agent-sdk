@@ -37,6 +37,7 @@ export {
   applySkillAllowlist,
   DEFAULT_MAX_ITERATIONS,
   isAbortError,
+  isTimeoutError,
   iterationBudgetLine,
   MAESTRO_DEFAULT_SKILL_KEY,
   maestroProvider,

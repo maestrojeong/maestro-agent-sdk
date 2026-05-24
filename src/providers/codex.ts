@@ -43,6 +43,7 @@
  * `codex-stream.ts`, with no httpx / OpenAI SDK dependency.
  */
 
+import { logger } from "@/platform/logger";
 import {
   cloudflareHeaders,
   type CodexAuthError,
@@ -144,12 +145,42 @@ export class CodexResponsesProvider implements Provider {
    * convenience wrapper around it.
    */
   async *stream(opts: ProviderCompleteOptions): AsyncGenerator<ProviderStreamChunk> {
-    const token = await resolveAccessToken({
-      timeoutMs: this.refreshTimeoutMs,
-      ...(this.refreshSkewSeconds !== undefined
-        ? { skewSeconds: this.refreshSkewSeconds }
-        : {}),
-    });
+    // v0.1.28 diagnostic instrumentation. The gpt-5.5 swap reproducer
+    // surfaced "The operation timed out" as the bare error message bubbled
+    // through `maestroProvider`'s catch. We don't yet know which hop —
+    // OAuth refresh (`codex-auth.ts`), `/responses` POST below, or SSE
+    // stream parse — actually raises it. Each `logger.*` line below stamps
+    // a phase + elapsed time so the next reproduction pinpoints the source.
+    const streamStart = Date.now();
+    const tokenStart = Date.now();
+    let token: string;
+    try {
+      token = await resolveAccessToken({
+        timeoutMs: this.refreshTimeoutMs,
+        ...(this.refreshSkewSeconds !== undefined
+          ? { skewSeconds: this.refreshSkewSeconds }
+          : {}),
+      });
+      logger.info(
+        { model: opts.model, elapsedMs: Date.now() - tokenStart },
+        "codex: resolveAccessToken OK",
+      );
+    } catch (e) {
+      logger.error(
+        {
+          phase: "resolveAccessToken",
+          elapsedMs: Date.now() - tokenStart,
+          model: opts.model,
+          errName: e instanceof Error ? e.name : typeof e,
+          errCode: (e as { code?: unknown } | null)?.code,
+          errMessage: e instanceof Error ? e.message : String(e),
+          errCause: (e as { cause?: unknown } | null)?.cause,
+          stack: e instanceof Error ? e.stack : undefined,
+        },
+        "codex: resolveAccessToken FAILED",
+      );
+      throw e;
+    }
     const body = buildRequestBody(opts);
     const url = `${this.baseUrl}/responses`;
 
@@ -166,7 +197,40 @@ export class CodexResponsesProvider implements Provider {
     };
     if (opts.abortSignal) init.signal = opts.abortSignal;
 
-    const response = await fetch(url, init);
+    const responseStart = Date.now();
+    logger.info(
+      { url, model: opts.model, bodyBytes: (init.body as string).length },
+      "codex: /responses fetch start",
+    );
+    let response: Response;
+    try {
+      response = await fetch(url, init);
+      logger.info(
+        {
+          status: response.status,
+          elapsedMs: Date.now() - responseStart,
+          model: opts.model,
+        },
+        "codex: /responses fetch returned headers",
+      );
+    } catch (e) {
+      logger.error(
+        {
+          phase: "/responses fetch",
+          elapsedMs: Date.now() - responseStart,
+          totalElapsedMs: Date.now() - streamStart,
+          url,
+          model: opts.model,
+          errName: e instanceof Error ? e.name : typeof e,
+          errCode: (e as { code?: unknown } | null)?.code,
+          errMessage: e instanceof Error ? e.message : String(e),
+          errCause: (e as { cause?: unknown } | null)?.cause,
+          stack: e instanceof Error ? e.stack : undefined,
+        },
+        "codex: /responses fetch THREW (likely the source of 'The operation timed out')",
+      );
+      throw e;
+    }
 
     if (response.status === 401) {
       // Refresh-then-retry once. The on-disk token may have rotated since

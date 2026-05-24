@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { AIAgent } from "@/core/agent";
-import { isAbortError } from "@/core/is-abort-error";
+import { isAbortError, isTimeoutError } from "@/core/is-abort-error";
 import { runConversation } from "@/core/loop";
 import { type MaestroMcpPool, registerMcpTools, startMcpPool } from "@/mcp/pool";
 import { buildSystemReminder } from "@/memory/reminder";
@@ -613,6 +613,31 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
     if (isAbortError(e) || abortSignal?.aborted) {
       aborted = true;
     } else {
+      // v0.1.28: dump the full error shape (name/code/cause/stack) so we can
+      // tell the difference between a codex OAuth refresh timeout, the
+      // `/responses` HTTP fetch timing out mid-roundtrip, an SSE stream
+      // abort during chunk parse, and a plain Anthropic/Deepseek crash —
+      // all of which previously surfaced as the same opaque "maestroProvider
+      // crashed: <message>" event. The lower-level codex hops also log on
+      // throw (see `codex.ts`/`codex-auth.ts` v0.1.28 instrumentation), so
+      // the combined log trail tells us which leg actually died.
+      const errIsTimeout = isTimeoutError(e);
+      logger.error(
+        {
+          sessionId,
+          model: resolvedModel,
+          effort: resolvedEffort,
+          isTimeoutError: errIsTimeout,
+          errName: e instanceof Error ? e.name : typeof e,
+          errCode: (e as { code?: unknown } | null)?.code,
+          errMessage: e instanceof Error ? e.message : String(e),
+          errCause: (e as { cause?: unknown } | null)?.cause,
+          stack: e instanceof Error ? e.stack : undefined,
+        },
+        errIsTimeout
+          ? "maestroProvider: upstream timeout caught in provider.ts catch"
+          : "maestroProvider: unhandled error caught in provider.ts catch",
+      );
       yield {
         type: "error",
         content: `maestroProvider crashed: ${e instanceof Error ? e.message : String(e)}`,
@@ -939,4 +964,4 @@ export function pickHigherBudget(a: number | undefined, b: number | undefined): 
  * Exported for unit coverage — used internally by `maestroProvider`'s catch
  * branch to distinguish a user-initiated abort from a real provider crash.
  */
-export { isAbortError };
+export { isAbortError, isTimeoutError };
