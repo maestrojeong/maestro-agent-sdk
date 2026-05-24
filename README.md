@@ -7,7 +7,7 @@
 **Embeddable agent SDK — skills, memory, MCP, and host-controlled guardrails out of the box.**
 Anthropic + DeepSeek today, BYO-provider in one file. No CLI, no gateway, no host lock-in.
 
-![Multi-Agent SDK comparison](./assets/multi-agent-comparison.jpg)
+![Multi-Agent SDK comparison](./assets/multi-agent-comparison.png)
 
 > The only slot that is both a **pure library** and **multi-vendor** — harness ships inside the SDK, you `import` it into any host and pick the provider per call. ([details](#positioning--a-building-block-not-a-product))
 
