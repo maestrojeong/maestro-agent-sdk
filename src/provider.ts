@@ -24,6 +24,7 @@ import {
   effortToThinkingBudget,
 } from "@/providers/anthropic";
 import type { Provider, ProviderContentBlock, ProviderMessage } from "@/providers/base";
+import { CodexResponsesProvider } from "@/providers/codex";
 import { DeepseekProvider } from "@/providers/deepseek";
 import { maestroRegistry } from "@/registry";
 import {
@@ -854,16 +855,53 @@ export function applySkillAllowlist<T extends { name: string }>(
 }
 
 /**
- * Pick the right provider adapter for a resolved model id. DeepSeek's V4
- * family uses `deepseek-*` ids; everything else (Anthropic claude-* + future
- * direct full ids) falls through to the Anthropic adapter. Exported so tests
- * can lock the dispatch shape independently of `maestroProvider`'s I/O.
+ * Pick the right provider adapter for a resolved model id.
+ *
+ * Dispatch table:
+ *   - `gpt-5.*` / `gpt-4.*` / `o3` / `o4`  → CodexResponsesProvider
+ *     (ChatGPT-OAuth-backed Responses API at
+ *     chatgpt.com/backend-api/codex; reads ~/.codex/auth.json).
+ *   - `deepseek-*`                          → DeepseekProvider
+ *     (DEEPSEEK_API_KEY env).
+ *   - everything else (claude-*, custom full ids)
+ *                                           → AnthropicProvider
+ *     (ANTHROPIC_API_KEY env).
+ *
+ * Exported so tests / hosts can lock the dispatch shape independently of
+ * `maestroProvider`'s I/O. The codex match is prefix-based so hosts can ship
+ * new codex slugs (gpt-5.6, future tiers) without a dispatcher change — only
+ * the registry alias map needs updating.
  */
 export function providerForModel(resolvedModel: string): Provider {
+  if (isCodexModel(resolvedModel)) {
+    return CodexResponsesProvider.fromEnv();
+  }
   if (resolvedModel.startsWith("deepseek-")) {
     return DeepseekProvider.fromEnv();
   }
   return AnthropicProvider.fromEnv();
+}
+
+/**
+ * Heuristic: does this resolved model id belong on the Codex backend?
+ *
+ * The codex `/codex/models` endpoint enforces an exact whitelist of slugs
+ * (`gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex`, `gpt-5.2`, ...),
+ * but we accept any `gpt-5.*` / `gpt-4.*` / `o3` / `o4` here so the dispatcher
+ * routes correctly even before a new slug lands in the registry. The backend
+ * itself will 400 on unsupported slugs with an informative `detail` — better
+ * to surface that than to silently fall through to Anthropic (which would
+ * also 400, but with a less useful "model not found" message).
+ */
+function isCodexModel(model: string): boolean {
+  return (
+    model.startsWith("gpt-5") ||
+    model.startsWith("gpt-4") ||
+    model === "o3" ||
+    model === "o4" ||
+    model.startsWith("o3-") ||
+    model.startsWith("o4-")
+  );
 }
 
 /**
