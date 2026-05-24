@@ -51,9 +51,17 @@ export interface CompressOptions {
   /** Model context window in tokens. Default reads `MAESTRO_CONTEXT_WINDOW`
    *  env (Sonnet 4.6 default = 200_000). */
   contextWindow?: number;
-  /** Compaction triggers when estimated tokens / window ≥ this ratio.
-   *  Default 0.8 — matches upstream and leaves enough headroom for the
-   *  current turn's prompt + response to fit inside the cap. */
+  /**
+   * Compaction triggers when estimated tokens / window ≥ this ratio.
+   * v0.1.28+ default is **0.6** (was 0.8). The lower trigger was set after
+   * gpt-5.5 traffic occasionally pushed bodies to ~1.3MB and stayed under
+   * the previous 0.8 wall just long enough for the model to time out on
+   * the wire-side undici headersTimeout. Compacting earlier means heavy
+   * tiers never carry a multi-hundred-KB body forward, at the cost of a
+   * slightly more frequent aux LLM call. The aux model is the cheapest
+   * sibling on the provider (sonnet / gpt-5.4-mini / deepseek-flash via
+   * `resolveAuxModel`) so the marginal cost is small.
+   */
   triggerRatio?: number;
   /** Number of HEAD messages preserved verbatim. Default 2 (first user
    *  prompt + first assistant turn). */
@@ -121,7 +129,7 @@ export async function compressIfNeeded(
   opts: CompressOptions = {},
 ): Promise<ProviderMessage[]> {
   const contextWindow = opts.contextWindow ?? defaultContextWindow();
-  const triggerRatio = opts.triggerRatio ?? 0.8;
+  const triggerRatio = opts.triggerRatio ?? 0.6;
   const headProtect = opts.headProtect ?? 2;
   const tailProtect = opts.tailProtect ?? 6;
   const auxModel = opts.auxModel;

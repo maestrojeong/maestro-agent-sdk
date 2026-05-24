@@ -101,7 +101,8 @@ export interface CodexProviderOptions {
    *  endpoint. The `/responses` suffix is appended automatically. */
   baseUrl?: string;
   /** Override the timeout for the OAuth refresh round-trip. The streaming
-   *  request itself is uncapped — the agent loop owns abort via signal. */
+   *  request itself uses `fetchTimeoutMs` (see below) — the agent loop also
+   *  owns abort via signal. */
   refreshTimeoutMs?: number;
   /**
    * Skew window (seconds) for the refresh decision. When the cached access
@@ -110,6 +111,17 @@ export interface CodexProviderOptions {
    * enough to cover one long streaming turn without rolling over mid-stream.
    */
   refreshSkewSeconds?: number;
+  /**
+   * Wall-clock ceiling on a single `/responses` POST before we abort and
+   * surface a TimeoutError. Default 600_000 ms (10 minutes) — Bun's bundled
+   * undici otherwise enforces a 5-minute `headersTimeout` that fires on
+   * gpt-5.5 with ~1MB+ request bodies (v0.1.28 production repro). Raising
+   * the wall to 10 min gives the model breathing room while keeping a
+   * bounded worst case if the server hangs entirely. Combined with the
+   * caller's `abortSignal` via `AbortSignal.any`, so a user-initiated abort
+   * still wins immediately.
+   */
+  fetchTimeoutMs?: number;
 }
 
 /**
@@ -121,11 +133,33 @@ export class CodexResponsesProvider implements Provider {
   private readonly baseUrl: string;
   private readonly refreshTimeoutMs: number;
   private readonly refreshSkewSeconds: number | undefined;
+  private readonly fetchTimeoutMs: number;
 
   constructor(opts: CodexProviderOptions = {}) {
     this.baseUrl = (opts.baseUrl ?? DEFAULT_CODEX_BASE_URL).replace(/\/+$/, "");
     this.refreshTimeoutMs = opts.refreshTimeoutMs ?? 20_000;
     this.refreshSkewSeconds = opts.refreshSkewSeconds;
+    this.fetchTimeoutMs = opts.fetchTimeoutMs ?? 600_000;
+  }
+
+  /**
+   * Build the AbortSignal we pass to `fetch`. Combines an explicit
+   * wall-clock timeout (`this.fetchTimeoutMs`) with the caller's optional
+   * abort signal so either path can short-circuit the request:
+   *   - User abort fires → request cancels immediately.
+   *   - Timeout fires → DOMException(name="TimeoutError") surfaces, which
+   *     the v0.1.28 `isTimeoutError` helper catches in `provider.ts`.
+   *
+   * Why explicit timeout: Bun's undici default `headersTimeout` is 300_000
+   * ms (5 min) and fires regardless of user signal. Long requests on the
+   * heavy gpt-5.* tiers with large bodies blew through that wall in
+   * production. We raise the ceiling to 10 minutes (configurable) and pin
+   * the same value across the initial POST and the 401-refresh retry below.
+   */
+  private buildFetchSignal(userSignal?: AbortSignal): AbortSignal {
+    const timeoutSignal = AbortSignal.timeout(this.fetchTimeoutMs);
+    if (!userSignal) return timeoutSignal;
+    return AbortSignal.any([userSignal, timeoutSignal]);
   }
 
   /**
@@ -194,12 +228,20 @@ export class CodexResponsesProvider implements Provider {
       method: "POST",
       headers,
       body: JSON.stringify(body),
+      // v0.1.28+: bundled user-abort + wall-clock timeout. See
+      // `buildFetchSignal` for the rationale; the default ceiling is
+      // 10 minutes, configurable via `CodexProviderOptions.fetchTimeoutMs`.
+      signal: this.buildFetchSignal(opts.abortSignal),
     };
-    if (opts.abortSignal) init.signal = opts.abortSignal;
 
     const responseStart = Date.now();
     logger.info(
-      { url, model: opts.model, bodyBytes: (init.body as string).length },
+      {
+        url,
+        model: opts.model,
+        bodyBytes: (init.body as string).length,
+        fetchTimeoutMs: this.fetchTimeoutMs,
+      },
       "codex: /responses fetch start",
     );
     let response: Response;
@@ -252,8 +294,12 @@ export class CodexResponsesProvider implements Provider {
           Accept: "text/event-stream",
         },
         body: JSON.stringify(body),
+        // Same combined timeout + user-abort signal as the primary POST
+        // above. The 401-refresh retry path otherwise inherits Bun's
+        // undici default headersTimeout (5 min) and can mask the real
+        // failure mode.
+        signal: this.buildFetchSignal(opts.abortSignal),
       };
-      if (opts.abortSignal) retryInit.signal = opts.abortSignal;
       const retry = await fetch(url, retryInit);
       if (!retry.ok) {
         await throwCodexHttpError(retry);
