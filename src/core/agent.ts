@@ -60,6 +60,20 @@ export interface AIAgentConfig {
   /** External abort signal — wired to the AgentQueryOptions.abortController. */
   abortSignal?: AbortSignal;
   /**
+   * Optional override for the compaction (auxiliary) LLM model id. When set,
+   * `compressIfNeeded` routes its summary call through this model instead of
+   * the v0.1.28+ default — the intra-provider cheapest sibling resolved by
+   * `resolveAuxModel(model)`. Useful when the host wants compaction to run
+   * on a totally different provider (pair with a host-side aux provider
+   * swap if needed).
+   *
+   * Leave omitted for the default mapping: gpt-5.5 → gpt-5.4-mini,
+   * opus → haiku, deepseek-v4-pro → deepseek-v4-flash. Cheap tiers
+   * self-map so the behavior is a no-op for callers already on a small
+   * model.
+   */
+  auxModel?: string;
+  /**
    * Per-iteration system-reminder builder. Invoked by `runConversation`
    * just before pushing each `tool_result` user message; the returned text
    * is appended as a trailing `text` block on that user message so the
@@ -94,6 +108,9 @@ export class AIAgent {
     buildIterReminder?: (iterationsRemaining: number) => string | null;
     llmPreHook?: LlmPreHook;
     llmPostHook?: LlmPostHook;
+    /** Optional aux model override; consumed by the loop's compressIfNeeded
+     *  call. When omitted the loop falls back to `resolveAuxModel(model)`. */
+    auxModel?: string;
   };
 
   constructor(provider: Provider, tools: ToolRegistry, config: AIAgentConfig) {
@@ -119,6 +136,7 @@ export class AIAgent {
       ...(config.buildIterReminder ? { buildIterReminder: config.buildIterReminder } : {}),
       ...(config.llmPreHook ? { llmPreHook: config.llmPreHook } : {}),
       ...(config.llmPostHook ? { llmPostHook: config.llmPostHook } : {}),
+      ...(config.auxModel ? { auxModel: config.auxModel } : {}),
     };
   }
 }

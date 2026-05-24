@@ -248,6 +248,18 @@ export interface AgentQueryOptions {
    * never silently shrinks it.
    */
   maxTokens?: number;
+  /**
+   * Override the auxiliary (compaction) model id. When omitted, the loop
+   * resolves it via `resolveAuxModel(model)` — intra-provider remap to the
+   * cheapest sibling (gpt-5.5 → gpt-5.4-mini, opus → haiku,
+   * deepseek-v4-pro → deepseek-v4-flash). Set this to pin a specific
+   * compaction model regardless of which main model the call uses.
+   *
+   * v0.1.28+: added after production logs showed gpt-5.5 main + gpt-5.5
+   * aux both hitting undici's 5-minute headersTimeout while POSTing ~1.3MB
+   * request bodies. The default mapping is usually what you want.
+   */
+  auxModel?: string;
   mcpEnabled?: string[] | null;
   mcpExtra?: Record<string, unknown>;
   isCron?: boolean;

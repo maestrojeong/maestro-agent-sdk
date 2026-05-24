@@ -562,6 +562,11 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
     ...(thinkingBudget ? { thinkingBudget } : {}),
     ...(resolvedEffort ? { effort: resolvedEffort } : {}),
     ...(opts.abortController?.signal ? { abortSignal: opts.abortController.signal } : {}),
+    // v0.1.28+: forward the caller's aux-model override into AIAgent so the
+    // loop's compressIfNeeded call honors it. When omitted the loop falls
+    // back to `resolveAuxModel(resolvedModel)`, which routes heavy tiers
+    // (gpt-5.5, opus, deepseek-v4-pro) to their cheapest sibling.
+    ...(opts.auxModel ? { auxModel: opts.auxModel } : {}),
   });
 
   // Wire abort → close MCP pool early. Without this, an aborted turn could

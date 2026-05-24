@@ -26,6 +26,7 @@ export type { MaestroMcpClient, MaestroMcpServerSpec, MaestroMcpTool } from "@/m
 export { ACTIVE_TASK_TEMPLATE, wrapCompactedSummary } from "@/memory/active-task-template";
 // ─── Memory / compression ────────────────────────────────────────────────────
 export { compressIfNeeded } from "@/memory/compressor";
+export { resolveAuxModel } from "@/memory/aux-model-map";
 export { hashToolContent } from "@/memory/hash";
 export { buildSystemReminder } from "@/memory/reminder";
 export { estimateTokens } from "@/memory/token-estimate";

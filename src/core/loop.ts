@@ -1,5 +1,6 @@
 import type { AIAgent } from "@/core/agent";
 import { extractFileEvents } from "@/media/file-events";
+import { resolveAuxModel } from "@/memory/aux-model-map";
 import { compressIfNeeded } from "@/memory/compressor";
 import { StreamingContextScrubber, scrubString } from "@/memory/scrubber";
 import { logger } from "@/platform/logger";
@@ -92,13 +93,26 @@ export async function* runConversation(
     // array reference (both in prune.ts and compressor.ts) keeps back-to-
     // back iterations near-zero CPU once the conversation stabilizes.
     //
-    // Aux provider + model are reused from the agent's main config — one
-    // client, one model id, no separate env var. Hosts that want compaction
-    // to run on a cheaper model can call compressIfNeeded directly with an
-    // explicit `auxModel`; this default keeps the SDK self-contained.
+    // Aux provider stays the same (intra-provider remap), but the aux MODEL
+    // routes through `resolveAuxModel` so heavy tiers (gpt-5.5, opus,
+    // deepseek-v4-pro) don't pay their own latency cost summarizing the
+    // middle history. `resolveAuxModel` returns the input unchanged when
+    // the main model is already the cheapest sibling on its provider, so
+    // small-model callers are unaffected.
+    //
+    // Override path: a host can still force a specific aux model via
+    // `AIAgentConfig.auxModel` (e.g. to point compaction at a totally
+    // different provider). When set, it wins over the mapping; when omitted
+    // the mapping decides.
+    //
+    // v0.1.28 background: production logs showed gpt-5.5 main + gpt-5.5 aux
+    // both timing out on the same 5-minute undici headersTimeout wall while
+    // POSTing ~1.3 MB request bodies. Routing aux to gpt-5.4-mini cuts both
+    // the body weight and the model latency.
+    const auxModel = agent.config.auxModel ?? resolveAuxModel(agent.config.model);
     const wireMessages = await compressIfNeeded(messages, {
       auxProvider: agent.provider,
-      auxModel: agent.config.model,
+      auxModel,
       ...(agent.config.abortSignal ? { abortSignal: agent.config.abortSignal } : {}),
     });
 
