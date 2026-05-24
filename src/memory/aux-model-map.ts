@@ -46,16 +46,29 @@ import {
 const CLAUDE_HAIKU = "claude-haiku-4-5";
 
 /**
- * Per-family aux model. Each entry maps the main model to the cheapest
- * sibling on the same provider. Self-mapping for already-cheap tiers
- * (deepseek-flash, gpt-5.4-mini, haiku) keeps the function total — callers
- * always get a usable model id back.
+ * Per-family aux model. Pinned by family, not cheapest-strictly: the host
+ * picks the model it considers the right balance of summary quality and
+ * latency for each provider line.
+ *
+ *   - Claude family → sonnet. Haiku turned out too lossy for production
+ *     summary work; sonnet is the chosen aux tier even when main is opus
+ *     (compaction is bounded so the cost differential is small) or when
+ *     main is haiku (the floor is sonnet either way).
+ *   - DeepSeek family → flash.
+ *   - Codex (gpt-5.x) family → gpt-5.4-mini.
+ *
+ * The function stays total — callers always get a usable model id back —
+ * and the same Provider client handles both main and aux, so no extra
+ * client wiring is required at the host layer.
  */
 const AUX_MODEL_BY_MAIN: Record<string, string> = {
-  // Anthropic (Claude)
-  [MODEL_OPUS]: CLAUDE_HAIKU,
-  [MODEL_SONNET]: CLAUDE_HAIKU,
-  [CLAUDE_HAIKU]: CLAUDE_HAIKU,
+  // Anthropic (Claude). Sonnet on every tier — host preference, not
+  // strictly cheapest. Haiku is intentionally avoided as an aux target
+  // because the summaries it produces dropped too much structural info
+  // for downstream resume turns.
+  [MODEL_OPUS]: MODEL_SONNET,
+  [MODEL_SONNET]: MODEL_SONNET,
+  [CLAUDE_HAIKU]: MODEL_SONNET,
 
   // DeepSeek V4
   [MODEL_DEEPSEEK_V4_PRO]: MODEL_DEEPSEEK_V4_FLASH,
@@ -90,12 +103,12 @@ export function resolveAuxModel(mainModel: string): string {
   if (exact !== undefined) return exact;
 
   // Prefix-based fallback for forward-compat with new minor versions.
-  // We only catch the heavy tiers — cheap tiers don't need a remap, so
-  // returning the input is correct.
-  if (mainModel.startsWith("claude-opus") || mainModel.startsWith("claude-sonnet")) {
-    return CLAUDE_HAIKU;
+  // Any claude-* slug routes to sonnet (host preference); any heavy gpt-5.*
+  // routes to mini; any deepseek-pro variant routes to flash.
+  if (mainModel.startsWith("claude-")) {
+    return MODEL_SONNET;
   }
-  if (mainModel === "deepseek-pro" || mainModel.startsWith("deepseek-v") && mainModel.includes("pro")) {
+  if (mainModel === "deepseek-pro" || (mainModel.startsWith("deepseek-v") && mainModel.includes("pro"))) {
     return MODEL_DEEPSEEK_V4_FLASH;
   }
   if (mainModel.startsWith("gpt-5") && !mainModel.includes("mini")) {

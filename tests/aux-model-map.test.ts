@@ -8,13 +8,13 @@ import { resolveAuxModel } from "@/memory/aux-model-map";
  * the compaction loop where it's hard to spot.
  */
 describe("resolveAuxModel", () => {
-  test("claude-opus / sonnet → claude-haiku-4-5", () => {
-    expect(resolveAuxModel("claude-opus-4-7")).toBe("claude-haiku-4-5");
-    expect(resolveAuxModel("claude-sonnet-4-6")).toBe("claude-haiku-4-5");
-  });
-
-  test("claude-haiku → itself (already cheapest)", () => {
-    expect(resolveAuxModel("claude-haiku-4-5")).toBe("claude-haiku-4-5");
+  test("every claude family slug → claude-sonnet-4-6", () => {
+    // Host preference: sonnet on every claude tier, not strictly cheapest.
+    // Haiku produced too-lossy summaries in production so it's avoided as
+    // an aux target.
+    expect(resolveAuxModel("claude-opus-4-7")).toBe("claude-sonnet-4-6");
+    expect(resolveAuxModel("claude-sonnet-4-6")).toBe("claude-sonnet-4-6");
+    expect(resolveAuxModel("claude-haiku-4-5")).toBe("claude-sonnet-4-6");
   });
 
   test("deepseek-v4-pro → deepseek-v4-flash", () => {
@@ -38,9 +38,10 @@ describe("resolveAuxModel", () => {
 
   test("prefix fallback: future minor versions map sensibly", () => {
     // Forward-compat: a future claude minor that hasn't been added to the
-    // exact-match table should still route opus/sonnet to haiku.
-    expect(resolveAuxModel("claude-opus-4-8")).toBe("claude-haiku-4-5");
-    expect(resolveAuxModel("claude-sonnet-5-0")).toBe("claude-haiku-4-5");
+    // exact-match table should still route to sonnet (host preference).
+    expect(resolveAuxModel("claude-opus-4-8")).toBe("claude-sonnet-4-6");
+    expect(resolveAuxModel("claude-sonnet-5-0")).toBe("claude-sonnet-4-6");
+    expect(resolveAuxModel("claude-haiku-5-0")).toBe("claude-sonnet-4-6");
     // A future gpt-5.x heavy tier passes through the prefix path.
     expect(resolveAuxModel("gpt-5.6")).toBe("gpt-5.4-mini");
     // A future deepseek-v5-pro should still find a flash sibling.
