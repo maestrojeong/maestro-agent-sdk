@@ -217,6 +217,24 @@ session metadata without reading the full message log can call
 
 maestro-agent-sdk is an agent *runtime*, not an agent *product*. You pick the UI, the provider mix, the guardrail rules, the storage layer.
 
+### Where it sits in the stack
+
+![Multi-Agent SDK comparison](./assets/multi-agent-comparison.jpg)
+
+Top → bottom is caller → callee. Anthropic and OpenAI ship an SDK that spawns their own CLI as a subprocess — you inherit the harness, but you also inherit the binary and the single-vendor model API. Indie coding agents (OpenClaude, OpenClaw, Hermes, Nanoclaw) keep the harness but bolt on a multi-vendor API slot. **Maestro is the only slot that is both a pure library *and* multi-vendor** — the harness lives inside the SDK, so you `import` it into any host and pick the provider per call.
+
+| Capability                                       | Anthropic         | OpenAI            | Indie         | Maestro         |
+| ------------------------------------------------ | ----------------- | ----------------- | ------------- | --------------- |
+| **Built-in harness** (tool loop · context · agent loop) | ✓ Claude Code     | ✓ Codex CLI       | ✓             | ✓               |
+| **Pure library distribution** (npm/pip import only)     | ✗ needs `claude`  | ✗ needs `codex`   | ✗ CLI only    | ✓               |
+| **Multi-vendor API** (multiple model endpoints)         | ✗ Claude only     | ✗ OpenAI only     | ✓             | ✓               |
+| **Library + Multi-vendor** (embed anywhere · call any vendor) | ✗            | ✗                 | ✗             | ✓               |
+| **Ships standalone CLI** (runs as its own product)      | ✓ Claude Code     | ✓ Codex CLI       | ✓             | ✗ embedded-only |
+
+The trade-off Maestro accepts: **no standalone CLI**. You don't get a `maestro` binary to drop on a server — you get an SDK to embed inside your own host.
+
+### Adjacent projects
+
 | Project | Layer | Key trade-off |
 |---------|-------|---------------|
 | **maestro-agent-sdk** | Embeddable SDK | Agent loop only — no CLI, no UI, no fixed product shape. Host injects logger, MCP resolver, session store, guardrails. |
