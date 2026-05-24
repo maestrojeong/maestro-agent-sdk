@@ -24,6 +24,22 @@
       "types": "./dist/providers/deepseek.d.ts",
       "import": "./dist/providers/deepseek.js"
     },
+    "./providers/codex": {
+      "types": "./dist/providers/codex.d.ts",
+      "import": "./dist/providers/codex.js"
+    },
+    "./providers/codex-auth": {
+      "types": "./dist/providers/codex-auth.d.ts",
+      "import": "./dist/providers/codex-auth.js"
+    },
+    "./providers/codex-stream": {
+      "types": "./dist/providers/codex-stream.d.ts",
+      "import": "./dist/providers/codex-stream.js"
+    },
+    "./providers/codex-translators": {
+      "types": "./dist/providers/codex-translators.d.ts",
+      "import": "./dist/providers/codex-translators.js"
+    },
     "./tools": {
       "types": "./dist/tools/index.d.ts",
       "import": "./dist/tools/index.js"
