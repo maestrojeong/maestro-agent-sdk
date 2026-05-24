@@ -1,3 +1,4 @@
+import type { ToolResultTruncationConfig } from "@/core/tool-result-truncation";
 import type { Provider } from "@/providers/base";
 import { getNativeMaxOutputTokens } from "@/registry";
 import type { ToolRegistry } from "@/tools/registry";
@@ -60,6 +61,20 @@ export interface AIAgentConfig {
   /** External abort signal — wired to the AgentQueryOptions.abortController. */
   abortSignal?: AbortSignal;
   /**
+   * Optional override for the compaction (auxiliary) LLM model id. When set,
+   * `compressIfNeeded` routes its summary call through this model instead of
+   * the v0.1.28+ default — the intra-provider cheapest sibling resolved by
+   * `resolveAuxModel(model)`. Useful when the host wants compaction to run
+   * on a totally different provider (pair with a host-side aux provider
+   * swap if needed).
+   *
+   * Leave omitted for the default mapping: gpt-5.5 → gpt-5.4-mini,
+   * opus → haiku, deepseek-v4-pro → deepseek-v4-flash. Cheap tiers
+   * self-map so the behavior is a no-op for callers already on a small
+   * model.
+   */
+  auxModel?: string;
+  /**
    * Per-iteration system-reminder builder. Invoked by `runConversation`
    * just before pushing each `tool_result` user message; the returned text
    * is appended as a trailing `text` block on that user message so the
@@ -80,6 +95,13 @@ export interface AIAgentConfig {
   llmPreHook?: LlmPreHook;
   /** LLM Post Hook — fires on turn-complete (no tool calls) before `result` event. */
   llmPostHook?: LlmPostHook;
+  /**
+   * Tool result truncation — when enabled, string tool outputs that exceed
+   * `maxBytes` are truncated to head+tail before being fed back into the model
+   * context. The full output is optionally persisted to disk. Disabled by
+   * default (opt-in).
+   */
+  toolResultTruncation?: ToolResultTruncationConfig;
 }
 
 export class AIAgent {
@@ -94,6 +116,12 @@ export class AIAgent {
     buildIterReminder?: (iterationsRemaining: number) => string | null;
     llmPreHook?: LlmPreHook;
     llmPostHook?: LlmPostHook;
+    /** Optional aux model override; consumed by the loop's compressIfNeeded
+     *  call. When omitted the loop falls back to `resolveAuxModel(model)`. */
+    auxModel?: string;
+    /** Tool result truncation config; consumed by `runConversation` each
+     *  tool-result turn. Omitted (undefined) → truncation disabled. */
+    toolResultTruncation?: ToolResultTruncationConfig;
   };
 
   constructor(provider: Provider, tools: ToolRegistry, config: AIAgentConfig) {
@@ -119,6 +147,8 @@ export class AIAgent {
       ...(config.buildIterReminder ? { buildIterReminder: config.buildIterReminder } : {}),
       ...(config.llmPreHook ? { llmPreHook: config.llmPreHook } : {}),
       ...(config.llmPostHook ? { llmPostHook: config.llmPostHook } : {}),
+      ...(config.auxModel ? { auxModel: config.auxModel } : {}),
+      ...(config.toolResultTruncation ? { toolResultTruncation: config.toolResultTruncation } : {}),
     };
   }
 }

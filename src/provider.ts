@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { AIAgent } from "@/core/agent";
-import { isAbortError } from "@/core/is-abort-error";
+import { isAbortError, isTimeoutError } from "@/core/is-abort-error";
 import { runConversation } from "@/core/loop";
 import { type MaestroMcpPool, registerMcpTools, startMcpPool } from "@/mcp/pool";
 import { buildSystemReminder } from "@/memory/reminder";
@@ -39,6 +39,7 @@ import { buildSkillsIndex } from "@/skills/index-builder";
 import { loadSkillsCached } from "@/skills/loader";
 import { getTaskStore } from "@/state/tasks";
 import { createAgentTool } from "@/tools/builtin/agent";
+import { askUserQuestionTool } from "@/tools/builtin/ask_user_question";
 import { bashTool, createBashTool } from "@/tools/builtin/bash";
 import {
   createBackgroundBashRegistry,
@@ -52,16 +53,15 @@ import { createReadTool } from "@/tools/builtin/read";
 import { createSkillViewTool } from "@/tools/builtin/skill_view";
 import { createSkillWriteTool } from "@/tools/builtin/skill_write";
 import {
-  createTaskOutputTool,
-  createTaskStopTool,
   createTaskCreateTool,
   createTaskGetTool,
   createTaskListTool,
+  createTaskOutputTool,
+  createTaskStopTool,
   createTaskUpdateTool,
 } from "@/tools/builtin/tasks";
 import { createToolSearchTool } from "@/tools/builtin/tool_search";
 import { webFetchTool } from "@/tools/builtin/web_fetch";
-import { askUserQuestionTool } from "@/tools/builtin/ask_user_question";
 import { createWriteTool } from "@/tools/builtin/write";
 import { getFileStateTracker } from "@/tools/file-state";
 import { ToolRegistry } from "@/tools/registry";
@@ -562,6 +562,12 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
     ...(thinkingBudget ? { thinkingBudget } : {}),
     ...(resolvedEffort ? { effort: resolvedEffort } : {}),
     ...(opts.abortController?.signal ? { abortSignal: opts.abortController.signal } : {}),
+    // v0.1.28+: forward the caller's aux-model override into AIAgent so the
+    // loop's compressIfNeeded call honors it. When omitted the loop falls
+    // back to `resolveAuxModel(resolvedModel)`, which routes heavy tiers
+    // (gpt-5.5, opus, deepseek-v4-pro) to their cheapest sibling.
+    ...(opts.auxModel ? { auxModel: opts.auxModel } : {}),
+    ...(opts.toolResultTruncation ? { toolResultTruncation: opts.toolResultTruncation } : {}),
   });
 
   // Wire abort → close MCP pool early. Without this, an aborted turn could
@@ -613,6 +619,31 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
     if (isAbortError(e) || abortSignal?.aborted) {
       aborted = true;
     } else {
+      // v0.1.28: dump the full error shape (name/code/cause/stack) so we can
+      // tell the difference between a codex OAuth refresh timeout, the
+      // `/responses` HTTP fetch timing out mid-roundtrip, an SSE stream
+      // abort during chunk parse, and a plain Anthropic/Deepseek crash —
+      // all of which previously surfaced as the same opaque "maestroProvider
+      // crashed: <message>" event. The lower-level codex hops also log on
+      // throw (see `codex.ts`/`codex-auth.ts` v0.1.28 instrumentation), so
+      // the combined log trail tells us which leg actually died.
+      const errIsTimeout = isTimeoutError(e);
+      logger.error(
+        {
+          sessionId,
+          model: resolvedModel,
+          effort: resolvedEffort,
+          isTimeoutError: errIsTimeout,
+          errName: e instanceof Error ? e.name : typeof e,
+          errCode: (e as { code?: unknown } | null)?.code,
+          errMessage: e instanceof Error ? e.message : String(e),
+          errCause: (e as { cause?: unknown } | null)?.cause,
+          stack: e instanceof Error ? e.stack : undefined,
+        },
+        errIsTimeout
+          ? "maestroProvider: upstream timeout caught in provider.ts catch"
+          : "maestroProvider: unhandled error caught in provider.ts catch",
+      );
       yield {
         type: "error",
         content: `maestroProvider crashed: ${e instanceof Error ? e.message : String(e)}`,
@@ -939,4 +970,4 @@ export function pickHigherBudget(a: number | undefined, b: number | undefined): 
  * Exported for unit coverage — used internally by `maestroProvider`'s catch
  * branch to distinguish a user-initiated abort from a real provider crash.
  */
-export { isAbortError };
+export { isAbortError, isTimeoutError };

@@ -20,10 +20,16 @@ export type {
 // ─── Core agent loop ─────────────────────────────────────────────────────────
 export { AIAgent, type AIAgentConfig } from "@/core/agent";
 export { runConversation } from "@/core/loop";
+export type {
+  ToolResultTruncationConfig,
+  ToolResultTruncationMetadata,
+  ToolResultTruncationResult,
+} from "@/core/tool-result-truncation";
 // ─── MCP ─────────────────────────────────────────────────────────────────────
 export type { MaestroMcpClient, MaestroMcpServerSpec, MaestroMcpTool } from "@/mcp/client";
 
 export { ACTIVE_TASK_TEMPLATE, wrapCompactedSummary } from "@/memory/active-task-template";
+export { resolveAuxModel } from "@/memory/aux-model-map";
 // ─── Memory / compression ────────────────────────────────────────────────────
 export { compressIfNeeded } from "@/memory/compressor";
 export { hashToolContent } from "@/memory/hash";
@@ -37,6 +43,7 @@ export {
   applySkillAllowlist,
   DEFAULT_MAX_ITERATIONS,
   isAbortError,
+  isTimeoutError,
   iterationBudgetLine,
   MAESTRO_DEFAULT_SKILL_KEY,
   maestroProvider,
@@ -70,12 +77,6 @@ export type {
   ProviderStreamChunk,
   ProviderToolSchema,
 } from "@/providers/base";
-export {
-  DeepseekProvider,
-  effortForDeepseek,
-  translateMessagesToOpenAI,
-  translateToolsToOpenAI,
-} from "@/providers/deepseek";
 // ─── Codex Responses API (ChatGPT OAuth) ─────────────────────────────────────
 export {
   CodexResponsesProvider,
@@ -84,8 +85,8 @@ export {
 export {
   accessTokenExpiresAt,
   accessTokenIsExpiring,
-  type CodexAuthFile,
   CodexAuthError,
+  type CodexAuthFile,
   cloudflareHeaders as codexCloudflareHeaders,
   codexAuthPath,
   decodeJwtClaims,
@@ -95,9 +96,7 @@ export {
   resolveAccessToken,
   writeRefreshedTokens,
 } from "@/providers/codex-auth";
-export {
-  parseCodexStream,
-} from "@/providers/codex-stream";
+export { parseCodexStream } from "@/providers/codex-stream";
 export {
   type ResponsesContentPart,
   type ResponsesFunctionTool,
@@ -106,6 +105,12 @@ export {
   translateMessageToResponsesItems,
   translateToolsToResponses,
 } from "@/providers/codex-translators";
+export {
+  DeepseekProvider,
+  effortForDeepseek,
+  translateMessagesToOpenAI,
+  translateToolsToOpenAI,
+} from "@/providers/deepseek";
 // ─── Maestro registry + top-level provider entry point ───────────────────────
 export { maestroRegistry } from "@/registry";
 // ─── Session store ───────────────────────────────────────────────────────────

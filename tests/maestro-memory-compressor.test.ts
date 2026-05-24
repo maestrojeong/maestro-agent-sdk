@@ -46,7 +46,26 @@ class RecordingProvider implements Provider {
   summary: string;
   shouldThrow: Error | null = null;
 
-  constructor(summary = "## Active Task\nworking\n## Goal\ntest\n## Pending\n- nothing") {
+  constructor(
+    summary = [
+      "## Active Task",
+      "working",
+      "## Goal",
+      "test",
+      "## Constraints",
+      "- none",
+      "## Key Decisions",
+      "- none",
+      "## Pending",
+      "- nothing",
+      "## Next Steps",
+      "- continue",
+      "## Files",
+      "- none",
+      "## Recent context",
+      "- none",
+    ].join("\n"),
+  ) {
     this.summary = summary;
   }
 
@@ -93,7 +112,24 @@ describe("compressIfNeeded — threshold gating", () => {
 describe("compressIfNeeded — successful compaction", () => {
   test("over threshold → aux LLM called, head/tail preserved, middle replaced with summary", async () => {
     const provider = new RecordingProvider(
-      "## Active Task\nworking on it\n## Goal\nsave context\n## Pending\n- finish",
+      [
+        "## Active Task",
+        "working on it",
+        "## Goal",
+        "save context",
+        "## Constraints",
+        "- preserve useful context",
+        "## Key Decisions",
+        "- use structured compaction",
+        "## Pending",
+        "- finish",
+        "## Next Steps",
+        "- continue the task",
+        "## Files",
+        "- none",
+        "## Recent context",
+        "- synthetic history compacted",
+      ].join("\n"),
     );
     // ~60 pairs × 2KB chars on each side = ~240KB → exceeds 200K window.
     const messages = buildBigHistory(60, 10000);
@@ -110,6 +146,9 @@ describe("compressIfNeeded — successful compaction", () => {
 
     expect(provider.calls.length).toBe(1);
     expect(provider.calls[0].system).toContain("## Active Task");
+    expect(provider.calls[0].system).toContain("## Constraints");
+    expect(provider.calls[0].system).toContain("## Key Decisions");
+    expect(provider.calls[0].system).toContain("## Next Steps");
 
     // Head: the first user message survives verbatim.
     expect(typeof out[0].content === "string" && out[0].content.startsWith("Q0:")).toBe(true);
@@ -209,6 +248,91 @@ describe("compressIfNeeded — fallbacks and safety", () => {
     expect(
       out.find((m) => typeof m.content === "string" && m.content.startsWith(COMPACTED_MARKER_OPEN)),
     ).toBeUndefined();
+  });
+
+  test("aux throw → emergency-truncation marker prepended, callback fires", async () => {
+    // v0.1.28+: when the aux LLM fails AND the pruned messages are still
+    // over the emergency target, compressIfNeeded falls back to a
+    // tail-only slice with an `<emergency-truncation>` notice prepended.
+    // The host-provided callback fires synchronously with the notice text.
+    const provider = new RecordingProvider();
+    provider.shouldThrow = new Error("aux timeout");
+    const messages = buildBigHistory(60, 10000);
+    __resetCompactorState(messages);
+    let captured: string | undefined;
+
+    const out = await compressIfNeeded(messages, {
+      auxProvider: provider,
+      auxModel: TEST_AUX_MODEL,
+      contextWindow: 200_000,
+      triggerRatio: 0.8,
+      emergencyTargetTokens: 5_000,
+      onEmergencyTrim: (notice) => {
+        captured = notice;
+      },
+    });
+
+    expect(captured).toBeDefined();
+    expect(captured).toContain("이전 대화");
+
+    expect(out[0].role).toBe("user");
+    expect(typeof out[0].content === "string" && out[0].content).toContain(
+      "<emergency-truncation>",
+    );
+    // No compacted-history marker on the failure path.
+    expect(
+      out.find((m) => typeof m.content === "string" && m.content.startsWith(COMPACTED_MARKER_OPEN)),
+    ).toBeUndefined();
+    // Token estimate is well below the original — emergency trim actually shrinks.
+    expect(estimateTokens(out)).toBeLessThan(estimateTokens(messages) / 2);
+  });
+
+  test("emergencyTargetTokens=0 → prune-only fallback (legacy v0.1.27 behavior)", async () => {
+    const provider = new RecordingProvider();
+    provider.shouldThrow = new Error("aux timeout");
+    const messages = buildBigHistory(60, 10000);
+    __resetCompactorState(messages);
+    let captured: string | undefined;
+
+    const out = await compressIfNeeded(messages, {
+      auxProvider: provider,
+      auxModel: TEST_AUX_MODEL,
+      contextWindow: 200_000,
+      triggerRatio: 0.8,
+      emergencyTargetTokens: 0,
+      onEmergencyTrim: (notice) => {
+        captured = notice;
+      },
+    });
+
+    // Callback NOT fired — legacy fallback path.
+    expect(captured).toBeUndefined();
+    // No emergency marker — same as the v0.1.27 prune-only path.
+    expect(
+      out.find(
+        (m) => typeof m.content === "string" && m.content.includes("<emergency-truncation>"),
+      ),
+    ).toBeUndefined();
+  });
+
+  test("emergency tail begins with a user-role message (Anthropic pairing)", async () => {
+    const provider = new RecordingProvider();
+    provider.shouldThrow = new Error("aux timeout");
+    const messages = buildBigHistory(60, 10000);
+    __resetCompactorState(messages);
+
+    const out = await compressIfNeeded(messages, {
+      auxProvider: provider,
+      auxModel: TEST_AUX_MODEL,
+      contextWindow: 200_000,
+      triggerRatio: 0.8,
+      emergencyTargetTokens: 5_000,
+    });
+
+    // First two elements: emergency notice (user), then a real user message
+    // (snapped to user boundary).
+    expect(out[0].role).toBe("user");
+    expect(out[1]?.role).toBe("user");
   });
 
   test("history smaller than head+1+tail → no compaction (nothing to compress)", async () => {

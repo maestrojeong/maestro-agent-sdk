@@ -1,5 +1,8 @@
 import type { AIAgent } from "@/core/agent";
+import type { ToolResultTruncationMetadata } from "@/core/tool-result-truncation";
+import { maybeTruncateToolResultForModel } from "@/core/tool-result-truncation";
 import { extractFileEvents } from "@/media/file-events";
+import { resolveAuxModel } from "@/memory/aux-model-map";
 import { compressIfNeeded } from "@/memory/compressor";
 import { StreamingContextScrubber, scrubString } from "@/memory/scrubber";
 import { logger } from "@/platform/logger";
@@ -88,19 +91,52 @@ export async function* runConversation(
     //   2. compressIfNeeded already prunes — no second pruneMessages call.
     //
     // Pure with respect to `messages` (canonical history kept intact for
-    // resume); only the on-wire slice is reshaped. Anti-thrashing on the
-    // array reference (both in prune.ts and compressor.ts) keeps back-to-
-    // back iterations near-zero CPU once the conversation stabilizes.
+    // resume); only the on-wire slice is reshaped.
+    // NOTE: compressIfNeeded now appends compaction summary blocks
+    // (⌛compaction user + summary assistant) to the canonical `messages`
+    // array for persistence (OpenCode-style incremental). On resume the
+    // aux LLM receives an incremental "update the anchored summary"
+    // prompt instead of re-summarizing from scratch. Anti-thrashing on
+    // the array reference (both in prune.ts and compressor.ts) keeps
+    // back-to-back iterations near-zero CPU once the conversation
+    // stabilizes.
     //
-    // Aux provider + model are reused from the agent's main config — one
-    // client, one model id, no separate env var. Hosts that want compaction
-    // to run on a cheaper model can call compressIfNeeded directly with an
-    // explicit `auxModel`; this default keeps the SDK self-contained.
+    // Aux provider stays the same (intra-provider remap), but the aux MODEL
+    // routes through `resolveAuxModel` so heavy tiers (gpt-5.5, opus,
+    // deepseek-v4-pro) don't pay their own latency cost summarizing the
+    // middle history. `resolveAuxModel` returns the input unchanged when
+    // the main model is already the cheapest sibling on its provider, so
+    // small-model callers are unaffected.
+    //
+    // Override path: a host can still force a specific aux model via
+    // `AIAgentConfig.auxModel` (e.g. to point compaction at a totally
+    // different provider). When set, it wins over the mapping; when omitted
+    // the mapping decides.
+    //
+    // v0.1.28 background: production logs showed gpt-5.5 main + gpt-5.5 aux
+    // both timing out on the same 5-minute undici headersTimeout wall while
+    // POSTing ~1.3 MB request bodies. Routing aux to gpt-5.4-mini cuts both
+    // the body weight and the model latency.
+    const auxModel = agent.config.auxModel ?? resolveAuxModel(agent.config.model);
+    // Captured by the `onEmergencyTrim` callback below. When the aux LLM
+    // compaction call fails AND the pruned messages are still over the
+    // emergency-target ceiling, compressIfNeeded falls back to a
+    // tail-only slice and reports the truncation here. We yield a
+    // user-visible `error` UnifiedEvent so the dispatcher (clawgram,
+    // CLI host, …) can surface the message — the loop itself proceeds
+    // normally with the smaller wire array so the turn doesn't stall.
+    let emergencyNotice: string | undefined;
     const wireMessages = await compressIfNeeded(messages, {
       auxProvider: agent.provider,
-      auxModel: agent.config.model,
+      auxModel,
+      onEmergencyTrim: (notice) => {
+        emergencyNotice = notice;
+      },
       ...(agent.config.abortSignal ? { abortSignal: agent.config.abortSignal } : {}),
     });
+    if (emergencyNotice !== undefined) {
+      yield { type: "error", content: emergencyNotice };
+    }
 
     // Drive the API call via stream() when available so we can emit
     // text_delta UnifiedEvents as the tokens arrive — matches claude/codex
@@ -451,10 +487,13 @@ export async function* runConversation(
     }
 
     // Cap the surfaced UnifiedEvent `content` at TOOL_RESULT_PREVIEW_MAX to
-    // match claude/codex, but push the FULL `result` into `toolResultBlocks`
-    // so the model sees complete tool output on the next turn — claude/codex
-    // do the same (SDK feeds full payload to model, UnifiedEvent emit is the
-    // only place truncation happens).
+    // match claude/codex, but decide per-tool whether the model sees the full
+    // output or a truncated version.
+    //
+    // String results: if `toolResultTruncation.enabled` and the output exceeds
+    // `maxBytes`, the model sees head+tail only — the full output is optionally
+    // persisted to `outputDir`. Non-string (multimodal) results pass through
+    // unchanged.
     //
     // v0.1.18+: A tool may return a `MaestroToolResultBlock[]` (image / mixed
     // multimodal). The host-surfaced UnifiedEvent still carries a short text
@@ -462,15 +501,40 @@ export async function* runConversation(
     // the full structured payload rides the next turn's tool_result content
     // array verbatim, so the model sees the image natively.
     const toolResultBlocks: ProviderContentBlock[] = [];
+    const truncConfig = agent.config.toolResultTruncation;
     for (let i = 0; i < toolUses.length; i++) {
       const tu = toolUses[i];
       const result = results[i];
       const preview = previewToolResult(result);
-      yield { type: "tool_result", toolUseId: tu.id, content: preview };
+
+      // Determine content the model will see — truncate string results when
+      // configured; leave multimodal (structured array) results untouched.
+      let modelContent: ToolExecuteResult = result;
+      let metadata: ToolResultTruncationMetadata | undefined;
+
+      if (typeof result === "string" && truncConfig) {
+        const truncated = await maybeTruncateToolResultForModel(
+          tu.name,
+          tu.id,
+          result,
+          truncConfig,
+        );
+        modelContent = truncated.content;
+        if (truncated.metadata.truncatedForModel) {
+          metadata = truncated.metadata;
+        }
+      }
+
+      yield {
+        type: "tool_result",
+        toolUseId: tu.id,
+        content: preview,
+        ...(metadata ? { metadata } : {}),
+      };
       toolResultBlocks.push({
         type: "tool_result",
         tool_use_id: tu.id,
-        content: result,
+        content: modelContent,
       });
     }
 

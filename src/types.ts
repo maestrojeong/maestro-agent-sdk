@@ -66,6 +66,7 @@ export type LlmPostHook = (
   },
 ) => GuardrailResult | Promise<GuardrailResult>;
 
+import type { ToolResultTruncationMetadata } from "@/core/tool-result-truncation";
 /**
  * These imports are for the guardrail types only — re-exported below the
  * ProviderMessage reference.
@@ -110,7 +111,12 @@ export type UnifiedEvent =
   | { type: "tool_use"; name: string; input: Record<string, unknown> }
   | { type: "tool_progress"; toolName: string; elapsed: number }
   | { type: "tool_use_summary"; summary: string }
-  | { type: "tool_result"; toolUseId: string; content: string }
+  | {
+      type: "tool_result";
+      toolUseId: string;
+      content: string;
+      metadata?: ToolResultTruncationMetadata;
+    }
   | { type: "text_delta"; content: string }
   | { type: "text"; content: string }
   | { type: "result"; content: string; stopReason: string; usage?: TokenUsage }
@@ -248,6 +254,18 @@ export interface AgentQueryOptions {
    * never silently shrinks it.
    */
   maxTokens?: number;
+  /**
+   * Override the auxiliary (compaction) model id. When omitted, the loop
+   * resolves it via `resolveAuxModel(model)` — intra-provider remap to the
+   * cheapest sibling (gpt-5.5 → gpt-5.4-mini, opus → haiku,
+   * deepseek-v4-pro → deepseek-v4-flash). Set this to pin a specific
+   * compaction model regardless of which main model the call uses.
+   *
+   * v0.1.28+: added after production logs showed gpt-5.5 main + gpt-5.5
+   * aux both hitting undici's 5-minute headersTimeout while POSTing ~1.3MB
+   * request bodies. The default mapping is usually what you want.
+   */
+  auxModel?: string;
   mcpEnabled?: string[] | null;
   mcpExtra?: Record<string, unknown>;
   isCron?: boolean;
@@ -355,4 +373,14 @@ export interface AgentQueryOptions {
    * set (it must be callable for the model to discover anything else).
    */
   enableToolSearch?: boolean;
+  /**
+   * Tool result truncation — when enabled, string tool outputs that exceed
+   * `maxBytes` are truncated to head+tail before being fed back into the model
+   * context. The full output is optionally persisted to disk. Disabled by
+   * default (opt-in).
+   *
+   * Mirrors `AIAgentConfig.toolResultTruncation` — wired through to the agent
+   * loop via `maestroProvider`.
+   */
+  toolResultTruncation?: import("@/core/tool-result-truncation").ToolResultTruncationConfig;
 }
