@@ -12,9 +12,12 @@
  *     pending**. Without an explicit "Pending" section the summary
  *     degenerates into a recap; the model loses track of the actual task
  *     it should be working on next.
- *   - The headers (Active Task / Goal / Pending / Files / Recent context)
- *     match the structure upstream uses, calibrated against many real
- *     compaction events on long sessions.
+ *   - The headers are calibrated against many real compaction events on
+ *     long sessions: they preserve the current task, durable constraints,
+ *     decisions already made, pending work, next steps, relevant files, and
+ *     recent tool context. v0.1.28 expands the schema from five to eight
+ *     headers; expect one prompt-cache miss at upgrade time, then keep the
+ *     new header order stable for future compactions.
  *
  * Upstream reference: `hermes-agent/agent/context_compressor.py`
  * (look for the "ACTIVE_TASK_SUMMARY_TEMPLATE" / "compression_system_prompt"
@@ -32,9 +35,21 @@ One sentence: what is the agent currently working on?
 ## Goal
 One or two sentences: the user's overall objective in this session.
 
+## Constraints
+Bulleted list of durable requirements, user preferences, technical limits, or
+process rules that should continue to govern the work. Skip if none.
+
+## Key Decisions
+Bulleted list of decisions already made that should not be reopened unless the
+user asks. Include the rationale when it is short and important. Skip if none.
+
 ## Pending
 Bulleted list of unresolved items, decisions to make, or work explicitly
 deferred. Use "(blocked: <reason>)" when applicable.
+
+## Next Steps
+Bulleted list of the concrete next actions the main agent should take after
+compaction, in likely execution order. Skip if none.
 
 ## Files
 Bulleted list of \`absolute/paths\` touched or referenced (read, written,
@@ -46,7 +61,7 @@ Prefer specifics (paths, line numbers, exit codes, key values) over generic
 recaps. Skip details that have no bearing on the next step.
 
 RULES:
-- Output ONLY the five sections above, with no preamble or postscript.
+- Output ONLY the eight sections above, with no preamble or postscript.
 - Do NOT echo the user's words verbatim — paraphrase tightly.
 - Do NOT invent file paths or facts not present in the transcript.
 - Keep the entire summary under 1500 words.`;

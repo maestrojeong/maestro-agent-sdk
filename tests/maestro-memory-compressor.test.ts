@@ -46,7 +46,26 @@ class RecordingProvider implements Provider {
   summary: string;
   shouldThrow: Error | null = null;
 
-  constructor(summary = "## Active Task\nworking\n## Goal\ntest\n## Pending\n- nothing") {
+  constructor(
+    summary = [
+      "## Active Task",
+      "working",
+      "## Goal",
+      "test",
+      "## Constraints",
+      "- none",
+      "## Key Decisions",
+      "- none",
+      "## Pending",
+      "- nothing",
+      "## Next Steps",
+      "- continue",
+      "## Files",
+      "- none",
+      "## Recent context",
+      "- none",
+    ].join("\n"),
+  ) {
     this.summary = summary;
   }
 
@@ -93,7 +112,24 @@ describe("compressIfNeeded — threshold gating", () => {
 describe("compressIfNeeded — successful compaction", () => {
   test("over threshold → aux LLM called, head/tail preserved, middle replaced with summary", async () => {
     const provider = new RecordingProvider(
-      "## Active Task\nworking on it\n## Goal\nsave context\n## Pending\n- finish",
+      [
+        "## Active Task",
+        "working on it",
+        "## Goal",
+        "save context",
+        "## Constraints",
+        "- preserve useful context",
+        "## Key Decisions",
+        "- use structured compaction",
+        "## Pending",
+        "- finish",
+        "## Next Steps",
+        "- continue the task",
+        "## Files",
+        "- none",
+        "## Recent context",
+        "- synthetic history compacted",
+      ].join("\n"),
     );
     // ~60 pairs × 2KB chars on each side = ~240KB → exceeds 200K window.
     const messages = buildBigHistory(60, 10000);
@@ -110,6 +146,9 @@ describe("compressIfNeeded — successful compaction", () => {
 
     expect(provider.calls.length).toBe(1);
     expect(provider.calls[0].system).toContain("## Active Task");
+    expect(provider.calls[0].system).toContain("## Constraints");
+    expect(provider.calls[0].system).toContain("## Key Decisions");
+    expect(provider.calls[0].system).toContain("## Next Steps");
 
     // Head: the first user message survives verbatim.
     expect(typeof out[0].content === "string" && out[0].content.startsWith("Q0:")).toBe(true);
