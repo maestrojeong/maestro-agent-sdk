@@ -1,6 +1,11 @@
 import { unlinkSync } from "node:fs";
 import type { AgentRegistry } from "@/agents/contracts";
 import {
+  MODEL_CODEX_GPT5_2,
+  MODEL_CODEX_GPT5_3_CODEX,
+  MODEL_CODEX_GPT5_4,
+  MODEL_CODEX_GPT5_4_MINI,
+  MODEL_CODEX_GPT5_5,
   MODEL_DEEPSEEK_V4_FLASH,
   MODEL_DEEPSEEK_V4_PRO,
   MODEL_OPUS,
@@ -32,6 +37,19 @@ const ALIAS_MAP: Record<string, string> = {
   deepseek: MODEL_DEEPSEEK_V4_FLASH,
   "deepseek-flash": MODEL_DEEPSEEK_V4_FLASH,
   "deepseek-pro": MODEL_DEEPSEEK_V4_PRO,
+  // Codex (ChatGPT OAuth-backed Responses API). The short alias `codex`
+  // resolves to the lightest model so default-effort calls don't burn
+  // through the ChatGPT subscription's hourly cap on the heaviest tier;
+  // hosts that want gpt-5.5 should pass the full slug or `codex-pro`.
+  codex: MODEL_CODEX_GPT5_4_MINI,
+  "codex-mini": MODEL_CODEX_GPT5_4_MINI,
+  "codex-pro": MODEL_CODEX_GPT5_5,
+  "codex-coder": MODEL_CODEX_GPT5_3_CODEX,
+  "gpt-5.5": MODEL_CODEX_GPT5_5,
+  "gpt-5.4": MODEL_CODEX_GPT5_4,
+  "gpt-5.4-mini": MODEL_CODEX_GPT5_4_MINI,
+  "gpt-5.3-codex": MODEL_CODEX_GPT5_3_CODEX,
+  "gpt-5.2": MODEL_CODEX_GPT5_2,
 };
 
 const VALID_ALIASES = new Set(Object.keys(ALIAS_MAP));
@@ -88,6 +106,17 @@ export const MODEL_MAX_OUTPUT_TOKENS: Readonly<Record<string, number>> = {
   // DeepSeek V4 — conservative defaults below the 384K native cap (see docstring).
   [MODEL_DEEPSEEK_V4_PRO]: 65_536,
   [MODEL_DEEPSEEK_V4_FLASH]: 32_768,
+  // Codex Responses API — the `/codex/models` catalog reports a 272K context
+  // window across the gpt-5.x lineup; output cap isn't surfaced separately,
+  // so we anchor against the same per-tier defaults we use for the Anthropic
+  // family (64K heavy, 32K mini). The Codex backend silently caps long
+  // outputs anyway, so picking a generous-but-finite default here just keeps
+  // a runaway turn bounded.
+  [MODEL_CODEX_GPT5_5]: 65_536,
+  [MODEL_CODEX_GPT5_4]: 65_536,
+  [MODEL_CODEX_GPT5_4_MINI]: 32_768,
+  [MODEL_CODEX_GPT5_3_CODEX]: 65_536,
+  [MODEL_CODEX_GPT5_2]: 65_536,
 } as const;
 
 /**

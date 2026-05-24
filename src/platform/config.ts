@@ -36,6 +36,16 @@ export const MODEL_OPUS: string = "claude-opus-4-7";
 export const MODEL_DEEPSEEK_V4_PRO: string = "deepseek-v4-pro";
 export const MODEL_DEEPSEEK_V4_FLASH: string = "deepseek-v4-flash";
 
+// Codex Responses API (ChatGPT-backed OAuth). The endpoint only accepts a
+// codex-issued whitelist of model slugs — these are the ones surfaced by the
+// `/codex/models` endpoint as of 2026-05-23. Adding a new one: list it here
+// AND in `MODEL_MAX_OUTPUT_TOKENS` / `ALIAS_MAP` if it deserves a short alias.
+export const MODEL_CODEX_GPT5_5: string = "gpt-5.5";
+export const MODEL_CODEX_GPT5_4: string = "gpt-5.4";
+export const MODEL_CODEX_GPT5_4_MINI: string = "gpt-5.4-mini";
+export const MODEL_CODEX_GPT5_3_CODEX: string = "gpt-5.3-codex";
+export const MODEL_CODEX_GPT5_2: string = "gpt-5.2";
+
 export const FILE_TAG_REGEX: RegExp = /\[FILE:(\/[^\]]+)\]/gi;
 
 // Make sure DATA_DIR exists before any tool/skill code tries to readdir into
