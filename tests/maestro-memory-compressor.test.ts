@@ -211,6 +211,91 @@ describe("compressIfNeeded — fallbacks and safety", () => {
     ).toBeUndefined();
   });
 
+  test("aux throw → emergency-truncation marker prepended, callback fires", async () => {
+    // v0.1.28+: when the aux LLM fails AND the pruned messages are still
+    // over the emergency target, compressIfNeeded falls back to a
+    // tail-only slice with an `<emergency-truncation>` notice prepended.
+    // The host-provided callback fires synchronously with the notice text.
+    const provider = new RecordingProvider();
+    provider.shouldThrow = new Error("aux timeout");
+    const messages = buildBigHistory(60, 10000);
+    __resetCompactorState(messages);
+    let captured: string | undefined;
+
+    const out = await compressIfNeeded(messages, {
+      auxProvider: provider,
+      auxModel: TEST_AUX_MODEL,
+      contextWindow: 200_000,
+      triggerRatio: 0.8,
+      emergencyTargetTokens: 5_000,
+      onEmergencyTrim: (notice) => {
+        captured = notice;
+      },
+    });
+
+    expect(captured).toBeDefined();
+    expect(captured).toContain("이전 대화");
+
+    expect(out[0].role).toBe("user");
+    expect(typeof out[0].content === "string" && out[0].content).toContain(
+      "<emergency-truncation>",
+    );
+    // No compacted-history marker on the failure path.
+    expect(
+      out.find((m) => typeof m.content === "string" && m.content.startsWith(COMPACTED_MARKER_OPEN)),
+    ).toBeUndefined();
+    // Token estimate is well below the original — emergency trim actually shrinks.
+    expect(estimateTokens(out)).toBeLessThan(estimateTokens(messages) / 2);
+  });
+
+  test("emergencyTargetTokens=0 → prune-only fallback (legacy v0.1.27 behavior)", async () => {
+    const provider = new RecordingProvider();
+    provider.shouldThrow = new Error("aux timeout");
+    const messages = buildBigHistory(60, 10000);
+    __resetCompactorState(messages);
+    let captured: string | undefined;
+
+    const out = await compressIfNeeded(messages, {
+      auxProvider: provider,
+      auxModel: TEST_AUX_MODEL,
+      contextWindow: 200_000,
+      triggerRatio: 0.8,
+      emergencyTargetTokens: 0,
+      onEmergencyTrim: (notice) => {
+        captured = notice;
+      },
+    });
+
+    // Callback NOT fired — legacy fallback path.
+    expect(captured).toBeUndefined();
+    // No emergency marker — same as the v0.1.27 prune-only path.
+    expect(
+      out.find(
+        (m) => typeof m.content === "string" && m.content.includes("<emergency-truncation>"),
+      ),
+    ).toBeUndefined();
+  });
+
+  test("emergency tail begins with a user-role message (Anthropic pairing)", async () => {
+    const provider = new RecordingProvider();
+    provider.shouldThrow = new Error("aux timeout");
+    const messages = buildBigHistory(60, 10000);
+    __resetCompactorState(messages);
+
+    const out = await compressIfNeeded(messages, {
+      auxProvider: provider,
+      auxModel: TEST_AUX_MODEL,
+      contextWindow: 200_000,
+      triggerRatio: 0.8,
+      emergencyTargetTokens: 5_000,
+    });
+
+    // First two elements: emergency notice (user), then a real user message
+    // (snapped to user boundary).
+    expect(out[0].role).toBe("user");
+    expect(out[1]?.role).toBe("user");
+  });
+
   test("history smaller than head+1+tail → no compaction (nothing to compress)", async () => {
     const provider = new RecordingProvider();
     const messages: ProviderMessage[] = [userText("hi"), assistantText("hello")];

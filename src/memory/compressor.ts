@@ -82,6 +82,26 @@ export interface CompressOptions {
   disablePruneFallback?: boolean;
   /** Abort signal for the aux summarization request. */
   abortSignal?: AbortSignal;
+  /**
+   * Target token count for the emergency tail-only fallback that fires
+   * when aux LLM compaction fails. Default 50_000 — small enough that
+   * the next provider call has no chance of repeating the timeout that
+   * killed compaction, large enough to keep the last several turns of
+   * working memory. Set to 0 (or any non-finite value) to skip the
+   * emergency trim entirely and fall back to prune-only.
+   */
+  emergencyTargetTokens?: number;
+  /**
+   * Called when the emergency tail-trim path fires (aux LLM failed AND
+   * pruned messages were still over the target). The loop layer uses this
+   * to surface a user-facing error event via UnifiedEvent so the
+   * dispatcher can tell the user that older context was dropped.
+   *
+   * Synchronous: the trim has already produced the new messages array by
+   * the time this callback fires. Throwing here is logged and swallowed —
+   * we never let a notifier kill the in-flight loop.
+   */
+  onEmergencyTrim?: (notice: string) => void;
 }
 
 /** Same anti-thrash semantics as `prune.ts` — keyed on the messages array
@@ -240,10 +260,36 @@ export async function compressIfNeeded(
   } catch (err) {
     logger.warn(
       { err, prunedTokens, threshold },
-      "compressIfNeeded: aux LLM call failed — returning prune-only fallback",
+      "compressIfNeeded: aux LLM call failed",
     );
     if (opts.disablePruneFallback) return messages;
-    return pruned;
+    // Emergency tail-trim. Without this, the loop would just push the
+    // (still-huge) pruned array straight at the model on the next turn
+    // and almost certainly hit the same wall (Bun/undici headersTimeout,
+    // model context cap, etc.) that just killed the aux call. Drop the
+    // head, keep ~`emergencyTargetTokens` (default 50K) worth of tail
+    // bound to a user boundary, and prepend a single user message
+    // announcing the truncation so the model and the host both know.
+    const target = opts.emergencyTargetTokens;
+    const effectiveTarget =
+      target !== undefined && Number.isFinite(target) && target > 0 ? target : 50_000;
+    if (target === 0) {
+      // Explicit opt-out — fall back to prune-only (v0.1.27 behavior).
+      return pruned;
+    }
+    const notice =
+      "[메모리 압축 실패로 이전 대화 일부가 잘렸습니다. 최근 대화만 모델에 전달됨.]";
+    if (opts.onEmergencyTrim) {
+      try {
+        opts.onEmergencyTrim(notice);
+      } catch (cbErr) {
+        logger.warn(
+          { err: cbErr },
+          "compressIfNeeded: onEmergencyTrim callback threw — swallowed",
+        );
+      }
+    }
+    return emergencyTail(pruned, effectiveTarget, notice);
   }
 
   const compacted: ProviderMessage[] = [
@@ -300,6 +346,75 @@ function snapTailStart(messages: ProviderMessage[], idealStart: number): number 
   let i = Math.max(idealStart, 0);
   while (i > floor && messages[i] && messages[i].role !== "user") i--;
   return i;
+}
+
+/**
+ * Emergency tail-only trim used by the aux-LLM-failure fallback path.
+ *
+ * Walks backward from the end of the array accumulating estimated tokens
+ * per message, then snaps the cut point forward to the first user-role
+ * message so the resulting slice is a valid Anthropic prompt (tool_use
+ * pairing requirements mean we never start the wire array on an
+ * assistant turn). A single `user`-role notice message is prepended so
+ * the model sees an explicit "older context was dropped" marker; the
+ * host's `onEmergencyTrim` callback (if supplied) is also fired so the
+ * dispatcher can surface a UnifiedEvent.
+ *
+ * Pathological cases:
+ *   - Empty input → returned as-is.
+ *   - Snap walks all the way past the last message → keep just the
+ *     final message (guarantees at least one turn in the output).
+ *
+ * Token estimate per-message is intentionally cheap (an `estimateTokens`
+ * call over a single-element array). For the budget sizes we care about
+ * (50K tail × ~1-2K tokens/message ≈ 25-50 messages walked) this is
+ * inexpensive and avoids a separate per-message estimator.
+ */
+function emergencyTail(
+  messages: ProviderMessage[],
+  targetTokens: number,
+  notice: string,
+): ProviderMessage[] {
+  if (messages.length === 0) return messages;
+
+  // Walk backward accumulating tokens; remember the most-recent
+  // user-role index that still fit inside `targetTokens`. We track only
+  // user boundaries because Anthropic's prompt API rejects an opening
+  // assistant turn — starting the tail anywhere else would produce a
+  // 400-error every emergency turn.
+  let acc = 0;
+  let lastUserCut = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (!m) continue;
+    const msgTokens = estimateTokens([m]);
+    if (acc + msgTokens > targetTokens) break;
+    acc += msgTokens;
+    if (m.role === "user") lastUserCut = i;
+  }
+
+  // No user message fit inside the budget (e.g. one giant user blob
+  // alone exceeds `targetTokens`). Force-keep the most-recent user
+  // anyway — better to overshoot the budget by one message than to
+  // send an Anthropic-invalid wire payload.
+  if (lastUserCut === -1) {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i]?.role === "user") {
+        lastUserCut = i;
+        break;
+      }
+    }
+  }
+
+  // Still no user anywhere in the array → caller's history is malformed.
+  // Return only the notice; the next provider call will reject it loudly
+  // but at least the loop isn't silently sending an assistant-only body.
+  const tail = lastUserCut >= 0 ? messages.slice(lastUserCut) : [];
+  const noticeMsg: ProviderMessage = {
+    role: "user",
+    content: `<emergency-truncation>\n${notice}\n</emergency-truncation>`,
+  };
+  return [noticeMsg, ...tail];
 }
 
 /** Pull the concatenated text out of an aux LLM ProviderResponse. */

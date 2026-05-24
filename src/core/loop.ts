@@ -1,4 +1,6 @@
 import type { AIAgent } from "@/core/agent";
+import { maybeTruncateToolResultForModel } from "@/core/tool-result-truncation";
+import type { ToolResultTruncationMetadata } from "@/core/tool-result-truncation";
 import { extractFileEvents } from "@/media/file-events";
 import { resolveAuxModel } from "@/memory/aux-model-map";
 import { compressIfNeeded } from "@/memory/compressor";
@@ -110,11 +112,25 @@ export async function* runConversation(
     // POSTing ~1.3 MB request bodies. Routing aux to gpt-5.4-mini cuts both
     // the body weight and the model latency.
     const auxModel = agent.config.auxModel ?? resolveAuxModel(agent.config.model);
+    // Captured by the `onEmergencyTrim` callback below. When the aux LLM
+    // compaction call fails AND the pruned messages are still over the
+    // emergency-target ceiling, compressIfNeeded falls back to a
+    // tail-only slice and reports the truncation here. We yield a
+    // user-visible `error` UnifiedEvent so the dispatcher (clawgram,
+    // CLI host, …) can surface the message — the loop itself proceeds
+    // normally with the smaller wire array so the turn doesn't stall.
+    let emergencyNotice: string | undefined;
     const wireMessages = await compressIfNeeded(messages, {
       auxProvider: agent.provider,
       auxModel,
+      onEmergencyTrim: (notice) => {
+        emergencyNotice = notice;
+      },
       ...(agent.config.abortSignal ? { abortSignal: agent.config.abortSignal } : {}),
     });
+    if (emergencyNotice !== undefined) {
+      yield { type: "error", content: emergencyNotice };
+    }
 
     // Drive the API call via stream() when available so we can emit
     // text_delta UnifiedEvents as the tokens arrive — matches claude/codex
@@ -465,10 +481,13 @@ export async function* runConversation(
     }
 
     // Cap the surfaced UnifiedEvent `content` at TOOL_RESULT_PREVIEW_MAX to
-    // match claude/codex, but push the FULL `result` into `toolResultBlocks`
-    // so the model sees complete tool output on the next turn — claude/codex
-    // do the same (SDK feeds full payload to model, UnifiedEvent emit is the
-    // only place truncation happens).
+    // match claude/codex, but decide per-tool whether the model sees the full
+    // output or a truncated version.
+    //
+    // String results: if `toolResultTruncation.enabled` and the output exceeds
+    // `maxBytes`, the model sees head+tail only — the full output is optionally
+    // persisted to `outputDir`. Non-string (multimodal) results pass through
+    // unchanged.
     //
     // v0.1.18+: A tool may return a `MaestroToolResultBlock[]` (image / mixed
     // multimodal). The host-surfaced UnifiedEvent still carries a short text
@@ -476,15 +495,40 @@ export async function* runConversation(
     // the full structured payload rides the next turn's tool_result content
     // array verbatim, so the model sees the image natively.
     const toolResultBlocks: ProviderContentBlock[] = [];
+    const truncConfig = agent.config.toolResultTruncation;
     for (let i = 0; i < toolUses.length; i++) {
       const tu = toolUses[i];
       const result = results[i];
       const preview = previewToolResult(result);
-      yield { type: "tool_result", toolUseId: tu.id, content: preview };
+
+      // Determine content the model will see — truncate string results when
+      // configured; leave multimodal (structured array) results untouched.
+      let modelContent: ToolExecuteResult = result;
+      let metadata: ToolResultTruncationMetadata | undefined;
+
+      if (typeof result === "string" && truncConfig) {
+        const truncated = await maybeTruncateToolResultForModel(
+          tu.name,
+          tu.id,
+          result,
+          truncConfig,
+        );
+        modelContent = truncated.content;
+        if (truncated.metadata.truncatedForModel) {
+          metadata = truncated.metadata;
+        }
+      }
+
+      yield {
+        type: "tool_result",
+        toolUseId: tu.id,
+        content: preview,
+        ...(metadata ? { metadata } : {}),
+      };
       toolResultBlocks.push({
         type: "tool_result",
         tool_use_id: tu.id,
-        content: result,
+        content: modelContent,
       });
     }
 
