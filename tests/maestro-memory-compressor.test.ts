@@ -489,3 +489,174 @@ describe("pass 3 — JSON-aware tool_use arg shrink", () => {
     expect(block.input.content).toBe('<truncated 5000 chars, head: "x">');
   });
 });
+
+describe("compressIfNeeded — H1/H2 regression", () => {
+  function assistantWithContent(blocks: Array<Record<string, unknown>>): ProviderMessage {
+    return { role: "assistant", content: blocks as ProviderMessage["content"] };
+  }
+  function userToolResults(
+    pairs: Array<{ id: string; content: string }>,
+  ): ProviderMessage {
+    return {
+      role: "user",
+      content: pairs.map((p) => ({ type: "tool_result", tool_use_id: p.id, content: p.content })),
+    };
+  }
+  function plainUser(text: string): ProviderMessage {
+    return { role: "user", content: [{ type: "text", text }] };
+  }
+
+  test("H1: deep tool chain (4 tool pairs) doesn't orphan tool_use", async () => {
+    //  0  user         "edit config.json"
+    //  1  assistant    [tool_use: t1/read]
+    //  2  user         [tool_result: t1]
+    //  3  assistant    [tool_use: t2/grep]
+    //  4  user         [tool_result: t2]
+    //  5  assistant    [tool_use: t3/edit]
+    //  6  user         [tool_result: t3]
+    //  7  assistant    [tool_use: t4/bash]
+    //  8  user         [tool_result: t4]
+    //  9  assistant    [text: done]
+    // 10  user(plain)  "also fix css"
+    // ...padding to reach threshold...
+    const head = [
+      plainUser("edit config.json"),
+      assistantWithContent([
+        { type: "tool_use", id: "t1", name: "read", input: {} },
+      ]),
+      userToolResults([{ id: "t1", content: "file contents" }]),
+      assistantWithContent([
+        { type: "tool_use", id: "t2", name: "grep", input: {} },
+      ]),
+      userToolResults([{ id: "t2", content: "grep results" }]),
+      assistantWithContent([
+        { type: "tool_use", id: "t3", name: "write", input: {} },
+      ]),
+      userToolResults([{ id: "t3", content: "wrote file" }]),
+      assistantWithContent([
+        { type: "tool_use", id: "t4", name: "bash", input: {} },
+      ]),
+      userToolResults([{ id: "t4", content: "test output" }]),
+      assistantText("all done, the change is complete"),
+      plainUser("also fix the CSS while you're at it"),
+    ];
+    // Add padding so we definitely cross the compaction threshold.
+    const messages = [
+      ...head,
+      ...buildBigHistory(20, 500),
+    ];
+
+    const rec = new RecordingProvider();
+    const out = await compressIfNeeded(messages, {
+      auxProvider: rec,
+      auxModel: TEST_AUX_MODEL,
+      contextWindow: 8192,  // small window forces compaction
+      headProtect: 2, // just the first pair
+    });
+
+    // The compacted wire must NOT contain any orphan tool_use
+    // (assistant tool_use without a following tool_result).
+    const open = new Set<string>();
+    for (const msg of out) {
+      if (msg.role === "assistant" && Array.isArray(msg.content)) {
+        for (const b of msg.content) {
+          if (b.type === "tool_use" && b.id) open.add(b.id);
+        }
+      }
+      if (msg.role === "user" && Array.isArray(msg.content)) {
+        for (const b of msg.content) {
+          if (b.type === "tool_result" && b.tool_use_id) open.delete(b.tool_use_id);
+        }
+      }
+    }
+    expect(open.size).toBe(0);
+
+    // Verify a compaction marker exists.
+    const summaryMsgs = out.filter(
+      (m) => m.role === "user" && typeof m.content === "string" && m.content.includes(COMPACTED_MARKER_OPEN),
+    );
+    expect(summaryMsgs.length).toBe(1);
+  });
+
+  test("H2: no user-user consecutive after compaction", async () => {
+    const messages = [
+      plainUser("q1"),
+      assistantText("a1"),
+      plainUser("q2"),
+      assistantText("a2"),
+      ...buildBigHistory(20, 500),
+    ];
+
+    const rec = new RecordingProvider();
+    const out = await compressIfNeeded(messages, {
+      auxProvider: rec,
+      auxModel: TEST_AUX_MODEL,
+      contextWindow: 8192,
+      headProtect: 2,
+    });
+
+    // Check alternating role invariant.
+    for (let i = 1; i < out.length; i++) {
+      const prev = out[i - 1].role;
+      const cur = out[i].role;
+      if (prev === "user" && cur === "user") {
+        // Accept only if the first user is the compaction summary.
+        const prevContent = out[i - 1].content;
+        const isSummaryUser =
+          typeof prevContent === "string" && prevContent.includes(COMPACTED_MARKER_OPEN);
+        if (!isSummaryUser) {
+          expect.fail(`user-user consecutive at index ${i} (not a summary user)`);
+        }
+      }
+    }
+  });
+
+  test("H1: 4-tool chain with cap-exceeding midpoint survives compression", async () => {
+    // Directly stress snapHeadEnd by crafting messages where the original cap
+    // of idealEnd+4 would cut inside a tool_result user.
+    const messages = [
+      plainUser("do these things"),
+      assistantWithContent([
+        { type: "thinking", thinking: "planning", signature: "s1" },
+        { type: "tool_use", id: "a", name: "read", input: {} },
+      ]),
+      userToolResults([{ id: "a", content: "AAA" }]),
+      assistantWithContent([{ type: "tool_use", id: "b", name: "grep", input: {} }]),
+      userToolResults([{ id: "b", content: "BBB" }]),
+      assistantWithContent([{ type: "tool_use", id: "c", name: "write", input: {} }]),
+      userToolResults([{ id: "c", content: "CCC" }]),
+      assistantText("done with those three"),
+      plainUser("next instruction"),
+      ...buildBigHistory(25, 400),
+    ];
+
+    const rec = new RecordingProvider();
+    const out = await compressIfNeeded(messages, {
+      auxProvider: rec,
+      auxModel: TEST_AUX_MODEL,
+      contextWindow: 8192,
+      headProtect: 2,
+    });
+
+    for (const msg of out) {
+      if (msg.role === "assistant" && Array.isArray(msg.content)) {
+        const toolUses = msg.content.filter((b) => b.type === "tool_use");
+        const idx = out.indexOf(msg);
+        // Every tool_use must have a matching tool_result later in the array.
+        for (const tu of toolUses) {
+          if (!tu.id) continue;
+          const found = out.some(
+            (m, j) =>
+              j > idx &&
+              m.role === "user" &&
+              Array.isArray(m.content) &&
+              m.content.some(
+                (b) => b.type === "tool_result" && b.tool_use_id === tu.id,
+              ),
+          );
+          expect(found).toBe(true);
+        }
+      }
+    }
+  });
+});

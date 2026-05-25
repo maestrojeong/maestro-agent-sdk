@@ -131,11 +131,12 @@ describe("runConversation", () => {
     expect(messages[3].role).toBe("assistant");
   });
 
-  test("preserves thinking blocks across tool_use turns", async () => {
+  test("preserves exact assistant block order across tool_use turns", async () => {
     const { provider, calls } = makeProvider([
       {
         content: [
           { type: "thinking", thinking: "need the echo tool", signature: "sig-1" },
+          { type: "text", text: "calling echo" },
           { type: "tool_use", id: "t1", name: "echo", input: { msg: "ping" } },
         ],
         stopReason: "tool_use",
@@ -171,6 +172,7 @@ describe("runConversation", () => {
     expect(assistantTurn.role).toBe("assistant");
     expect(assistantTurn.content).toEqual([
       { type: "thinking", thinking: "need the echo tool", signature: "sig-1" },
+      { type: "text", text: "calling echo" },
       { type: "tool_use", id: "t1", name: "echo", input: { msg: "ping" } },
     ]);
   });
@@ -746,7 +748,7 @@ describe("runConversation (streaming path)", () => {
     // Two parallelSafe tools (slow then fast). If dispatch is serial, total
     // wall time ≈ 200+30+overhead = 230+ms. If parallel, it's dominated by
     // the slower tool ≈ 200ms.
-    const { provider } = makeProvider([
+    const { provider, calls } = makeProvider([
       {
         content: [
           { type: "tool_use", id: "slow", name: "slow_read", input: {} },
@@ -805,6 +807,13 @@ describe("runConversation (streaming path)", () => {
       expect(toolResults[1].toolUseId).toBe("fast");
       expect(toolResults[1].content).toBe("FAST");
     }
+
+    const toolResultTurn = calls[1].messages[2];
+    expect(toolResultTurn.role).toBe("user");
+    expect(toolResultTurn.content).toEqual([
+      { type: "tool_result", tool_use_id: "slow", content: "SLOW" },
+      { type: "tool_result", tool_use_id: "fast", content: "FAST" },
+    ]);
   });
 
   test("non-parallelSafe tools dispatch sequentially in toolUses order", async () => {

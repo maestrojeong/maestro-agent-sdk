@@ -244,8 +244,9 @@ describe("trimToSafePrefix preserves signature when the assistant turn is kept",
     // block whose signature could get stale.
     //
     // The live loop builds the user prompt as a content-array (`[text-prompt,
-    // text-reminder]`), not a string — so the trim only drops the orphan
-    // assistant turn, leaving the prompt+reminder in place.
+    // text-reminder]`), not a string. On partial drain this is still an
+    // unanswered prompt once the orphan assistant turn is dropped, so the trim
+    // walks back through both entries and leaves the previous checkpoint intact.
     const msgs: ProviderMessage[] = [
       {
         role: "user",
@@ -264,10 +265,9 @@ describe("trimToSafePrefix preserves signature when the assistant turn is kept",
       },
     ];
     const out = trimToSafePrefix(msgs);
-    // The assistant turn with orphan tool_use is dropped; user prompt
-    // (content-array form) survives so the next resume can re-issue it.
-    expect(out).toHaveLength(1);
-    expect(out[0].role).toBe("user");
+    // The assistant turn with orphan tool_use is dropped; the preceding user
+    // prompt is then an unanswered prompt, so the safe prefix is empty.
+    expect(out).toEqual([]);
   });
 
   test("sanitizeThinkingBlocksForWire drops signatureless thinking blocks from a persisted history", () => {
