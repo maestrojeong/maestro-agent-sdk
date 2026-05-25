@@ -4,6 +4,7 @@ import { maybeTruncateToolResultForModel } from "@/core/tool-result-truncation";
 import { extractFileEvents } from "@/media/file-events";
 import { resolveAuxModel } from "@/memory/aux-model-map";
 import { compressIfNeeded } from "@/memory/compressor";
+import { estimateTokens } from "@/memory/token-estimate";
 import { StreamingContextScrubber, scrubString } from "@/memory/scrubber";
 import { logger } from "@/platform/logger";
 import { isWrapUpZone, thinkingBudgetForTurn } from "@/providers/anthropic";
@@ -126,14 +127,28 @@ export async function* runConversation(
     // CLI host, …) can surface the message — the loop itself proceeds
     // normally with the smaller wire array so the turn doesn't stall.
     let emergencyNotice: string | undefined;
+    let compactionActive = false;
+
+    // Rough pre-check: if we're near threshold, notify before blocking on aux.
+    const roughTokens = estimateTokens(messages);
+    if (roughTokens > 100_000) {
+      yield { type: "status", content: "🔄 대화 압축 중…" };
+    }
+
     const wireMessages = await compressIfNeeded(messages, {
       auxProvider: agent.provider,
       auxModel,
+      onCompactionStart: () => {
+        compactionActive = true;
+      },
       onEmergencyTrim: (notice) => {
         emergencyNotice = notice;
       },
       ...(agent.config.abortSignal ? { abortSignal: agent.config.abortSignal } : {}),
     });
+    if (compactionActive) {
+      yield { type: "status", content: "🔄 대화 압축 완료" };
+    }
     if (emergencyNotice !== undefined) {
       yield { type: "error", content: emergencyNotice };
     }

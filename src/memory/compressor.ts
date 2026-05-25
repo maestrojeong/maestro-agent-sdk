@@ -50,6 +50,8 @@ export interface CompressOptions {
   abortSignal?: AbortSignal;
   emergencyTargetTokens?: number;
   onEmergencyTrim?: (notice: string) => void;
+  /** Called before the aux LLM starts reading the compaction file. */
+  onCompactionStart?: () => void;
 }
 
 interface AntiThrashState {
@@ -320,6 +322,7 @@ export async function compressIfNeeded(
   let summaryText = "";
   let tmpFile: string | undefined;
   try {
+    opts.onCompactionStart?.();
     const auxMessages = linearizeForAuxLLM(auxMiddle);
     const auxInputChars = auxMessages.reduce(
       (sum, msg) => sum + (typeof msg.content === "string" ? msg.content.length : 0),
