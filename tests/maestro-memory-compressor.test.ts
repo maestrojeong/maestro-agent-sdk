@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { COMPACTED_MARKER_OPEN } from "@/memory/active-task-template";
-import { __resetCompactorState, compressIfNeeded } from "@/memory/compressor";
+import { compressIfNeeded } from "@/memory/compressor";
 import { estimateTokens } from "@/memory/token-estimate";
 import type {
   Provider,
@@ -133,7 +133,7 @@ describe("compressIfNeeded — successful compaction", () => {
     );
     // ~60 pairs × 2KB chars on each side = ~240KB → exceeds 200K window.
     const messages = buildBigHistory(60, 10000);
-    __resetCompactorState(messages);
+    let capturedSummary: string | undefined;
 
     const out = await compressIfNeeded(messages, {
       auxProvider: provider,
@@ -142,6 +142,9 @@ describe("compressIfNeeded — successful compaction", () => {
       triggerRatio: 0.8,
       headProtect: 2,
       tailProtect: 6,
+      onCompactionSummary: (summary) => {
+        capturedSummary = summary;
+      },
     });
 
     expect(provider.calls.length).toBeGreaterThanOrEqual(1);
@@ -170,12 +173,13 @@ describe("compressIfNeeded — successful compaction", () => {
 
     // Token estimate of the compacted output is smaller than the original.
     expect(estimateTokens(out)).toBeLessThan(estimateTokens(messages));
+    expect(capturedSummary).toContain("## Active Task");
+    expect(capturedSummary).toContain("working on it");
   });
 
   test("falls back to prune-only when auxModel is unset", async () => {
     const provider = new RecordingProvider();
     const messages = buildBigHistory(60, 10000);
-    __resetCompactorState(messages);
     const out = await compressIfNeeded(messages, {
       auxProvider: provider,
       contextWindow: 200_000,
@@ -190,7 +194,6 @@ describe("compressIfNeeded — successful compaction", () => {
   test("custom auxModel reaches the provider", async () => {
     const provider = new RecordingProvider();
     const messages = buildBigHistory(60, 10000);
-    __resetCompactorState(messages);
     await compressIfNeeded(messages, {
       auxProvider: provider,
       auxModel: "claude-opus-4-7",
@@ -204,7 +207,6 @@ describe("compressIfNeeded — successful compaction", () => {
     const provider = new RecordingProvider();
     const messages = buildBigHistory(60, 10000);
     const ac = new AbortController();
-    __resetCompactorState(messages);
     await compressIfNeeded(messages, {
       auxProvider: provider,
       auxModel: TEST_AUX_MODEL,
@@ -221,7 +223,6 @@ describe("compressIfNeeded — fallbacks and safety", () => {
     const provider = new RecordingProvider();
     provider.shouldThrow = new Error("aux down");
     const messages = buildBigHistory(60, 10000);
-    __resetCompactorState(messages);
 
     const out = await compressIfNeeded(messages, {
       auxProvider: provider,
@@ -238,7 +239,6 @@ describe("compressIfNeeded — fallbacks and safety", () => {
   test("empty aux response → falls back to prune-only", async () => {
     const provider = new RecordingProvider("");
     const messages = buildBigHistory(60, 10000);
-    __resetCompactorState(messages);
 
     const out = await compressIfNeeded(messages, {
       auxProvider: provider,
@@ -259,7 +259,6 @@ describe("compressIfNeeded — fallbacks and safety", () => {
     const provider = new RecordingProvider();
     provider.shouldThrow = new Error("aux timeout");
     const messages = buildBigHistory(60, 10000);
-    __resetCompactorState(messages);
     let captured: string | undefined;
 
     const out = await compressIfNeeded(messages, {
@@ -288,11 +287,66 @@ describe("compressIfNeeded — fallbacks and safety", () => {
     expect(estimateTokens(out)).toBeLessThan(estimateTokens(messages) / 2);
   });
 
+  test("aux throw + lastGoodSummary → uses compacted-history fallback without emergency notice", async () => {
+    const provider = new RecordingProvider();
+    provider.shouldThrow = new Error("aux timeout");
+    const messages = buildBigHistory(60, 10000);
+    let captured: string | undefined;
+
+    const lastGoodSummary = [
+      "## Active Task",
+      "continue from last known durable memory",
+      "## Goal",
+      "avoid lossy emergency trim",
+      "## Constraints",
+      "- preserve prior summary on aux failure",
+      "## Key Decisions",
+      "- use last-good memory",
+      "## Pending",
+      "- retry compaction later",
+      "## Next Steps",
+      "- continue with live tail",
+      "## Files",
+      "- none",
+      "## Recent context",
+      "- aux failed during test",
+    ].join("\n");
+
+    const out = await compressIfNeeded(messages, {
+      auxProvider: provider,
+      auxModel: TEST_AUX_MODEL,
+      contextWindow: 200_000,
+      triggerRatio: 0.8,
+      emergencyTargetTokens: 5_000,
+      lastGoodSummary,
+      onEmergencyTrim: (notice) => {
+        captured = notice;
+      },
+    });
+
+    expect(captured).toBeUndefined();
+    expect(
+      out.find(
+        (m) => typeof m.content === "string" && m.content.includes("<emergency-truncation>"),
+      ),
+    ).toBeUndefined();
+    const summaryWire = out.find(
+      (m) =>
+        m.role === "user" &&
+        typeof m.content === "string" &&
+        m.content.startsWith(COMPACTED_MARKER_OPEN),
+    );
+    expect(summaryWire).toBeDefined();
+    expect(typeof summaryWire?.content === "string" && summaryWire.content).toContain(
+      "continue from last known durable memory",
+    );
+    expect(estimateTokens(out)).toBeLessThan(estimateTokens(messages) / 2);
+  });
+
   test("emergencyTargetTokens=0 → prune-only fallback (legacy v0.1.27 behavior)", async () => {
     const provider = new RecordingProvider();
     provider.shouldThrow = new Error("aux timeout");
     const messages = buildBigHistory(60, 10000);
-    __resetCompactorState(messages);
     let captured: string | undefined;
 
     const out = await compressIfNeeded(messages, {
@@ -320,7 +374,6 @@ describe("compressIfNeeded — fallbacks and safety", () => {
     const provider = new RecordingProvider();
     provider.shouldThrow = new Error("aux timeout");
     const messages = buildBigHistory(60, 10000);
-    __resetCompactorState(messages);
 
     const out = await compressIfNeeded(messages, {
       auxProvider: provider,
@@ -330,16 +383,16 @@ describe("compressIfNeeded — fallbacks and safety", () => {
       emergencyTargetTokens: 5_000,
     });
 
-    // First two elements: emergency notice (user), then a real user message
-    // (snapped to user boundary).
+    // H2 defense: emergency notice (user) → dummy assistant → real user tail.
+    // The dummy assistant prevents user-user consecutive that DeepSeek/Codex reject.
     expect(out[0].role).toBe("user");
-    expect(out[1]?.role).toBe("user");
+    expect(out[1]?.role).toBe("assistant");
+    expect(out[2]?.role).toBe("user");
   });
 
   test("history smaller than head+1+tail → no compaction (nothing to compress)", async () => {
     const provider = new RecordingProvider();
     const messages: ProviderMessage[] = [userText("hi"), assistantText("hello")];
-    __resetCompactorState(messages);
     const out = await compressIfNeeded(messages, {
       auxProvider: provider,
       contextWindow: 100, // tiny window so the threshold trivially trips
@@ -352,79 +405,204 @@ describe("compressIfNeeded — fallbacks and safety", () => {
   });
 });
 
-describe("compressIfNeeded — anti-thrash", () => {
-  test("repeated low-savings calls eventually stop dispatching aux LLM", async () => {
-    // Force a degenerate aux summary that is LONGER than the input it
-    // replaces — every call counts as a "failed compaction" toward the
-    // anti-thrash counter.
-    // Middle slice is roughly 60 pairs × 10K chars × 2 = 1.2M chars worth
-    // of payload. To force an "ineffective" compaction (< 10% savings) the
-    // synthetic summary must be only marginally smaller — within 90% of
-    // the input. We use 1.15M chars which lands just inside that band.
-    const longerThanMiddle = "x".repeat(1_150_000);
-    const provider = new RecordingProvider(longerThanMiddle);
+/**
+ * Multi-round file-based aux tool loop (maestro review fix #3, 2026-05-25).
+ *
+ * The default RecordingProvider returns its summary text on the very first
+ * call, which means the production tool loop (`assistant tool_use → user
+ * tool_result → assistant text`) was never exercised end-to-end in the
+ * existing suite. These tests stand in a deterministic multi-round mock to
+ * lock in the contract: tool schema is forwarded, offset/limit reach the
+ * provider, tool_result pairing stays valid, summary extraction succeeds on
+ * a non-tool-use round, and the onCompactionResult callback reports the
+ * truthful (didStartAux, didCompact) on success.
+ */
+class MultiRoundProvider implements Provider {
+  // Snapshot the messages array per call — compressor's tool loop mutates
+  // the same array reference between rounds, so storing the live reference
+  // would let later mutations leak backwards into earlier "calls" and
+  // make assertions race the loop.
+  calls: Array<{ messages: ProviderMessage[]; tools?: ProviderCompleteOptions["tools"] }> = [];
+  responses: ProviderResponse[];
+
+  constructor(responses: ProviderResponse[]) {
+    this.responses = responses;
+  }
+
+  async complete(opts: ProviderCompleteOptions): Promise<ProviderResponse> {
+    this.calls.push({
+      messages: structuredClone(opts.messages),
+      ...(opts.tools ? { tools: structuredClone(opts.tools) } : {}),
+    });
+    const r = this.responses[this.calls.length - 1];
+    if (!r) {
+      throw new Error(`MultiRoundProvider: no canned response for call #${this.calls.length}`);
+    }
+    return r;
+  }
+}
+
+describe("compressIfNeeded — file-based aux tool loop", () => {
+  test("multi-round: read offset=1 → read offset=301 → text summary", async () => {
+    const finalSummary =
+      "## Active Task\nx\n## Goal\ny\n## Pending\n- nothing\n## Files\n## Recent context\n- ok";
+    const provider = new MultiRoundProvider([
+      {
+        content: [
+          { type: "tool_use", id: "call_1", name: "read_compaction_log", input: { offset: 1, limit: 300 } },
+        ],
+        stopReason: "tool_use",
+        usage: { inputTokens: 50, outputTokens: 20 },
+      },
+      {
+        content: [
+          { type: "tool_use", id: "call_2", name: "read_compaction_log", input: { offset: 301, limit: 300 } },
+        ],
+        stopReason: "tool_use",
+        usage: { inputTokens: 100, outputTokens: 25 },
+      },
+      {
+        content: [{ type: "text", text: finalSummary }],
+        stopReason: "end_turn",
+        usage: { inputTokens: 200, outputTokens: 100 },
+      },
+    ]);
     const messages = buildBigHistory(60, 10000);
-    __resetCompactorState(messages);
 
-    // First two attempts call the aux LLM and discard the result (savings
-    // negative / under 10%), incrementing the failed-compactions counter.
-    await compressIfNeeded(messages, {
+    let resultMeta: { didStartAux: boolean; didCompact: boolean } | undefined;
+    const out = await compressIfNeeded(messages, {
       auxProvider: provider,
       auxModel: TEST_AUX_MODEL,
       contextWindow: 200_000,
       triggerRatio: 0.8,
+      onCompactionResult: (m) => {
+        resultMeta = m;
+      },
     });
-    await compressIfNeeded(messages, {
-      auxProvider: provider,
-      auxModel: TEST_AUX_MODEL,
-      contextWindow: 200_000,
-      triggerRatio: 0.8,
-    });
-    expect(provider.calls.length).toBe(2);
 
-    // Third attempt is skipped — anti-thrash kicks in and returns prune-only.
-    await compressIfNeeded(messages, {
-      auxProvider: provider,
-      auxModel: TEST_AUX_MODEL,
-      contextWindow: 200_000,
-      triggerRatio: 0.8,
-    });
-    expect(provider.calls.length).toBe(2); // unchanged
+    // 3 round-trips total — two tool_use rounds + one summary round.
+    expect(provider.calls.length).toBe(3);
+
+    // Each call must carry the read_compaction_log tool schema.
+    for (const c of provider.calls) {
+      expect(c.tools?.length).toBe(1);
+      expect(c.tools?.[0].name).toBe("read_compaction_log");
+    }
+
+    // Round 2's message stack contains a user turn whose content is a
+    // tool_result with tool_use_id "call_1" — pairing intact.
+    const round2Messages = provider.calls[1].messages;
+    const lastUser = round2Messages[round2Messages.length - 1];
+    expect(lastUser.role).toBe("user");
+    expect(Array.isArray(lastUser.content)).toBe(true);
+    if (Array.isArray(lastUser.content)) {
+      const tr = lastUser.content.find((b) => b.type === "tool_result");
+      expect(tr).toBeDefined();
+      if (tr && tr.type === "tool_result") {
+        expect(tr.tool_use_id).toBe("call_1");
+      }
+    }
+
+    // Round 3 must contain pairing for both tool_uses across the conversation.
+    const round3Messages = provider.calls[2].messages;
+    const allBlocks = round3Messages.flatMap((m) =>
+      Array.isArray(m.content) ? m.content : [],
+    );
+    const toolResultIds = allBlocks
+      .filter((b) => b.type === "tool_result")
+      .map((b) => (b.type === "tool_result" ? b.tool_use_id : ""));
+    expect(toolResultIds).toContain("call_1");
+    expect(toolResultIds).toContain("call_2");
+
+    // Summary extracted into the wire as a compacted-history fence.
+    const summaryWire = out.find(
+      (m) =>
+        m.role === "user" &&
+        typeof m.content === "string" &&
+        m.content.startsWith(COMPACTED_MARKER_OPEN),
+    );
+    expect(summaryWire).toBeDefined();
+
+    // onCompactionResult reports both flags true on a clean success run.
+    expect(resultMeta).toEqual({ didStartAux: true, didCompact: true });
   });
 
-  test("fresh array reference resets the anti-thrash counter", async () => {
-    // Middle slice is roughly 60 pairs × 10K chars × 2 = 1.2M chars worth
-    // of payload. To force an "ineffective" compaction (< 10% savings) the
-    // synthetic summary must be only marginally smaller — within 90% of
-    // the input. We use 1.15M chars which lands just inside that band.
-    const longerThanMiddle = "x".repeat(1_150_000);
-    const provider = new RecordingProvider(longerThanMiddle);
-    const first = buildBigHistory(60, 10000);
-    __resetCompactorState(first);
-    await compressIfNeeded(first, {
-      auxProvider: provider,
-      auxModel: TEST_AUX_MODEL,
-      contextWindow: 200_000,
-      triggerRatio: 0.8,
-    });
-    await compressIfNeeded(first, {
+  test("tool-loop empty rounds fall back to one direct summary call", async () => {
+    const finalSummary =
+      "## Active Task\nfallback summary\n## Goal\ny\n## Pending\n- nothing\n## Files\n## Recent context\n- ok";
+    const emptyRounds = Array.from({ length: 15 }, () => ({
+      content: [],
+      stopReason: "max_tokens",
+      usage: { inputTokens: 50, outputTokens: 20 },
+    }));
+    const provider = new MultiRoundProvider([
+      ...emptyRounds,
+      {
+        content: [{ type: "text", text: finalSummary }],
+        stopReason: "end_turn",
+        usage: { inputTokens: 200, outputTokens: 100 },
+      },
+    ]);
+    const messages = buildBigHistory(60, 10000);
+
+    const out = await compressIfNeeded(messages, {
       auxProvider: provider,
       auxModel: TEST_AUX_MODEL,
       contextWindow: 200_000,
       triggerRatio: 0.8,
     });
 
-    // New array reference — counter does NOT carry over.
-    const second = buildBigHistory(60, 10000);
-    __resetCompactorState(second);
-    await compressIfNeeded(second, {
+    expect(provider.calls.length).toBe(16);
+    expect(provider.calls[15].tools).toBeUndefined();
+    expect(provider.calls[15].messages[0].content).toContain("<conversation-transcript>");
+    const summaryWire = out.find(
+      (m) =>
+        m.role === "user" &&
+        typeof m.content === "string" &&
+        m.content.startsWith(COMPACTED_MARKER_OPEN),
+    );
+    expect(summaryWire).toBeDefined();
+    expect(typeof summaryWire?.content === "string" && summaryWire.content).toContain(
+      "fallback summary",
+    );
+  });
+
+  test("onCompactionResult fires with didStartAux:false on fast-path skip", async () => {
+    // History is small enough for the raw fast-path; aux should not run.
+    const provider = new MultiRoundProvider([]);
+    const messages = buildBigHistory(2, 100);
+    let resultMeta: { didStartAux: boolean; didCompact: boolean } | undefined;
+    await compressIfNeeded(messages, {
       auxProvider: provider,
       auxModel: TEST_AUX_MODEL,
       contextWindow: 200_000,
       triggerRatio: 0.8,
+      onCompactionResult: (m) => {
+        resultMeta = m;
+      },
     });
-    // 3 total calls — anti-thrash didn't suppress the third.
-    expect(provider.calls.length).toBe(3);
+    // Compressor short-circuited before any aux call.
+    expect(provider.calls.length).toBe(0);
+    expect(resultMeta).toEqual({ didStartAux: false, didCompact: false });
+  });
+
+  test("onCompactionResult fires with didStartAux:true didCompact:false on aux failure", async () => {
+    // Aux throws — fallback to emergencyTail / prune-only path.
+    const provider = new RecordingProvider();
+    provider.shouldThrow = new Error("aux network blip");
+    const messages = buildBigHistory(60, 10000);
+    let resultMeta: { didStartAux: boolean; didCompact: boolean } | undefined;
+    await compressIfNeeded(messages, {
+      auxProvider: provider,
+      auxModel: TEST_AUX_MODEL,
+      contextWindow: 200_000,
+      triggerRatio: 0.8,
+      emergencyTargetTokens: 5_000,
+      onCompactionResult: (m) => {
+        resultMeta = m;
+      },
+    });
+    expect(resultMeta).toEqual({ didStartAux: true, didCompact: false });
   });
 });
 
@@ -679,7 +857,6 @@ describe("compressIfNeeded — H1/H2 regression", () => {
       assistantText("done"),
       ...buildBigHistory(20, 500),
     ];
-    __resetCompactorState(messages);
 
     await compressIfNeeded(messages, {
       auxProvider: provider,
