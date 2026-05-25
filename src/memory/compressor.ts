@@ -97,6 +97,56 @@ function extractText(blocks: unknown): string {
   return "";
 }
 
+function blockToTranscriptLine(block: ProviderContentBlock): string | undefined {
+  switch (block.type) {
+    case "text":
+      return block.text;
+    case "thinking":
+      return `[thinking] ${block.thinking}`;
+    case "redacted_thinking":
+      return "[redacted thinking]";
+    case "tool_use":
+      return `[tool_use ${block.name} id=${block.id}] ${JSON.stringify(block.input ?? {})}`;
+    case "tool_result":
+      return `[tool_result id=${block.tool_use_id}] ${extractText(block.content) || JSON.stringify(block.content)}`;
+    case "image": {
+      const bytes = block.source.data ? Math.floor((block.source.data.length * 3) / 4) : 0;
+      return `[image ${block.source.media_type} ${bytes} bytes]`;
+    }
+    case "document": {
+      const bytes = block.source.data ? Math.floor((block.source.data.length * 3) / 4) : 0;
+      return `[document ${block.source.media_type} ${bytes} bytes]`;
+    }
+    default:
+      return undefined;
+  }
+}
+
+function messageToTranscriptText(msg: ProviderMessage): string {
+  if (typeof msg.content === "string") return msg.content;
+  return msg.content
+    .map((block) => blockToTranscriptLine(block))
+    .filter((line): line is string => !!line && line.length > 0)
+    .join("\n");
+}
+
+/**
+ * Convert the aux summarization slice into plain user/assistant transcript
+ * messages. The compactor only needs semantic history; preserving structural
+ * tool_use/tool_result blocks in an arbitrary middle slice makes OpenAI-style
+ * providers (DeepSeek/Codex) enforce adjacency invariants and reject otherwise
+ * valid compression attempts.
+ */
+function linearizeForAuxLLM(messages: ProviderMessage[]): ProviderMessage[] {
+  const out: ProviderMessage[] = [];
+  for (const msg of messages) {
+    const text = messageToTranscriptText(msg).trim();
+    if (!text) continue;
+    out.push({ role: msg.role, content: `[${msg.role}]\n${text}` });
+  }
+  return out;
+}
+
 /**
  * Returns true when a ProviderMessage's blocks contain at least one
  * tool_result.  Used by snap-helper to avoid cutting the wire at a
@@ -269,7 +319,12 @@ export async function compressIfNeeded(
   try {
     const auxResponse = await opts.auxProvider.complete({
       model: auxModel,
-      messages: auxMiddle,
+      // The aux model is summarizing history, not continuing tool execution.
+      // Send a text-only transcript so provider-specific tool pairing rules
+      // (notably DeepSeek/OpenAI's assistant tool_calls → tool messages
+      // invariant) cannot reject a middle slice that starts/ends inside a
+      // tool round-trip.
+      messages: linearizeForAuxLLM(auxMiddle),
       system: systemPrompt,
       maxTokens: 2048,
       ...(opts.abortSignal ? { abortSignal: opts.abortSignal } : {}),
