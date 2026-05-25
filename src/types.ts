@@ -121,7 +121,8 @@ export type UnifiedEvent =
   | { type: "text"; content: string }
   | { type: "result"; content: string; stopReason: string; usage?: TokenUsage }
   | { type: "file"; path: string; source: string; origin: "tag" | "extension" }
-  | { type: "error"; content: string };
+  | { type: "error"; content: string }
+  | { type: "status"; content: string };
 
 /**
  * Session-level lifecycle callbacks. All handlers are optional and fire

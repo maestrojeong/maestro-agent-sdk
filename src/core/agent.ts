@@ -60,6 +60,9 @@ export interface AIAgentConfig {
   effort?: EffortLevel;
   /** External abort signal — wired to the AgentQueryOptions.abortController. */
   abortSignal?: AbortSignal;
+  /** Optional persisted session id. Memory sidecars use this to store
+   *  last-good compaction state independently from the transcript JSONL. */
+  sessionId?: string;
   /**
    * Optional override for the compaction (auxiliary) LLM model id. When set,
    * `compressIfNeeded` routes its summary call through this model instead of
@@ -113,6 +116,7 @@ export class AIAgent {
     thinkingBudget?: number;
     effort?: EffortLevel;
     abortSignal?: AbortSignal;
+    sessionId?: string;
     buildIterReminder?: (iterationsRemaining: number) => string | null;
     llmPreHook?: LlmPreHook;
     llmPostHook?: LlmPostHook;
@@ -144,6 +148,7 @@ export class AIAgent {
         : {}),
       ...(config.effort ? { effort: config.effort } : {}),
       ...(config.abortSignal ? { abortSignal: config.abortSignal } : {}),
+      ...(config.sessionId ? { sessionId: config.sessionId } : {}),
       ...(config.buildIterReminder ? { buildIterReminder: config.buildIterReminder } : {}),
       ...(config.llmPreHook ? { llmPreHook: config.llmPreHook } : {}),
       ...(config.llmPostHook ? { llmPostHook: config.llmPostHook } : {}),

@@ -541,6 +541,7 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
 
   const agent = new AIAgent(provider, tools, {
     model: resolvedModel,
+    sessionId,
     systemPrompt: augmentedSystemPrompt,
     // Effort-derived tool-iteration cap. The model sees the same number via
     // the per-iteration `<system-reminder>` (see `buildIterReminder` above)
