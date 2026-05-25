@@ -349,6 +349,11 @@ export async function compressIfNeeded(
 
   let summaryText: string;
   try {
+    const auxMessages = linearizeForAuxLLM(auxMiddle);
+    const auxInputChars = auxMessages.reduce(
+      (sum, msg) => sum + (typeof msg.content === "string" ? msg.content.length : 0),
+      0,
+    );
     const auxResponse = await opts.auxProvider.complete({
       model: auxModel,
       // The aux model is summarizing history, not continuing tool execution.
@@ -356,13 +361,44 @@ export async function compressIfNeeded(
       // (notably DeepSeek/OpenAI's assistant tool_calls → tool messages
       // invariant) cannot reject a middle slice that starts/ends inside a
       // tool round-trip.
-      messages: linearizeForAuxLLM(auxMiddle),
+      messages: auxMessages,
       system: systemPrompt,
       maxTokens: 2048,
       ...(opts.abortSignal ? { abortSignal: opts.abortSignal } : {}),
     });
     summaryText = extractText(auxResponse.content).trim();
     if (!summaryText) {
+      logger.warn(
+        {
+          model: auxModel,
+          stopReason: auxResponse.stopReason,
+          usage: auxResponse.usage,
+          auxResponse: auxResponseDebug(auxResponse.content),
+          auxInput: {
+            middleMessages: auxMiddle.length,
+            linearizedMessages: auxMessages.length,
+            chars: auxInputChars,
+            first: auxMessages[0]
+              ? {
+                  role: auxMessages[0].role,
+                  chars: typeof auxMessages[0].content === "string" ? auxMessages[0].content.length : 0,
+                  preview: typeof auxMessages[0].content === "string" ? auxMessages[0].content.slice(0, 500) : "",
+                }
+              : undefined,
+            last: auxMessages.at(-1)
+              ? {
+                  role: auxMessages.at(-1)?.role,
+                  chars: typeof auxMessages.at(-1)?.content === "string" ? auxMessages.at(-1)!.content.length : 0,
+                  preview:
+                    typeof auxMessages.at(-1)?.content === "string"
+                      ? auxMessages.at(-1)!.content.slice(0, 500)
+                      : "",
+                }
+              : undefined,
+          },
+        },
+        "compressIfNeeded: aux LLM returned empty summary",
+      );
       throw new Error("aux LLM returned empty summary");
     }
   } catch (err) {
