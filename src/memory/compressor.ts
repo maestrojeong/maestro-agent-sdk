@@ -147,6 +147,38 @@ function linearizeForAuxLLM(messages: ProviderMessage[]): ProviderMessage[] {
   return out;
 }
 
+function contentBlockSummary(block: ProviderContentBlock): Record<string, unknown> {
+  switch (block.type) {
+    case "text":
+      return { type: "text", chars: block.text.length, preview: block.text.slice(0, 160) };
+    case "thinking":
+      return { type: "thinking", chars: block.thinking.length, preview: block.thinking.slice(0, 160) };
+    case "redacted_thinking":
+      return { type: "redacted_thinking" };
+    case "tool_use":
+      return { type: "tool_use", id: block.id, name: block.name };
+    case "tool_result":
+      return { type: "tool_result", id: block.tool_use_id };
+    case "image":
+      return { type: "image", mediaType: block.source.media_type };
+    case "document":
+      return { type: "document", mediaType: block.source.media_type };
+    default:
+      return { type: "unknown" };
+  }
+}
+
+function auxResponseDebug(content: ProviderContentBlock[]): Record<string, unknown> {
+  const text = extractText(content);
+  return {
+    blockCount: content.length,
+    blockTypes: content.map((b) => b.type),
+    textChars: text.length,
+    textPreview: text.slice(0, 500),
+    blocks: content.map((b) => contentBlockSummary(b)),
+  };
+}
+
 /**
  * Returns true when a ProviderMessage's blocks contain at least one
  * tool_result.  Used by snap-helper to avoid cutting the wire at a
@@ -496,14 +528,25 @@ function snapHeadEnd(messages: ProviderMessage[], idealEnd: number): number {
  * Skips user messages that are tool_result carriers (FIX #6).
  */
 function snapTailStart(messages: ProviderMessage[], idealStart: number): number {
-  const floor = Math.max(0, idealStart - 4);
-  let i = Math.max(idealStart, 0);
-  while (
-    i > floor &&
-    messages[i] &&
-    (messages[i].role !== "user" || hasToolResultBlocks(messages[i]))
-  ) {
+  let i = Math.min(Math.max(idealStart, 0), messages.length);
+
+  // The tail is spliced directly after the synthetic summary user message.
+  // It must therefore start at a boundary that cannot introduce orphaned
+  // tool_result/function_call_output blocks.  The old implementation only
+  // searched back four messages; long tool rounds can exceed that window and
+  // return a user(tool_result) boundary anyway, which Codex rejects with
+  // "No tool call found for function call output".
+  while (i > 0 && (!messages[i] || messages[i].role !== "user" || hasToolResultBlocks(messages[i]))) {
     i--;
+  }
+  if (messages[i]?.role === "user" && !hasToolResultBlocks(messages[i])) return i;
+
+  // If the prefix contains no plain user at all, skip forward to the next plain
+  // user instead of returning an unsafe tool_result boundary.  If none exists,
+  // use an empty tail; the summary still preserves older context.
+  i = Math.min(Math.max(idealStart, 0), messages.length);
+  while (i < messages.length && (messages[i].role !== "user" || hasToolResultBlocks(messages[i]))) {
+    i++;
   }
   return i;
 }
@@ -536,13 +579,35 @@ function emergencyTail(
     return [{ role: "user", content: `<emergency-truncation>\n${notice}\n</emergency-truncation>` }, ...messages];
   }
 
-  // Snap cut to a safe user message boundary.
+  // Snap cut to a safe user message boundary.  Must land on a *plain* user
+  // (no tool_result blocks) so the tail doesn't start with orphaned
+  // function_call_output items whose matching tool_use was cut off.
+  // This mirrors the H1 pattern in snapHeadEnd (v0.1.29).
   while (cut < messages.length && messages[cut]?.role !== "user") cut++;
   if (cut >= messages.length) cut = messages.length - 1;
   while (cut > 0 && messages[cut]?.role !== "user") cut--;
+  // H3 defense: skip tool_result-carrying users to avoid Codex/Anthropic 400.
+  while (cut > 0 && hasToolResultBlocks(messages[cut])) {
+    cut--;
+    while (cut > 0 && messages[cut]?.role !== "user") cut--;
+  }
 
   const tail = messages.slice(cut);
-  return [{ role: "user", content: `<emergency-truncation>\n${notice}\n</emergency-truncation>` }, ...tail];
+  // H3 post-condition: if the tail starts with a tool_result user despite
+  // the backward walk (corner case — every user message carries results),
+  // drop the tool_result blocks so the wire doesn't 400.
+  const sanitized = tail.length > 0 && hasToolResultBlocks(tail[0])
+    ? [
+        {
+          role: "user" as const,
+          content: [
+            { type: "text" as const, text: "[truncated: tool results stripped to avoid orphaned function_call_output]" },
+          ],
+        },
+        ...tail.slice(1),
+      ]
+    : tail;
+  return [{ role: "user", content: `<emergency-truncation>\n${notice}\n</emergency-truncation>` }, ...sanitized];
 }
 
 /** Test-only: reset the compactor anti-thrash WeakMap entry for an array. */
