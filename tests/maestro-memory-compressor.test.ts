@@ -149,6 +149,7 @@ describe("compressIfNeeded — successful compaction", () => {
     expect(provider.calls[0].system).toContain("## Constraints");
     expect(provider.calls[0].system).toContain("## Key Decisions");
     expect(provider.calls[0].system).toContain("## Next Steps");
+    expect(provider.calls[0].messages.every((m) => typeof m.content === "string")).toBe(true);
 
     // Head: the first user message survives verbatim.
     expect(typeof out[0].content === "string" && out[0].content.startsWith("Q0:")).toBe(true);
@@ -658,5 +659,39 @@ describe("compressIfNeeded — H1/H2 regression", () => {
         }
       }
     }
+  });
+
+  test("aux compaction slice is linearized so DeepSeek/OpenAI-style providers do not enforce tool adjacency", async () => {
+    const provider = new RecordingProvider();
+    const messages: ProviderMessage[] = [
+      userText("head start"),
+      assistantText("head answer"),
+      userText("please use tools"),
+      assistantWithContent([
+        { type: "text", text: "calling" },
+        { type: "tool_use", id: "a", name: "Read", input: { file: "a.ts" } },
+      ]),
+      userToolResults([{ id: "a", content: "AAA" }]),
+      assistantWithContent([
+        { type: "tool_use", id: "b", name: "Grep", input: { pattern: "x" } },
+      ]),
+      userToolResults([{ id: "b", content: "BBB" }]),
+      assistantText("done"),
+      ...buildBigHistory(20, 500),
+    ];
+    __resetCompactorState(messages);
+
+    await compressIfNeeded(messages, {
+      auxProvider: provider,
+      auxModel: TEST_AUX_MODEL,
+      contextWindow: 8192,
+      headProtect: 2,
+      tailProtect: 2,
+    });
+
+    expect(provider.calls.length).toBe(1);
+    expect(provider.calls[0].messages.every((m) => typeof m.content === "string")).toBe(true);
+    expect(provider.calls[0].messages.some((m) => String(m.content).includes("[tool_use Read id=a]"))).toBe(true);
+    expect(provider.calls[0].messages.some((m) => String(m.content).includes("[tool_result id=a]"))).toBe(true);
   });
 });
