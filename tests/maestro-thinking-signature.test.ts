@@ -525,8 +525,8 @@ describe("trimToSafePrefix preserves signature when the assistant turn is kept",
       },
     ];
     const out = sanitizeThinkingBlocksForWire(msgs);
-    // Same reference returned — anti-thrash kicks in because we didn't touch
-    // anything.
+    // Same reference returned — no rewrite was needed, so we preserve the
+    // original array reference.
     expect(out).toBe(msgs);
   });
 
