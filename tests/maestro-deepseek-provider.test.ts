@@ -8,6 +8,18 @@ import {
   translateToolsToOpenAI,
 } from "@/providers/deepseek";
 
+// Providers POST via `nodeFetch` (node:http). Delegate to `globalThis.fetch`
+// at call time so the existing fetch-mock setups keep intercepting. See
+// src/providers/node-fetch.ts for the rationale.
+vi.mock("@/providers/node-fetch", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/providers/node-fetch")>();
+  return {
+    ...actual,
+    nodeFetch: (url: string, init?: Record<string, unknown>) =>
+      globalThis.fetch(url, init as RequestInit),
+  };
+});
+
 /** Helper — extracts a content part array from an OpenAI chat message. */
 function partsOf(
   msg: ReturnType<typeof translateMessagesToOpenAI>[number],

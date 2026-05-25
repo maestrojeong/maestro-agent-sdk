@@ -44,11 +44,6 @@
  */
 
 import { logger } from "@/platform/logger";
-import {
-  cloudflareHeaders,
-  type CodexAuthError,
-  resolveAccessToken,
-} from "@/providers/codex-auth";
 import type {
   Provider,
   ProviderCompleteOptions,
@@ -56,12 +51,14 @@ import type {
   ProviderResponse,
   ProviderStreamChunk,
 } from "@/providers/base";
+import { type CodexAuthError, cloudflareHeaders, resolveAccessToken } from "@/providers/codex-auth";
 import { parseCodexStream } from "@/providers/codex-stream";
 import {
   type ResponsesInputItem,
   translateMessagesToResponses,
   translateToolsToResponses,
 } from "@/providers/codex-translators";
+import { type HttpResponseLike, type NodeFetchInit, nodeFetch } from "@/providers/node-fetch";
 import type { EffortLevel, TokenUsage } from "@/types";
 
 /** Default base URL — the ChatGPT-hosted Codex endpoint. Hosts that point at
@@ -101,8 +98,8 @@ export interface CodexProviderOptions {
    *  endpoint. The `/responses` suffix is appended automatically. */
   baseUrl?: string;
   /** Override the timeout for the OAuth refresh round-trip. The streaming
-   *  request itself uses `fetchTimeoutMs` (see below) — the agent loop also
-   *  owns abort via signal. */
+   *  request itself uses `idleTimeoutMs` / `totalTimeoutMs` (see below) — the
+   *  agent loop also owns abort via signal. */
   refreshTimeoutMs?: number;
   /**
    * Skew window (seconds) for the refresh decision. When the cached access
@@ -112,14 +109,27 @@ export interface CodexProviderOptions {
    */
   refreshSkewSeconds?: number;
   /**
-   * Wall-clock ceiling on a single `/responses` POST before we abort and
-   * surface a TimeoutError. Default 600_000 ms (10 minutes) — Bun's bundled
-   * undici otherwise enforces a 5-minute `headersTimeout` that fires on
-   * gpt-5.5 with ~1MB+ request bodies (v0.1.28 production repro). Raising
-   * the wall to 10 min gives the model breathing room while keeping a
-   * bounded worst case if the server hangs entirely. Combined with the
-   * caller's `abortSignal` via `AbortSignal.any`, so a user-initiated abort
-   * still wins immediately.
+   * Socket *inactivity* timeout (ms) for the `/responses` stream. Resets on
+   * every byte, so a healthy long stream is never cut — it only bounds the
+   * time-to-first-byte (the gpt-5.* Codex backend buffers reasoning before
+   * sending headers) and mid-stream stalls. This replaces the old reliance on
+   * Bun's hard-coded ~300 s fetch ceiling (which `AbortSignal` could not raise;
+   * see `node-fetch.ts`). Default 600_000 ms (10 min) — matches Hermes' stale
+   * watchdog floor for large (>100K-token) contexts. Production showed gpt-5.5
+   * TTFB hitting ~230 s on big bodies and a 240 s default false-cutting a
+   * legitimately slow response, so we give wide headroom; a true hang is still
+   * bounded by this idle window plus the `totalTimeoutMs` backstop.
+   */
+  idleTimeoutMs?: number;
+  /**
+   * Absolute wall-clock ceiling (ms) for the whole request + stream. The hard
+   * backstop if the model keeps dribbling bytes forever. Default 1_800_000 ms
+   * (30 min), matching Hermes' `HERMES_API_TIMEOUT` default.
+   */
+  totalTimeoutMs?: number;
+  /**
+   * @deprecated Use `totalTimeoutMs`. Retained for back-compat: when set and
+   * `totalTimeoutMs` is not, it is used as the total ceiling.
    */
   fetchTimeoutMs?: number;
 }
@@ -133,33 +143,38 @@ export class CodexResponsesProvider implements Provider {
   private readonly baseUrl: string;
   private readonly refreshTimeoutMs: number;
   private readonly refreshSkewSeconds: number | undefined;
-  private readonly fetchTimeoutMs: number;
+  private readonly idleTimeoutMs: number;
+  private readonly totalTimeoutMs: number;
 
   constructor(opts: CodexProviderOptions = {}) {
     this.baseUrl = (opts.baseUrl ?? DEFAULT_CODEX_BASE_URL).replace(/\/+$/, "");
     this.refreshTimeoutMs = opts.refreshTimeoutMs ?? 20_000;
     this.refreshSkewSeconds = opts.refreshSkewSeconds;
-    this.fetchTimeoutMs = opts.fetchTimeoutMs ?? 600_000;
+    this.idleTimeoutMs = opts.idleTimeoutMs ?? 600_000;
+    this.totalTimeoutMs = opts.totalTimeoutMs ?? opts.fetchTimeoutMs ?? 1_800_000;
   }
 
   /**
-   * Build the AbortSignal we pass to `fetch`. Combines an explicit
-   * wall-clock timeout (`this.fetchTimeoutMs`) with the caller's optional
-   * abort signal so either path can short-circuit the request:
-   *   - User abort fires → request cancels immediately.
-   *   - Timeout fires → DOMException(name="TimeoutError") surfaces, which
-   *     the v0.1.28 `isTimeoutError` helper catches in `provider.ts`.
-   *
-   * Why explicit timeout: Bun's undici default `headersTimeout` is 300_000
-   * ms (5 min) and fires regardless of user signal. Long requests on the
-   * heavy gpt-5.* tiers with large bodies blew through that wall in
-   * production. We raise the ceiling to 10 minutes (configurable) and pin
-   * the same value across the initial POST and the 401-refresh retry below.
+   * Build the `nodeFetch` init shared by the initial POST and the 401-refresh
+   * retry. We route through `node:http` (not Bun's global `fetch`) because Bun
+   * caps `fetch` at a hard, unconfigurable ~300 s; `AbortSignal` can only
+   * shorten that, never raise it (see `node-fetch.ts` for the empirical proof).
+   * The two-layer timeout (idle + total) is honored by node:http, and the
+   * caller's `abortSignal` still wins immediately for user cancels.
    */
-  private buildFetchSignal(userSignal?: AbortSignal): AbortSignal {
-    const timeoutSignal = AbortSignal.timeout(this.fetchTimeoutMs);
-    if (!userSignal) return timeoutSignal;
-    return AbortSignal.any([userSignal, timeoutSignal]);
+  private buildFetchInit(
+    headers: Record<string, string>,
+    body: string,
+    userSignal?: AbortSignal,
+  ): NodeFetchInit {
+    return {
+      method: "POST",
+      headers,
+      body,
+      idleTimeoutMs: this.idleTimeoutMs,
+      totalTimeoutMs: this.totalTimeoutMs,
+      ...(userSignal ? { signal: userSignal } : {}),
+    };
   }
 
   /**
@@ -191,9 +206,7 @@ export class CodexResponsesProvider implements Provider {
     try {
       token = await resolveAccessToken({
         timeoutMs: this.refreshTimeoutMs,
-        ...(this.refreshSkewSeconds !== undefined
-          ? { skewSeconds: this.refreshSkewSeconds }
-          : {}),
+        ...(this.refreshSkewSeconds !== undefined ? { skewSeconds: this.refreshSkewSeconds } : {}),
       });
       logger.info(
         { model: opts.model, elapsedMs: Date.now() - tokenStart },
@@ -224,15 +237,7 @@ export class CodexResponsesProvider implements Provider {
       Accept: "text/event-stream",
     };
 
-    const init: RequestInit = {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-      // v0.1.28+: bundled user-abort + wall-clock timeout. See
-      // `buildFetchSignal` for the rationale; the default ceiling is
-      // 10 minutes, configurable via `CodexProviderOptions.fetchTimeoutMs`.
-      signal: this.buildFetchSignal(opts.abortSignal),
-    };
+    const init = this.buildFetchInit(headers, JSON.stringify(body), opts.abortSignal);
 
     const responseStart = Date.now();
     logger.info(
@@ -240,13 +245,14 @@ export class CodexResponsesProvider implements Provider {
         url,
         model: opts.model,
         bodyBytes: (init.body as string).length,
-        fetchTimeoutMs: this.fetchTimeoutMs,
+        idleTimeoutMs: this.idleTimeoutMs,
+        totalTimeoutMs: this.totalTimeoutMs,
       },
       "codex: /responses fetch start",
     );
-    let response: Response;
+    let response: HttpResponseLike;
     try {
-      response = await fetch(url, init);
+      response = await nodeFetch(url, init);
       logger.info(
         {
           status: response.status,
@@ -282,25 +288,18 @@ export class CodexResponsesProvider implements Provider {
       const fresh = await resolveAccessToken({
         forceRefresh: true,
         timeoutMs: this.refreshTimeoutMs,
-        ...(this.refreshSkewSeconds !== undefined
-          ? { skewSeconds: this.refreshSkewSeconds }
-          : {}),
+        ...(this.refreshSkewSeconds !== undefined ? { skewSeconds: this.refreshSkewSeconds } : {}),
       });
-      const retryInit: RequestInit = {
-        method: "POST",
-        headers: {
+      const retryInit = this.buildFetchInit(
+        {
           ...cloudflareHeaders(fresh),
           "Content-Type": "application/json",
           Accept: "text/event-stream",
         },
-        body: JSON.stringify(body),
-        // Same combined timeout + user-abort signal as the primary POST
-        // above. The 401-refresh retry path otherwise inherits Bun's
-        // undici default headersTimeout (5 min) and can mask the real
-        // failure mode.
-        signal: this.buildFetchSignal(opts.abortSignal),
-      };
-      const retry = await fetch(url, retryInit);
+        JSON.stringify(body),
+        opts.abortSignal,
+      );
+      const retry = await nodeFetch(url, retryInit);
       if (!retry.ok) {
         await throwCodexHttpError(retry);
       }
@@ -452,7 +451,7 @@ function buildRequestBody(opts: ProviderCompleteOptions): Record<string, unknown
  * We surface whichever is present, prefixed with the HTTP status so the
  * caller can grep by status code in logs.
  */
-async function throwCodexHttpError(response: Response): Promise<never> {
+async function throwCodexHttpError(response: HttpResponseLike): Promise<never> {
   let bodyText = "";
   try {
     bodyText = await response.text();

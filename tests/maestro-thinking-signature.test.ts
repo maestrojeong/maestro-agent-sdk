@@ -3,6 +3,17 @@ import { AnthropicProvider, sanitizeThinkingBlocksForWire } from "@/providers/an
 import type { ProviderContentBlock, ProviderMessage } from "@/providers/base";
 import { isWellFormedMessage, trimToSafePrefix } from "@/session-store";
 
+// Providers POST via `nodeFetch` (node:http); delegate to `globalThis.fetch`
+// at call time so the existing fetch mocks keep intercepting.
+vi.mock("@/providers/node-fetch", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/providers/node-fetch")>();
+  return {
+    ...actual,
+    nodeFetch: (url: string, init?: Record<string, unknown>) =>
+      globalThis.fetch(url, init as RequestInit),
+  };
+});
+
 /**
  * Reproductions for the "messages.N.content.M.thinking.signature: Field required"
  * 400 the user hit after a tool was interrupted mid-flight.

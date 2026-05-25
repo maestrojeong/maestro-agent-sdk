@@ -7,6 +7,7 @@ import type {
   ProviderStreamChunk,
   ProviderToolSchema,
 } from "@/providers/base";
+import { type HttpResponseLike, type NodeFetchInit, nodeFetch } from "@/providers/node-fetch";
 import type { TokenUsage } from "@/types";
 
 const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
@@ -52,7 +53,20 @@ interface AnthropicResponse {
  * to the constructor takes precedence.
  */
 export class AnthropicProvider implements Provider {
-  constructor(private readonly apiKey: string) {}
+  /**
+   * @param idleTimeoutMs Socket inactivity timeout for the request/stream
+   *   (default 600_000, matching Hermes' large-context stale floor). Routed
+   *   through `node:http` so it actually applies — Bun's global `fetch` caps
+   *   every request at a hard ~300 s that no signal can raise (see
+   *   `node-fetch.ts`). Resets on every byte, so long streams are never cut; it
+   *   only bounds time-to-first-byte and mid-stream stalls.
+   * @param totalTimeoutMs Absolute wall-clock ceiling (default 1_800_000).
+   */
+  constructor(
+    private readonly apiKey: string,
+    private readonly idleTimeoutMs: number = 600_000,
+    private readonly totalTimeoutMs: number = 1_800_000,
+  ) {}
 
   static fromEnv(): AnthropicProvider {
     const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -93,16 +107,16 @@ export class AnthropicProvider implements Provider {
     };
     applyThinkingHeaders(headers, opts.thinkingBudget);
 
-    const init: RequestInit = {
+    const init: NodeFetchInit = {
       method: "POST",
       headers,
       body: JSON.stringify(body),
+      idleTimeoutMs: this.idleTimeoutMs,
+      totalTimeoutMs: this.totalTimeoutMs,
+      ...(opts.abortSignal ? { signal: opts.abortSignal } : {}),
     };
-    if (opts.abortSignal) {
-      init.signal = opts.abortSignal;
-    }
 
-    const response = await fetch(ANTHROPIC_API_URL, init);
+    const response: HttpResponseLike = await nodeFetch(ANTHROPIC_API_URL, init);
     if (!response.ok) {
       const text = await response.text();
       throw new Error(`Anthropic API ${response.status}: ${text}`);
@@ -149,16 +163,16 @@ export class AnthropicProvider implements Provider {
     };
     applyThinkingHeaders(headers, opts.thinkingBudget);
 
-    const init: RequestInit = {
+    const init: NodeFetchInit = {
       method: "POST",
       headers,
       body: JSON.stringify(body),
+      idleTimeoutMs: this.idleTimeoutMs,
+      totalTimeoutMs: this.totalTimeoutMs,
+      ...(opts.abortSignal ? { signal: opts.abortSignal } : {}),
     };
-    if (opts.abortSignal) {
-      init.signal = opts.abortSignal;
-    }
 
-    const response = await fetch(ANTHROPIC_API_URL, init);
+    const response: HttpResponseLike = await nodeFetch(ANTHROPIC_API_URL, init);
     if (!response.ok) {
       const text = await response.text();
       throw new Error(`Anthropic API ${response.status}: ${text}`);
