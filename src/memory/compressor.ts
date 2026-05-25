@@ -300,8 +300,18 @@ export async function compressIfNeeded(
   // Build wire from clean messages (FIX #1).
   const head = cleanMessages.slice(0, cleanHeadEnd);
   const tail = cleanMessages.slice(cleanTailStart);
+
+  // H2 defense (2026-05-24): if head ends with a user message and the
+  // summary user is prepended directly after it, we create a user-user
+  // consecutive pattern that some providers reject. Insert a dummy
+  // assistant to restore the alternating-role invariant.
+  const headEndsUser = head.length > 0 && head[head.length - 1].role === "user";
+
   const compacted: ProviderMessage[] = [
     ...head,
+    ...(headEndsUser
+      ? [{ role: "assistant" as const, content: [{ type: "text" as const, text: "" }] }]
+      : []),
     { role: "user", content: wrapCompactedSummary(summaryText) },
     ...tail,
   ];
@@ -355,14 +365,75 @@ export async function compressIfNeeded(
  * Walk forward from `idealEnd` to land on a user message boundary.
  * Skips user messages that are tool_result carriers (to avoid
  * orphaning a preceding tool_use).
+ *
+ * H1 fix (2026-05-24): the old cap of `idealEnd + 4` could leave an
+ * orphan tool_use when the first user prompt triggered 3+ tool_use /
+ * tool_result pairs — the final tool_result sat at index > cap and
+ * the head ended with an unpaired assistant tool_use, causing both
+ * Codex and Anthropic to reject the request (400).  The fix tracks
+ * open tool_use IDs and only stops at a plain user when every
+ * tool_use in the head region has a matching tool_result.
  */
 function snapHeadEnd(messages: ProviderMessage[], idealEnd: number): number {
-  const cap = Math.min(messages.length, idealEnd + 4);
-  let i = Math.min(idealEnd, messages.length);
-  while (i < cap && messages[i] && (messages[i].role !== "user" || hasToolResultBlocks(messages[i]))) {
+  // Pre-populate open tool_uses from the prefix we're keeping (0..idealEnd-1).
+  const open = new Set<string>();
+  const limit = Math.min(idealEnd, messages.length);
+  for (let j = 0; j < limit; j++) {
+    const msg = messages[j];
+    if (msg.role === "assistant" && Array.isArray(msg.content)) {
+      for (const b of msg.content) {
+        if ((b as { type: string; id?: string }).type === "tool_use" && (b as { id?: string }).id) {
+          open.add((b as { id: string }).id);
+        }
+      }
+    }
+    if (msg.role === "user" && Array.isArray(msg.content)) {
+      for (const b of msg.content) {
+        if (
+          (b as { type: string; tool_use_id?: string }).type === "tool_result" &&
+          (b as { tool_use_id?: string }).tool_use_id
+        ) {
+          open.delete((b as { tool_use_id: string }).tool_use_id);
+        }
+      }
+    }
+  }
+
+  const safetyCap = Math.min(messages.length, idealEnd + 20);
+  let i = limit;
+  while (i < safetyCap && messages[i]) {
+    const msg = messages[i];
+    if (msg.role === "assistant" && Array.isArray(msg.content)) {
+      for (const b of msg.content) {
+        if ((b as { type: string; id?: string }).type === "tool_use" && (b as { id?: string }).id) {
+          open.add((b as { id: string }).id);
+        }
+      }
+    }
+    if (msg.role === "user" && Array.isArray(msg.content)) {
+      for (const b of msg.content) {
+        if (
+          (b as { type: string; tool_use_id?: string }).type === "tool_result" &&
+          (b as { tool_use_id?: string }).tool_use_id
+        ) {
+          open.delete((b as { tool_use_id: string }).tool_use_id);
+        }
+      }
+    }
+    const isPlainUser = msg.role === "user" && !hasToolResultBlocks(msg);
+    if (isPlainUser && open.size === 0) {
+      return i;
+    }
     i++;
   }
-  return i;
+
+  // Safety fallback: find the last plain user anywhere in the array.
+  // Better to overshoot the budget than ship an orphan tool_use.
+  for (i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg.role === "user" && !hasToolResultBlocks(msg)) return i;
+  }
+  return idealEnd;
 }
 
 /**

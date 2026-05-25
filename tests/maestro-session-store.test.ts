@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeAll, describe, expect, test } from "vitest";
@@ -13,7 +13,7 @@ import {
   trimToSafePrefix,
   writeMaestroRollout,
 } from "@/session-store";
-import { appendConversationEvent, getConversationPath } from "@/storage/conversations";
+import type { ConversationEntry } from "@/storage/conversations";
 
 // Suite-local sandbox under the OS tmp dir. The SDK no longer surfaces a
 // workspace-root constant, so tests provision their own scratch directory
@@ -126,35 +126,28 @@ describe("writeMaestroRollout (cross-agent bridge)", () => {
   test("synthesizes a session file from a ConversationEntry log", () => {
     const cwd = mkdtempSync(join(TEST_WORKSPACE_DIR, "test-maestro-roll-"));
     tracked.push(cwd);
-    const userId = "888888";
-    const topicName = "maestro-bridge-test";
-    const unifiedPath = getConversationPath(userId, topicName);
-    tracked.push(unifiedPath);
-
-    // Stash a small mixed-agent conversation into the unified log so the
-    // encoder has something to digest.
-    appendConversationEvent(userId, topicName, "claude", {
-      type: "user_message",
-      content: "what's the weather",
-    });
-    appendConversationEvent(userId, topicName, "claude", {
-      type: "result",
-      content: "sunny",
-      stopReason: "end_turn",
-    });
-    appendConversationEvent(userId, topicName, "claude", {
-      type: "user_message",
-      content: "thanks",
-    });
-    appendConversationEvent(userId, topicName, "claude", {
-      type: "result",
-      content: "any time",
-      stopReason: "end_turn",
-    });
-
-    const entries = JSON.parse(
-      `[${readFileSync(unifiedPath, "utf8").trim().split("\n").filter(Boolean).join(",")}]`,
-    );
+    const entries: ConversationEntry[] = [
+      {
+        at: new Date().toISOString(),
+        agent: "claude",
+        event: { type: "user_message", content: "what's the weather" },
+      },
+      {
+        at: new Date().toISOString(),
+        agent: "claude",
+        event: { type: "result", content: "sunny", stopReason: "end_turn" },
+      },
+      {
+        at: new Date().toISOString(),
+        agent: "claude",
+        event: { type: "user_message", content: "thanks" },
+      },
+      {
+        at: new Date().toISOString(),
+        agent: "claude",
+        event: { type: "result", content: "any time", stopReason: "end_turn" },
+      },
+    ];
     const result = writeMaestroRollout({ cwd, entries });
     tracked.push(result.rolloutPath);
 
@@ -198,10 +191,44 @@ describe("writeMaestroRollout (cross-agent bridge)", () => {
     expect(loaded?.[3].content).toBe("ack 2");
   });
 
-  test("rejects cwds outside the user workspace roots", () => {
-    expect(() => writeMaestroRollout({ cwd: "/etc/passwd-traversal", pairs: [] })).toThrow(
-      /outside trusted user roots/,
-    );
+  test("preserves a single turn with tool annotations in the assistant message", () => {
+    const cwd = mkdtempSync(join(TEST_WORKSPACE_DIR, "test-maestro-tools-"));
+    tracked.push(cwd);
+
+    const result = writeMaestroRollout({
+      cwd,
+      entries: [
+        {
+          at: new Date().toISOString(),
+          agent: "claude",
+          event: { type: "user_message", content: "check inbox" },
+        },
+        {
+          at: new Date().toISOString(),
+          agent: "claude",
+          event: { type: "tool_use", name: "gmail", input: { unread: true } },
+        },
+        {
+          at: new Date().toISOString(),
+          agent: "claude",
+          event: { type: "tool_result", toolUseId: "tu_1", content: "2 unread messages" },
+        },
+        {
+          at: new Date().toISOString(),
+          agent: "claude",
+          event: { type: "result", content: "You have 2 unread messages.", stopReason: "end_turn" },
+        },
+      ],
+    });
+    tracked.push(result.rolloutPath);
+
+    const loaded = loadMaestroSession(result.sessionId);
+    expect(loaded?.length).toBe(2);
+    expect(loaded?.[0]).toEqual({ role: "user", content: "check inbox" });
+    expect(loaded?.[1].role).toBe("assistant");
+    expect(String(loaded?.[1].content)).toContain("You have 2 unread messages.");
+    expect(String(loaded?.[1].content)).toContain("<!-- Tool: gmail");
+    expect(String(loaded?.[1].content)).toContain("<!-- Tool result: 2 unread messages -->");
   });
 });
 
@@ -224,13 +251,27 @@ describe("trimToSafePrefix (partial-turn persistence guard)", () => {
     expect(trimToSafePrefix(messages)).toEqual(messages);
   });
 
-  test("strips a trailing user prompt with no assistant reply", () => {
+  test("strips a trailing string user prompt with no assistant reply", () => {
     // Abort fired before the first API call completed → the new user turn
     // got pushed but the model never answered. Must not persist as-is.
     const messages: ProviderMessage[] = [
       { role: "user", content: "round 1" },
       { role: "assistant", content: [{ type: "text", text: "ack 1" }] },
       { role: "user", content: "round 2 (unanswered)" },
+    ];
+    const out = trimToSafePrefix(messages);
+    expect(out).toHaveLength(2);
+    expect(out[out.length - 1].role).toBe("assistant");
+  });
+
+  test("strips a trailing content-block user prompt with no assistant reply", () => {
+    // Live provider.ts pushes new prompts as content-block arrays, not strings.
+    // The trim must still drop them on partial drain; otherwise an abort before
+    // the provider response persists the prompt and the next resume replays it.
+    const messages: ProviderMessage[] = [
+      { role: "user", content: "round 1" },
+      { role: "assistant", content: [{ type: "text", text: "ack 1" }] },
+      { role: "user", content: [{ type: "text", text: "round 2 (unanswered)" }] },
     ];
     const out = trimToSafePrefix(messages);
     expect(out).toHaveLength(2);

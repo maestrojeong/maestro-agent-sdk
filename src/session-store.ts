@@ -565,10 +565,20 @@ export function trimToSafePrefix(messages: ProviderMessage[]): ProviderMessage[]
   let end = messages.length;
   while (end > 0) {
     const last = messages[end - 1];
-    // Final user with plain-text content = unanswered prompt.
-    if (last.role === "user" && typeof last.content === "string") {
-      end--;
-      continue;
+    // Final user without tool_result blocks = unanswered prompt. New live
+    // turns are stored as content-block arrays (text/file/image), while older
+    // session files may still carry plain strings; both shapes are orphaned if
+    // the assistant never answered. A user turn containing tool_result blocks is
+    // different: it closes the previous assistant tool_use round and is a valid
+    // place to resume from.
+    if (last.role === "user") {
+      const hasToolResult = Array.isArray(last.content)
+        ? last.content.some((b) => (b as ProviderContentBlock).type === "tool_result")
+        : false;
+      if (!hasToolResult) {
+        end--;
+        continue;
+      }
     }
     // Final assistant containing any tool_use block without a matching
     // tool_result on the NEXT turn → orphan; drop it. The loop then re-
