@@ -325,8 +325,8 @@ describe("trimToSafePrefix preserves signature when the assistant turn is kept",
       },
     ];
     const out = sanitizeThinkingBlocksForWire(msgs);
-    // Same reference returned when nothing changed — anti-thrash for the hot
-    // path so the GC pressure on every wire call stays minimal.
+    // Same reference returned when nothing changed — zero-allocation hot path
+    // so the GC pressure on every wire call stays minimal.
     expect(out).toBe(msgs);
   });
 

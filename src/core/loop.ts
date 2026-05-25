@@ -101,10 +101,9 @@ export async function* runConversation(
     // (⌛compaction user + summary assistant) to the canonical `messages`
     // array for persistence (OpenCode-style incremental). On resume the
     // aux LLM receives an incremental "update the anchored summary"
-    // prompt instead of re-summarizing from scratch. Anti-thrashing on
-    // the array reference (both in prune.ts and compressor.ts) keeps
-    // back-to-back iterations near-zero CPU once the conversation
-    // stabilizes.
+    // prompt instead of re-summarizing from scratch. The compressor's
+    // effective-token fast-path skips aux work when the persisted summary
+    // plus post-compaction delta is already under threshold.
     //
     // Aux provider stays the same (intra-provider remap), but the aux MODEL
     // routes through `resolveAuxModel` so heavy tiers (gpt-5.5, opus,
