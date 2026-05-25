@@ -144,12 +144,12 @@ describe("compressIfNeeded — successful compaction", () => {
       tailProtect: 6,
     });
 
-    expect(provider.calls.length).toBe(1);
+    expect(provider.calls.length).toBeGreaterThanOrEqual(1);
     expect(provider.calls[0].system).toContain("## Active Task");
     expect(provider.calls[0].system).toContain("## Constraints");
     expect(provider.calls[0].system).toContain("## Key Decisions");
     expect(provider.calls[0].system).toContain("## Next Steps");
-    expect(provider.calls[0].messages.every((m) => typeof m.content === "string")).toBe(true);
+    // First user message is a plain string instruction to read the compaction file.
 
     // Head: the first user message survives verbatim.
     expect(typeof out[0].content === "string" && out[0].content.startsWith("Q0:")).toBe(true);
@@ -689,9 +689,13 @@ describe("compressIfNeeded — H1/H2 regression", () => {
       tailProtect: 2,
     });
 
-    expect(provider.calls.length).toBe(1);
-    expect(provider.calls[0].messages.every((m) => typeof m.content === "string")).toBe(true);
-    expect(provider.calls[0].messages.some((m) => String(m.content).includes("[tool_use Read id=a]"))).toBe(true);
-    expect(provider.calls[0].messages.some((m) => String(m.content).includes("[tool_result id=a]"))).toBe(true);
+    expect(provider.calls.length).toBeGreaterThanOrEqual(1);
+    // File-based: first message is a plain string instructing aux to read the compaction file.
+    expect(typeof provider.calls[0].messages[0]?.content).toBe("string");
+    expect(String(provider.calls[0].messages[0]?.content)).toContain("read_compaction_log");
+    // Tool schema is passed so aux can read the file in chunks.
+    const toolDef = provider.calls[0].tools?.find((t: any) => t.name === "read_compaction_log");
+    expect(toolDef).toBeDefined();
+    expect(toolDef?.input_schema?.properties?.offset).toBeDefined();
   });
 });

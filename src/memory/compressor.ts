@@ -1,8 +1,13 @@
+import { writeFileSync, unlinkSync, mkdirSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { randomUUID } from "node:crypto";
+
 import { ACTIVE_TASK_TEMPLATE, wrapCompactedSummary } from "@/memory/active-task-template";
 import { pruneMessages } from "@/memory/prune";
 import { estimateTokens } from "@/memory/token-estimate";
 import { logger } from "@/platform/logger";
-import type { Provider, ProviderContentBlock, ProviderMessage } from "@/providers/base";
+import type { Provider, ProviderContentBlock, ProviderMessage, ProviderToolSchema } from "@/providers/base";
 
 /**
  * Maestro context auto-compaction (OpenCode-style incremental).
@@ -145,38 +150,6 @@ function linearizeForAuxLLM(messages: ProviderMessage[]): ProviderMessage[] {
     out.push({ role: msg.role, content: `[${msg.role}]\n${text}` });
   }
   return out;
-}
-
-function contentBlockSummary(block: ProviderContentBlock): Record<string, unknown> {
-  switch (block.type) {
-    case "text":
-      return { type: "text", chars: block.text.length, preview: block.text.slice(0, 160) };
-    case "thinking":
-      return { type: "thinking", chars: block.thinking.length, preview: block.thinking.slice(0, 160) };
-    case "redacted_thinking":
-      return { type: "redacted_thinking" };
-    case "tool_use":
-      return { type: "tool_use", id: block.id, name: block.name };
-    case "tool_result":
-      return { type: "tool_result", id: block.tool_use_id };
-    case "image":
-      return { type: "image", mediaType: block.source.media_type };
-    case "document":
-      return { type: "document", mediaType: block.source.media_type };
-    default:
-      return { type: "unknown" };
-  }
-}
-
-function auxResponseDebug(content: ProviderContentBlock[]): Record<string, unknown> {
-  const text = extractText(content);
-  return {
-    blockCount: content.length,
-    blockTypes: content.map((b) => b.type),
-    textChars: text.length,
-    textPreview: text.slice(0, 500),
-    blocks: content.map((b) => contentBlockSummary(b)),
-  };
 }
 
 /**
@@ -343,63 +316,134 @@ export async function compressIfNeeded(
 
   // FIX #4: incremental prompt now includes the full ACTIVE_TASK_TEMPLATE
   // so the schema contract is restated every time.
-  const systemPrompt = previousSummary
-    ? incrementalPrompt(previousSummary)
-    : ACTIVE_TASK_TEMPLATE;
 
-  let summaryText: string;
+  let summaryText = "";
+  let tmpFile: string | undefined;
   try {
     const auxMessages = linearizeForAuxLLM(auxMiddle);
     const auxInputChars = auxMessages.reduce(
       (sum, msg) => sum + (typeof msg.content === "string" ? msg.content.length : 0),
       0,
     );
-    const auxResponse = await opts.auxProvider.complete({
-      model: auxModel,
-      // The aux model is summarizing history, not continuing tool execution.
-      // Send a text-only transcript so provider-specific tool pairing rules
-      // (notably DeepSeek/OpenAI's assistant tool_calls → tool messages
-      // invariant) cannot reject a middle slice that starts/ends inside a
-      // tool round-trip.
-      messages: auxMessages,
-      system: systemPrompt,
-      maxTokens: 2048,
-      ...(opts.abortSignal ? { abortSignal: opts.abortSignal } : {}),
-    });
-    summaryText = extractText(auxResponse.content).trim();
+
+    // Write linearized transcript to temp file for tool-based chunked reading.
+    const tmpDir = join(tmpdir(), ".maestro", "tmp");
+    mkdirSync(tmpDir, { recursive: true });
+    tmpFile = join(tmpDir, `compaction-${randomUUID()}.txt`);
+    const fileText = auxMessages
+      .map((m) => `[${m.role}] ${typeof m.content === "string" ? m.content : JSON.stringify(m.content)}`)
+      .join("\n");
+    writeFileSync(tmpFile, fileText, "utf-8");
+    const totalLines = fileText.split("\n").length;
+
+    const readTool: ProviderToolSchema = {
+      name: "read_compaction_log",
+      description: `Read a chunk of the compaction log file. The file contains ${totalLines} lines of linearized conversation messages.
+Each line is prefixed with the role: [user], [assistant], [tool_result id=...], etc.
+Use offset (1-based line number) and limit to read portions sequentially. Start from offset 1 with limit 300, then continue with offset = previous offset + limit until done. When you have enough context, stop reading and provide your summary.`,
+      input_schema: {
+        type: "object",
+        properties: {
+          offset: { type: "number", description: "Line number to start from (1-based)" },
+          limit: { type: "number", description: "Number of lines to read (default 300, max 500)" },
+        },
+        required: ["offset"],
+      },
+    };
+
+    // Mini tool loop: aux reads file in chunks and produces summary.
+    const systemPrompt = previousSummary
+      ? incrementalPrompt(previousSummary)
+      : ACTIVE_TASK_TEMPLATE;
+
+    const loopMessages: ProviderMessage[] = [
+      {
+        role: "user",
+        content: `A conversation log has been saved to a file. Use the read_compaction_log tool to read it in chunks and produce a comprehensive summary.
+
+Instructions:
+1. Start reading from offset 1 with limit 300.
+2. Continue reading chunks until you have full context.
+3. When you've read enough, stop calling the tool and provide your summary.
+4. If the log is too long, prioritize the most recent messages.
+
+${previousSummary ? `Previous summary for context:\n${previousSummary}` : ""}`,
+      },
+    ];
+
+    const MAX_ROUNDS = 15;
+    let round = 0;
+    for (; round < MAX_ROUNDS; round++) {
+      if (opts.abortSignal?.aborted) {
+        throw new Error("aborted");
+      }
+
+      const auxResponse = await opts.auxProvider.complete({
+        model: auxModel,
+        messages: loopMessages,
+        system: systemPrompt,
+        tools: [readTool],
+        maxTokens: 2048,
+        ...(opts.abortSignal ? { abortSignal: opts.abortSignal } : {}),
+      });
+
+      // Append assistant message to loop
+      loopMessages.push({ role: "assistant", content: auxResponse.content });
+
+      const toolUses = auxResponse.content.filter((c) => c.type === "tool_use");
+
+      if (toolUses.length === 0) {
+        // No more tool calls — extract text as summary
+        summaryText = extractText(auxResponse.content).trim();
+        if (summaryText) break;
+        // Empty text + no tools → retry
+        logger.warn({ round, stopReason: auxResponse.stopReason }, "compressIfNeeded: empty round, retrying");
+        continue;
+      }
+
+      // Process tool calls
+      const toolResults: ProviderContentBlock[] = [];
+      for (const tu of toolUses) {
+        if (tu.name === "read_compaction_log") {
+          const offset = (tu.input.offset as number) || 1;
+          const limit = Math.min((tu.input.limit as number) || 300, 500);
+          let chunk: string;
+          try {
+            const lines = fileText.split("\n");
+            const start = Math.max(0, offset - 1);
+            const end = Math.min(lines.length, start + limit);
+            chunk = lines.slice(start, end).join("\n");
+            if (!chunk) chunk = "(end of file)";
+          } catch (e) {
+            chunk = `Error reading file: ${e}`;
+          }
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: tu.id,
+            content: chunk,
+          });
+        } else {
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: tu.id,
+            content: `Unknown tool: ${tu.name}`,
+            is_error: true,
+          });
+        }
+      }
+      loopMessages.push({ role: "user", content: toolResults });
+    }
+
     if (!summaryText) {
       logger.warn(
         {
           model: auxModel,
-          stopReason: auxResponse.stopReason,
-          usage: auxResponse.usage,
-          auxResponse: auxResponseDebug(auxResponse.content),
-          auxInput: {
-            middleMessages: auxMiddle.length,
-            linearizedMessages: auxMessages.length,
-            chars: auxInputChars,
-            first: auxMessages[0]
-              ? {
-                  role: auxMessages[0].role,
-                  chars: typeof auxMessages[0].content === "string" ? auxMessages[0].content.length : 0,
-                  preview: typeof auxMessages[0].content === "string" ? auxMessages[0].content.slice(0, 500) : "",
-                }
-              : undefined,
-            last: auxMessages.at(-1)
-              ? {
-                  role: auxMessages.at(-1)?.role,
-                  chars: typeof auxMessages.at(-1)?.content === "string" ? auxMessages.at(-1)!.content.length : 0,
-                  preview:
-                    typeof auxMessages.at(-1)?.content === "string"
-                      ? auxMessages.at(-1)!.content.slice(0, 500)
-                      : "",
-                }
-              : undefined,
-          },
+          rounds: round,
+          auxInput: { middleMessages: auxMiddle.length, linearizedMessages: auxMessages.length, chars: auxInputChars },
         },
-        "compressIfNeeded: aux LLM returned empty summary",
+        "compressIfNeeded: aux LLM did not produce summary after max rounds",
       );
-      throw new Error("aux LLM returned empty summary");
+      throw new Error("aux LLM did not produce a summary");
     }
   } catch (err) {
     logger.warn({ err, prunedTokens, threshold }, "compressIfNeeded: aux LLM failed");
@@ -418,6 +462,10 @@ export async function compressIfNeeded(
       }
     }
     return emergencyTail(pruned, effectiveTarget, notice);
+  } finally {
+    if (tmpFile) {
+      try { unlinkSync(tmpFile); } catch {}
+    }
   }
 
   // Build wire from clean messages (FIX #1).
