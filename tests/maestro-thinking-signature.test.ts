@@ -3,6 +3,17 @@ import { AnthropicProvider, sanitizeThinkingBlocksForWire } from "@/providers/an
 import type { ProviderContentBlock, ProviderMessage } from "@/providers/base";
 import { isWellFormedMessage, trimToSafePrefix } from "@/session-store";
 
+// Providers POST via `nodeFetch` (node:http); delegate to `globalThis.fetch`
+// at call time so the existing fetch mocks keep intercepting.
+vi.mock("@/providers/node-fetch", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/providers/node-fetch")>();
+  return {
+    ...actual,
+    nodeFetch: (url: string, init?: Record<string, unknown>) =>
+      globalThis.fetch(url, init as RequestInit),
+  };
+});
+
 /**
  * Reproductions for the "messages.N.content.M.thinking.signature: Field required"
  * 400 the user hit after a tool was interrupted mid-flight.
@@ -314,8 +325,8 @@ describe("trimToSafePrefix preserves signature when the assistant turn is kept",
       },
     ];
     const out = sanitizeThinkingBlocksForWire(msgs);
-    // Same reference returned when nothing changed — anti-thrash for the hot
-    // path so the GC pressure on every wire call stays minimal.
+    // Same reference returned when nothing changed — zero-allocation hot path
+    // so the GC pressure on every wire call stays minimal.
     expect(out).toBe(msgs);
   });
 
@@ -514,8 +525,8 @@ describe("trimToSafePrefix preserves signature when the assistant turn is kept",
       },
     ];
     const out = sanitizeThinkingBlocksForWire(msgs);
-    // Same reference returned — anti-thrash kicks in because we didn't touch
-    // anything.
+    // Same reference returned — no rewrite was needed, so we preserve the
+    // original array reference.
     expect(out).toBe(msgs);
   });
 

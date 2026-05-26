@@ -3,8 +3,13 @@ import type { ToolResultTruncationMetadata } from "@/core/tool-result-truncation
 import { maybeTruncateToolResultForModel } from "@/core/tool-result-truncation";
 import { extractFileEvents } from "@/media/file-events";
 import { resolveAuxModel } from "@/memory/aux-model-map";
-import { compressIfNeeded } from "@/memory/compressor";
+import { compressIfNeeded, findLastCompactionSummary } from "@/memory/compressor";
 import { StreamingContextScrubber, scrubString } from "@/memory/scrubber";
+import {
+  buildMaestroMemoryState,
+  loadMaestroMemoryState,
+  saveMaestroMemoryState,
+} from "@/memory/state";
 import { logger } from "@/platform/logger";
 import { isWrapUpZone, thinkingBudgetForTurn } from "@/providers/anthropic";
 import type {
@@ -37,6 +42,37 @@ import type { TokenUsage, UnifiedEvent } from "@/types";
  * UnifiedEvent emit path truncates.
  */
 const TOOL_RESULT_PREVIEW_MAX = 200;
+
+/** Max chars of the active-task focus passed to guided compaction. */
+const FOCUS_TOPIC_MAX_CHARS = 400;
+
+/**
+ * Derive a guided-compaction focus from the latest *plain* user request (the
+ * active task). Tool-result-bearing user turns and compaction markers are
+ * skipped so the focus is the human's actual ask, not machine plumbing.
+ * Returns undefined when no plain user text is present.
+ */
+function deriveFocusTopic(messages: ProviderMessage[]): string | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role !== "user") continue;
+    let text = "";
+    if (typeof m.content === "string") {
+      text = m.content;
+    } else if (Array.isArray(m.content)) {
+      // A user turn carrying tool_result blocks is machine plumbing, not an ask.
+      if (m.content.some((b) => (b as { type?: string }).type === "tool_result")) continue;
+      text = (m.content as Array<{ type: string; text?: string }>)
+        .filter((b) => b.type === "text")
+        .map((b) => b.text ?? "")
+        .join(" ");
+    }
+    text = text.trim();
+    if (!text || text.includes("\x00maestro-compaction\x00")) continue;
+    return text.slice(0, FOCUS_TOPIC_MAX_CHARS);
+  }
+  return undefined;
+}
 
 /**
  * run_conversation — Maestro agent loop (TS port).
@@ -96,10 +132,9 @@ export async function* runConversation(
     // (⌛compaction user + summary assistant) to the canonical `messages`
     // array for persistence (OpenCode-style incremental). On resume the
     // aux LLM receives an incremental "update the anchored summary"
-    // prompt instead of re-summarizing from scratch. Anti-thrashing on
-    // the array reference (both in prune.ts and compressor.ts) keeps
-    // back-to-back iterations near-zero CPU once the conversation
-    // stabilizes.
+    // prompt instead of re-summarizing from scratch. The compressor's
+    // effective-token fast-path skips aux work when the persisted summary
+    // plus post-compaction delta is already under threshold.
     //
     // Aux provider stays the same (intra-provider remap), but the aux MODEL
     // routes through `resolveAuxModel` so heavy tiers (gpt-5.5, opus,
@@ -118,6 +153,20 @@ export async function* runConversation(
     // POSTing ~1.3 MB request bodies. Routing aux to gpt-5.4-mini cuts both
     // the body weight and the model latency.
     const auxModel = agent.config.auxModel ?? resolveAuxModel(agent.config.model);
+    const memoryState = agent.config.sessionId
+      ? loadMaestroMemoryState(agent.config.sessionId)
+      : null;
+    const markerSummary = memoryState ? undefined : findLastCompactionSummary(messages);
+    if (agent.config.sessionId && markerSummary) {
+      saveMaestroMemoryState(
+        buildMaestroMemoryState({
+          sessionId: agent.config.sessionId,
+          summary: markerSummary,
+          messageCount: messages.length,
+        }),
+      );
+    }
+    const cumulativeSummary = memoryState?.summary ?? markerSummary;
     // Captured by the `onEmergencyTrim` callback below. When the aux LLM
     // compaction call fails AND the pruned messages are still over the
     // emergency-target ceiling, compressIfNeeded falls back to a
@@ -126,14 +175,86 @@ export async function* runConversation(
     // CLI host, …) can surface the message — the loop itself proceeds
     // normally with the smaller wire array so the turn doesn't stall.
     let emergencyNotice: string | undefined;
+    let compactionMeta: { didStartAux: boolean; didCompact: boolean } | undefined;
+
+    // v0.1.32+: compaction is intentionally NOT cancellable from the user
+    // side. Aux-LLM compaction is an internal background optimization, not
+    // a user-controlled operation — the same way `/new` is the only way to
+    // interrupt a topic reset, abort here would just create a feedback
+    // loop:
+    //
+    //   user abort → AbortError mid-aux → fallback path → next turn still
+    //   over threshold → aux call again → another abort → repeat
+    //
+    // So we deliberately omit `abortSignal` from the compressIfNeeded call.
+    // The user's abort signal only takes effect on the subsequent
+    // `provider.complete` call below — which is what "abort this turn"
+    // actually means. The provider's own node:http idle/total timeout
+    // (idleTimeoutMs 600s + totalTimeoutMs 30min, see providers/node-fetch.ts)
+    // is the safety net for a genuinely hung aux LLM; we don't need a second
+    // one here. NB: aux runs on `agent.provider` itself, so it inherits the
+    // same node:http transport — Bun's global-fetch ~300s wall (the old
+    // failure mode that timed out every aux call) no longer applies.
+    //
+    // Status emission (v0.1.31+): the old approach predicted compaction
+    // need via `effectiveTokens` and yielded "🔄 대화 압축 중…" up-front.
+    // The prediction didn't match compressor's internal short-circuits, so
+    // the spinner could fire for turns that did zero aux work and get
+    // stuck.
+    //
+    // Current design: compressor fires `onCompactionResult` in `finally`
+    // with truthful {didStartAux, didCompact}. We yield based on that.
+    // True real-time "압축 중…" during the blocking aux call is not
+    // possible with the current `await` pattern — the generator is paused.
+    // The `onCompactionStart` hook exists in CompressOptions for future
+    // non-blocking compaction architectures; it is not wired here today.
+    // Guided (focus-steered) compaction is opt-in per provider — only Codex
+    // sets `guidedCompaction` today (stateless, benefits most). Cache-friendly
+    // providers (Anthropic/DeepSeek) keep the generic summary unchanged, and
+    // we skip the derivation entirely for them (no wasted scan).
+    const focusTopic = agent.provider.guidedCompaction ? deriveFocusTopic(messages) : undefined;
     const wireMessages = await compressIfNeeded(messages, {
       auxProvider: agent.provider,
       auxModel,
+      // Steer the summarizer to preserve the live work thread (latest user
+      // request) in full and shed tangents. Undefined → generic summary.
+      ...(focusTopic ? { focusTopic } : {}),
+      // Stateless providers (Codex /responses, store:false, no caching) declare
+      // a lower ratio so they compact earlier — every tool iteration re-uploads
+      // the full conversation, so smaller context = cheaper turns. Undefined →
+      // compressor default (0.6). See `Provider.compactionTriggerRatio`.
+      ...(agent.provider.compactionTriggerRatio !== undefined
+        ? { triggerRatio: agent.provider.compactionTriggerRatio }
+        : {}),
+      // Codex keeps a shorter verbatim tail so each compaction folds more of
+      // the middle (Hermes-style harder squeeze). Undefined → default (6).
+      ...(agent.provider.compactionTailProtect !== undefined
+        ? { tailProtect: agent.provider.compactionTailProtect }
+        : {}),
+      ...(cumulativeSummary ? { lastGoodSummary: cumulativeSummary } : {}),
+      ...(agent.config.sessionId
+        ? {
+            onCompactionSummary: (summary) => {
+              saveMaestroMemoryState(
+                buildMaestroMemoryState({
+                  sessionId: agent.config.sessionId as string,
+                  summary,
+                  messageCount: messages.length,
+                }),
+              );
+            },
+          }
+        : {}),
+      onCompactionResult: (meta) => {
+        compactionMeta = meta;
+      },
       onEmergencyTrim: (notice) => {
         emergencyNotice = notice;
       },
-      ...(agent.config.abortSignal ? { abortSignal: agent.config.abortSignal } : {}),
     });
+    if (compactionMeta?.didCompact) {
+      yield { type: "status", content: "✅ 대화 압축 완료" };
+    }
     if (emergencyNotice !== undefined) {
       yield { type: "error", content: emergencyNotice };
     }

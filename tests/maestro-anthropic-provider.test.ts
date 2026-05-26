@@ -11,6 +11,20 @@ import {
   thinkingBudgetForTurn,
 } from "@/providers/anthropic";
 
+// Providers now POST via `nodeFetch` (node:http) instead of Bun's global
+// `fetch` — see src/providers/node-fetch.ts for why (Bun caps fetch at a hard
+// ~300s). For tests we delegate `nodeFetch` back to `globalThis.fetch` at call
+// time so the existing `globalThis.fetch = mock` setups keep intercepting. A
+// real `Response` satisfies the `HttpResponseLike` subset the providers use.
+vi.mock("@/providers/node-fetch", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/providers/node-fetch")>();
+  return {
+    ...actual,
+    nodeFetch: (url: string, init?: Record<string, unknown>) =>
+      globalThis.fetch(url, init as RequestInit),
+  };
+});
+
 const ORIGINAL_FETCH = globalThis.fetch;
 const ORIGINAL_KEY = process.env.ANTHROPIC_API_KEY;
 

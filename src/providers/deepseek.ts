@@ -8,6 +8,7 @@ import type {
   ProviderStreamChunk,
   ProviderToolSchema,
 } from "@/providers/base";
+import { type HttpResponseLike, type NodeFetchInit, nodeFetch } from "@/providers/node-fetch";
 import type { EffortLevel, TokenUsage } from "@/types";
 
 const DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions";
@@ -107,7 +108,19 @@ interface OpenAIResponse {
 }
 
 export class DeepseekProvider implements Provider {
-  constructor(private readonly apiKey: string) {}
+  /**
+   * @param idleTimeoutMs Socket inactivity timeout (default 600_000, matching
+   *   Hermes' large-context stale floor), honored via `node:http`. Bun's global
+   *   `fetch` caps requests at a hard ~300 s that no signal can raise (see
+   *   `node-fetch.ts`); resets on every byte so long streams survive — it only
+   *   bounds time-to-first-byte and mid-stream stalls.
+   * @param totalTimeoutMs Absolute wall-clock ceiling (default 1_800_000).
+   */
+  constructor(
+    private readonly apiKey: string,
+    private readonly idleTimeoutMs: number = 600_000,
+    private readonly totalTimeoutMs: number = 1_800_000,
+  ) {}
 
   static fromEnv(): DeepseekProvider {
     const apiKey = process.env.DEEPSEEK_API_KEY;
@@ -119,14 +132,16 @@ export class DeepseekProvider implements Provider {
 
   async complete(opts: ProviderCompleteOptions): Promise<ProviderResponse> {
     const body = buildRequestBody(opts, false);
-    const init: RequestInit = {
+    const init: NodeFetchInit = {
       method: "POST",
       headers: this.headers(),
       body: JSON.stringify(body),
+      idleTimeoutMs: this.idleTimeoutMs,
+      totalTimeoutMs: this.totalTimeoutMs,
+      ...(opts.abortSignal ? { signal: opts.abortSignal } : {}),
     };
-    if (opts.abortSignal) init.signal = opts.abortSignal;
 
-    const response = await fetch(DEEPSEEK_API_URL, init);
+    const response: HttpResponseLike = await nodeFetch(DEEPSEEK_API_URL, init);
     if (!response.ok) {
       const text = await response.text();
       throw new Error(`DeepSeek API ${response.status}: ${text}`);
@@ -145,14 +160,16 @@ export class DeepseekProvider implements Provider {
 
   async *stream(opts: ProviderCompleteOptions): AsyncGenerator<ProviderStreamChunk> {
     const body = buildRequestBody(opts, true);
-    const init: RequestInit = {
+    const init: NodeFetchInit = {
       method: "POST",
       headers: { ...this.headers(), accept: "text/event-stream" },
       body: JSON.stringify(body),
+      idleTimeoutMs: this.idleTimeoutMs,
+      totalTimeoutMs: this.totalTimeoutMs,
+      ...(opts.abortSignal ? { signal: opts.abortSignal } : {}),
     };
-    if (opts.abortSignal) init.signal = opts.abortSignal;
 
-    const response = await fetch(DEEPSEEK_API_URL, init);
+    const response: HttpResponseLike = await nodeFetch(DEEPSEEK_API_URL, init);
     if (!response.ok) {
       const text = await response.text();
       throw new Error(`DeepSeek API ${response.status}: ${text}`);

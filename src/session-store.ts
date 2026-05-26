@@ -46,6 +46,7 @@ import { DATA_DIR } from "@/platform/config";
 import { writeJsonlFile } from "@/platform/jsonl";
 import { logger } from "@/platform/logger";
 import { MAESTRO_SDK_VERSION } from "@/platform/version";
+import { maestroMemoryStatePath } from "@/memory/state";
 import type { ProviderContentBlock, ProviderMessage } from "@/providers/base";
 import { dropTaskStore } from "@/state/tasks";
 import type { ConversationEntry } from "@/storage/conversations";
@@ -328,6 +329,13 @@ export function deleteMaestroSession(sessionId: string): void {
     }
   }
   dropFileStateTracker(sessionId);
+  try {
+    unlinkSync(maestroMemoryStatePath(sessionId));
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") {
+      logger.warn({ err: e, sessionId }, "deleteMaestroSession: memory state unlink failed");
+    }
+  }
   // Drops the in-memory store AND unlinks the on-disk `.tasks.json` sidecar
   // (plus the legacy `.todos.json` if a migration hasn't fired yet).
   dropTaskStore(sessionId);

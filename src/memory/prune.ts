@@ -26,17 +26,14 @@ import type { ProviderContentBlock, ProviderMessage } from "@/providers/base";
  *
  * Both passes are pure (`messages` not mutated) — caller can freely send the
  * returned array to the provider without losing the canonical history they
- * still need for persistence/resume. Anti-thrashing is module-state-backed
- * (see header on `pruneMessages`) so back-to-back calls on an already-pruned
- * array don't burn cycles.
+ * still need for persistence/resume.
  *
  * Token savings are estimated by raw character count (not BPE-accurate). The
  * trade-off: char-count is a strict upper bound on dedup/summary savings (a
  * byte you remove was at most one token's worth), provider-agnostic, and
  * available without spinning up a tokenizer. Real Anthropic token reduction
  * is typically 1.1-1.4x the char delta, so this estimator under-reports
- * savings slightly — fine for the anti-thrash threshold (better to over-skip
- * than over-prune).
+ * savings slightly.
  *
  * Upstream reference: `hermes-agent/agent/context_compressor.py:519-685`.
  */
@@ -76,17 +73,6 @@ export interface PruneOptions {
    * `ageTurnsThreshold` (10).
    */
   shrinkAgeThreshold?: number;
-  /**
-   * Anti-thrashing — if two consecutive calls on the same `messages` array
-   * reference each save less than 10% of bytes, skip the third call entirely
-   * and return the input as-is. Default: true. Disable for tests that exercise
-   * single-call behavior in isolation.
-   *
-   * State is keyed on the array reference (WeakMap). A fresh array starts
-   * fresh; the loop's per-turn `messages.push(...)` keeps the same reference
-   * so state survives across iterations within one session.
-   */
-  antiThrash?: boolean;
 }
 
 /**
@@ -97,38 +83,11 @@ export interface PruneOptions {
  */
 const MIN_PRUNE_CHARS = 200;
 
-/** Anti-thrash trigger — < 10% byte savings counts as "ineffective". */
-const ANTI_THRASH_PCT = 10;
-/** Two consecutive ineffective calls → next call skips. */
-const ANTI_THRASH_LIMIT = 2;
-/**
- * Message-count growth since the latch was set that re-opens prune retries.
- * Without this the short-circuit at the top would latch permanently for the
- * lifetime of the `messages` array reference — every prune attempt past the
- * latch would skip even after the history grew by dozens of new turns that
- * the prior decision never saw. Four new messages ≈ two tool iterations,
- * enough that the model has added a fresh chunk of context worth re-prunes.
- */
-const ANTI_THRASH_GROWTH_RESET = 4;
-
-interface AntiThrashState {
-  ineffectiveCount: number;
-  /** messages.length at the moment the counter first reached the limit.
-   *  Undefined until then; cleared on every effective prune. */
-  latchedAtLength?: number;
-  lastSig?: string;
-}
-const antiThrashByRef = new WeakMap<ProviderMessage[], AntiThrashState>();
-
 /**
  * Apply pass 1 (dedup) + pass 2 (age-based summary) to a message array.
  *
  * Returns a new array — input `messages` and the inner block arrays are not
  * mutated, so the caller can keep the original around for persistence.
- *
- * `opts.antiThrash` (default on) backs off when consecutive calls on the
- * same array reference don't save enough — useful inside the per-iteration
- * hot path of the agent loop where most turns won't add new prune targets.
  */
 export function pruneMessages(
   messages: ProviderMessage[],
@@ -141,26 +100,9 @@ export function pruneMessages(
     shrinkLargeToolArgs = true,
     largeArgChars = 800,
     shrinkAgeThreshold = ageTurnsThreshold,
-    antiThrash = true,
   } = opts;
 
   if (messages.length === 0) return messages;
-
-  // Anti-thrash short-circuit BEFORE we do any work — but break the latch
-  // when the history has grown by enough new turns that the prior "no
-  // savings here" decision is stale.
-  if (antiThrash) {
-    const st = antiThrashByRef.get(messages);
-    if (st && st.ineffectiveCount >= ANTI_THRASH_LIMIT) {
-      const grown =
-        st.latchedAtLength !== undefined &&
-        messages.length >= st.latchedAtLength + ANTI_THRASH_GROWTH_RESET;
-      if (!grown) return messages;
-      // Significant growth — invalidate latch, retry the prune path.
-      st.ineffectiveCount = 0;
-      st.latchedAtLength = undefined;
-    }
-  }
 
   // Build a tool_use_id -> {name, args} index from every assistant turn so
   // pass 2 can render `[<tool_name>] ... (Nchars)` lines. We index the WHOLE
@@ -204,39 +146,12 @@ export function pruneMessages(
     }
   }
 
-  // ----------------------- Anti-thrash bookkeeping -----------------------
-  if (antiThrash) {
-    const beforeBytes = estimateBytes(messages);
-    const afterBytes = estimateBytes(pruned);
-    const savings = beforeBytes - afterBytes;
-    const pct = beforeBytes > 0 ? (savings / beforeBytes) * 100 : 0;
-    const st = antiThrashByRef.get(messages) ?? { ineffectiveCount: 0 };
-    if (pct < ANTI_THRASH_PCT) {
-      st.ineffectiveCount++;
-      // Record the messages.length at the moment we first latch so the
-      // growth-reset check above has an anchor to compare against. Set only
-      // on the transition into latched state; subsequent ineffective calls
-      // past the limit don't move the anchor forward.
-      if (st.ineffectiveCount >= ANTI_THRASH_LIMIT && st.latchedAtLength === undefined) {
-        st.latchedAtLength = messages.length;
-      }
-    } else {
-      st.ineffectiveCount = 0;
-      st.latchedAtLength = undefined;
-    }
-    antiThrashByRef.set(messages, st);
-  }
-
   return pruned;
 }
 
 /**
  * Char-count-based token savings estimate. Negative values are clamped to 0
  * (a no-op pass is "0% savings", not "savings increased").
- *
- * Anthropic tokens-per-char varies (~3.5-4.5 for English, lower for CJK), so
- * this is a deliberately conservative proxy. The anti-thrash check only
- * needs a relative measure, not an absolute one.
  *
  * Exposed for tests so we can assert savings rates without spinning up a
  * tokenizer.
@@ -245,15 +160,6 @@ export function estimateTokenSavings(before: ProviderMessage[], after: ProviderM
   const b = estimateBytes(before);
   const a = estimateBytes(after);
   return Math.max(0, b - a);
-}
-
-/** Test-only: reset module-level anti-thrash state. */
-export function __resetPruneStateForTests(): void {
-  // WeakMap has no .clear() — replace by emptying via reassignment of every
-  // tracked entry. In practice tests just create fresh arrays.
-  // We deliberately don't expose a hard clear because production callers
-  // shouldn't reach into module state; the WeakMap GC-friendly design is the
-  // point. Tests that need isolation should create fresh arrays.
 }
 
 // =====================================================================
@@ -322,8 +228,7 @@ function applyDedup(messages: ProviderMessage[]): ProviderMessage[] {
       const c = block.content;
       if (typeof c !== "string") return block;
       if (c.length < MIN_PRUNE_CHARS) return block;
-      // Skip blocks that are already a previous pass's placeholder so the
-      // anti-thrash measurement doesn't double-count.
+      // Skip blocks that are already a previous pass's placeholder.
       if (c.startsWith("[Duplicate tool output")) return block;
       const h = hashToolContent(c);
       if (seenHashes.has(h)) {
@@ -542,6 +447,3 @@ function blockBytes(block: ProviderContentBlock): number {
 
 // Internal exports for tests.
 export const __MIN_PRUNE_CHARS = MIN_PRUNE_CHARS;
-export const __ANTI_THRASH_PCT = ANTI_THRASH_PCT;
-export const __ANTI_THRASH_LIMIT = ANTI_THRASH_LIMIT;
-export const __ANTI_THRASH_GROWTH_RESET = ANTI_THRASH_GROWTH_RESET;

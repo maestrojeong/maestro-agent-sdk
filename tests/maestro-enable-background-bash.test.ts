@@ -1,6 +1,17 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { maestroProvider } from "@/provider";
 import type { AgentQueryOptions, UnifiedEvent } from "@/types";
+
+// Providers POST via `nodeFetch` (node:http); delegate to `globalThis.fetch`
+// at call time so these tests' direct `globalThis.fetch` stubs keep intercepting.
+vi.mock("@/providers/node-fetch", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/providers/node-fetch")>();
+  return {
+    ...actual,
+    nodeFetch: (url: string, init?: Record<string, unknown>) =>
+      globalThis.fetch(url, init as RequestInit),
+  };
+});
 
 /**
  * `AgentQueryOptions.enableBackgroundBash` integration tests — v0.1.19+.
