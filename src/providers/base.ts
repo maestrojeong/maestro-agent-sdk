@@ -169,4 +169,33 @@ export interface Provider {
    * undefined and the loop will fall back to `complete()`.
    */
   stream?(opts: ProviderCompleteOptions): AsyncGenerator<ProviderStreamChunk>;
+  /**
+   * Optional compaction trigger ratio this provider prefers
+   * (threshold = contextWindow × ratio). STATELESS providers that re-upload
+   * the entire conversation on every tool iteration — notably Codex
+   * `/responses` with `store: false` (mandatory there; `store: true` → 400)
+   * and NO prompt caching — pay for context size on every single call, so
+   * they benefit from compacting EARLIER than cache-friendly providers
+   * (Anthropic prompt cache / DeepSeek auto-cache make re-upload cheap, so a
+   * later trigger is fine there). The agent loop reads this and forwards it to
+   * `compressIfNeeded`; `undefined` falls back to the compressor default (0.6).
+   */
+  readonly compactionTriggerRatio?: number;
+  /**
+   * Optional tail-protect override (how many of the most-recent messages are
+   * kept verbatim instead of folded into the summary). Stateless providers
+   * (Codex) keep a SHORTER tail so each compaction folds more of the middle —
+   * closer to Hermes' "summarize the middle hard" behavior, keeping the
+   * re-uploaded residual small. `undefined` → compressor default (6).
+   */
+  readonly compactionTailProtect?: number;
+  /**
+   * Opt into guided (focus-steered) compaction. When true, the agent loop
+   * derives a focus topic from the active task (latest user request) and
+   * passes it to `compressIfNeeded`, so the aux summarizer preserves the live
+   * work thread in full and sheds tangents (Hermes `/compact <focus>` style).
+   * Only stateless providers (Codex) opt in today; cache-friendly providers
+   * leave it `undefined`/false and get the generic summary unchanged.
+   */
+  readonly guidedCompaction?: boolean;
 }

@@ -43,6 +43,37 @@ import type { TokenUsage, UnifiedEvent } from "@/types";
  */
 const TOOL_RESULT_PREVIEW_MAX = 200;
 
+/** Max chars of the active-task focus passed to guided compaction. */
+const FOCUS_TOPIC_MAX_CHARS = 400;
+
+/**
+ * Derive a guided-compaction focus from the latest *plain* user request (the
+ * active task). Tool-result-bearing user turns and compaction markers are
+ * skipped so the focus is the human's actual ask, not machine plumbing.
+ * Returns undefined when no plain user text is present.
+ */
+function deriveFocusTopic(messages: ProviderMessage[]): string | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role !== "user") continue;
+    let text = "";
+    if (typeof m.content === "string") {
+      text = m.content;
+    } else if (Array.isArray(m.content)) {
+      // A user turn carrying tool_result blocks is machine plumbing, not an ask.
+      if (m.content.some((b) => (b as { type?: string }).type === "tool_result")) continue;
+      text = (m.content as Array<{ type: string; text?: string }>)
+        .filter((b) => b.type === "text")
+        .map((b) => b.text ?? "")
+        .join(" ");
+    }
+    text = text.trim();
+    if (!text || text.includes("\x00maestro-compaction\x00")) continue;
+    return text.slice(0, FOCUS_TOPIC_MAX_CHARS);
+  }
+  return undefined;
+}
+
 /**
  * run_conversation — Maestro agent loop (TS port).
  *
@@ -127,11 +158,13 @@ export async function* runConversation(
       : null;
     const markerSummary = memoryState ? undefined : findLastCompactionSummary(messages);
     if (agent.config.sessionId && markerSummary) {
-      saveMaestroMemoryState(buildMaestroMemoryState({
-        sessionId: agent.config.sessionId,
-        summary: markerSummary,
-        messageCount: messages.length,
-      }));
+      saveMaestroMemoryState(
+        buildMaestroMemoryState({
+          sessionId: agent.config.sessionId,
+          summary: markerSummary,
+          messageCount: messages.length,
+        }),
+      );
     }
     const cumulativeSummary = memoryState?.summary ?? markerSummary;
     // Captured by the `onEmergencyTrim` callback below. When the aux LLM
@@ -175,18 +208,40 @@ export async function* runConversation(
     // possible with the current `await` pattern — the generator is paused.
     // The `onCompactionStart` hook exists in CompressOptions for future
     // non-blocking compaction architectures; it is not wired here today.
+    // Guided (focus-steered) compaction is opt-in per provider — only Codex
+    // sets `guidedCompaction` today (stateless, benefits most). Cache-friendly
+    // providers (Anthropic/DeepSeek) keep the generic summary unchanged, and
+    // we skip the derivation entirely for them (no wasted scan).
+    const focusTopic = agent.provider.guidedCompaction ? deriveFocusTopic(messages) : undefined;
     const wireMessages = await compressIfNeeded(messages, {
       auxProvider: agent.provider,
       auxModel,
+      // Steer the summarizer to preserve the live work thread (latest user
+      // request) in full and shed tangents. Undefined → generic summary.
+      ...(focusTopic ? { focusTopic } : {}),
+      // Stateless providers (Codex /responses, store:false, no caching) declare
+      // a lower ratio so they compact earlier — every tool iteration re-uploads
+      // the full conversation, so smaller context = cheaper turns. Undefined →
+      // compressor default (0.6). See `Provider.compactionTriggerRatio`.
+      ...(agent.provider.compactionTriggerRatio !== undefined
+        ? { triggerRatio: agent.provider.compactionTriggerRatio }
+        : {}),
+      // Codex keeps a shorter verbatim tail so each compaction folds more of
+      // the middle (Hermes-style harder squeeze). Undefined → default (6).
+      ...(agent.provider.compactionTailProtect !== undefined
+        ? { tailProtect: agent.provider.compactionTailProtect }
+        : {}),
       ...(cumulativeSummary ? { lastGoodSummary: cumulativeSummary } : {}),
       ...(agent.config.sessionId
         ? {
             onCompactionSummary: (summary) => {
-              saveMaestroMemoryState(buildMaestroMemoryState({
-                sessionId: agent.config.sessionId as string,
-                summary,
-                messageCount: messages.length,
-              }));
+              saveMaestroMemoryState(
+                buildMaestroMemoryState({
+                  sessionId: agent.config.sessionId as string,
+                  summary,
+                  messageCount: messages.length,
+                }),
+              );
             },
           }
         : {}),

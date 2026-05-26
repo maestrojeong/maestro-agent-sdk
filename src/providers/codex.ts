@@ -132,6 +132,39 @@ export interface CodexProviderOptions {
    * `totalTimeoutMs` is not, it is used as the total ceiling.
    */
   fetchTimeoutMs?: number;
+  /**
+   * Codex wire-diet: per-request cap (chars) on *older* tool outputs
+   * (`function_call_output.output`) before the POST. The Codex ChatGPT backend
+   * mandates `store: false` (verified: `store: true` → 400 "Store must be set
+   * to false"), so the FULL conversation is re-uploaded on every tool
+   * iteration — a 50KB file read keeps inflating every subsequent request body
+   * (observed 200–550KB bodies, ~1 req/iteration, 10–16 iterations/turn). The
+   * native `codex` binary and Hermes (`_INLINE_SHELL_MAX_OUTPUT = 4000`) keep
+   * tool outputs small for exactly this reason. We trim only outputs OLDER than
+   * `keepRecentToolOutputsFull` (the model still sees fresh results in full),
+   * head+tail preserved with an elision marker. Does NOT mutate stored history
+   * — wire-only, codex-only. Default 4_000 (aggressive, matches Hermes'
+   * `_INLINE_SHELL_MAX_OUTPUT`). Set 0 / Infinity to disable. */
+  toolOutputWireCapChars?: number;
+  /**
+   * Number of most-recent tool outputs kept at full size by the wire-diet
+   * above. The current iteration's fresh tool results must survive intact so
+   * the model can act on them. Default 2 (current + immediately-prior). */
+  keepRecentToolOutputsFull?: number;
+  /**
+   * Compaction trigger ratio surfaced to the agent loop via the `Provider`
+   * interface. Codex re-uploads the full conversation every tool iteration
+   * (store:false, no caching), so it compacts EARLIER than the cross-provider
+   * default (0.6). Default 0.35 → threshold = contextWindow × 0.35 (e.g. ~70K at
+   * a 200K window vs 120K at 0.6) so codex compacts well before the body grows
+   * heavy. Set to match the cross-provider default to opt out. */
+  compactionTriggerRatio?: number;
+  /**
+   * Tail-protect surfaced via `Provider.compactionTailProtect`. Codex keeps a
+   * shorter verbatim tail (default 4 vs the compressor's 6) so each compaction
+   * folds more of the middle into the summary — Hermes-style harder squeeze,
+   * keeping the re-uploaded residual small. */
+  compactionTailProtect?: number;
 }
 
 /**
@@ -145,6 +178,18 @@ export class CodexResponsesProvider implements Provider {
   private readonly refreshSkewSeconds: number | undefined;
   private readonly idleTimeoutMs: number;
   private readonly totalTimeoutMs: number;
+  private readonly toolOutputWireCapChars: number;
+  private readonly keepRecentToolOutputsFull: number;
+  /** Surfaced to the agent loop (see `Provider.compactionTriggerRatio`). Codex
+   *  compacts earlier than cache-friendly providers because it re-uploads the
+   *  whole conversation every iteration. */
+  readonly compactionTriggerRatio: number;
+  /** Surfaced via `Provider.compactionTailProtect`. Shorter tail than the
+   *  compressor default so codex compactions fold more of the middle. */
+  readonly compactionTailProtect: number;
+  /** Surfaced via `Provider.guidedCompaction`. Codex opts into focus-steered
+   *  compaction (active task preserved in full); other providers don't. */
+  readonly guidedCompaction = true;
 
   constructor(opts: CodexProviderOptions = {}) {
     this.baseUrl = (opts.baseUrl ?? DEFAULT_CODEX_BASE_URL).replace(/\/+$/, "");
@@ -152,6 +197,10 @@ export class CodexResponsesProvider implements Provider {
     this.refreshSkewSeconds = opts.refreshSkewSeconds;
     this.idleTimeoutMs = opts.idleTimeoutMs ?? 600_000;
     this.totalTimeoutMs = opts.totalTimeoutMs ?? opts.fetchTimeoutMs ?? 1_800_000;
+    this.toolOutputWireCapChars = opts.toolOutputWireCapChars ?? 4_000;
+    this.keepRecentToolOutputsFull = opts.keepRecentToolOutputsFull ?? 2;
+    this.compactionTriggerRatio = opts.compactionTriggerRatio ?? 0.35;
+    this.compactionTailProtect = opts.compactionTailProtect ?? 4;
   }
 
   /**
@@ -228,7 +277,10 @@ export class CodexResponsesProvider implements Provider {
       );
       throw e;
     }
-    const body = buildRequestBody(opts);
+    const body = buildRequestBody(opts, {
+      capChars: this.toolOutputWireCapChars,
+      keepRecent: this.keepRecentToolOutputsFull,
+    });
     const url = `${this.baseUrl}/responses`;
 
     const headers = {
@@ -410,8 +462,58 @@ export class CodexResponsesProvider implements Provider {
  *     replay it yet, but capturing it now keeps the future replay path
  *     a translator change rather than another wire change.
  */
-function buildRequestBody(opts: ProviderCompleteOptions): Record<string, unknown> {
-  const input: ResponsesInputItem[] = translateMessagesToResponses(opts.messages);
+/**
+ * Codex wire-diet. Trims `function_call_output.output` for tool results OLDER
+ * than the `keepRecent` most recent ones, preserving head+tail with an elision
+ * marker. Pure function over the input-item array; the caller's stored message
+ * history is untouched (this only shrinks the bytes on the wire).
+ *
+ * Why only `function_call_output`: it's a free-form string, safe to truncate.
+ * We deliberately do NOT touch `function_call.arguments` — that's a JSON string
+ * the backend may parse, and mid-string truncation would corrupt it.
+ */
+export function dietToolOutputs(
+  input: ResponsesInputItem[],
+  capChars: number,
+  keepRecent: number,
+): ResponsesInputItem[] {
+  if (!Number.isFinite(capChars) || capChars <= 0) return input; // disabled
+  const fcoIndices: number[] = [];
+  for (let i = 0; i < input.length; i++) {
+    if (input[i]?.type === "function_call_output") fcoIndices.push(i);
+  }
+  if (fcoIndices.length <= keepRecent) return input; // nothing old enough to trim
+  const keepFull = new Set(fcoIndices.slice(keepRecent > 0 ? -keepRecent : fcoIndices.length));
+  const headLen = Math.floor(capChars * 0.7);
+  const tailLen = capChars - headLen;
+  let trimmedItems = 0;
+  let savedChars = 0;
+  const out = input.map((item, i) => {
+    if (item.type !== "function_call_output" || keepFull.has(i)) return item;
+    if (typeof item.output !== "string" || item.output.length <= capChars) return item;
+    const removed = item.output.length - headLen - tailLen;
+    trimmedItems++;
+    savedChars += removed;
+    return {
+      ...item,
+      output: `${item.output.slice(0, headLen)}\n\n…[codex wire-diet: ${removed} chars elided from an earlier tool output]…\n\n${item.output.slice(item.output.length - tailLen)}`,
+    };
+  });
+  if (trimmedItems > 0) {
+    logger.info(
+      { trimmedItems, savedChars, oldToolOutputs: fcoIndices.length - keepFull.size, capChars },
+      "codex: wire-diet trimmed old tool outputs",
+    );
+  }
+  return out;
+}
+
+function buildRequestBody(
+  opts: ProviderCompleteOptions,
+  diet: { capChars: number; keepRecent: number },
+): Record<string, unknown> {
+  let input: ResponsesInputItem[] = translateMessagesToResponses(opts.messages);
+  input = dietToolOutputs(input, diet.capChars, diet.keepRecent);
   const tools = translateToolsToResponses(opts.tools);
 
   const body: Record<string, unknown> = {
