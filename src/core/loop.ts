@@ -189,10 +189,10 @@ export async function* runConversation(
     // So we deliberately omit `abortSignal` from the compressIfNeeded call.
     // The user's abort signal only takes effect on the subsequent
     // `provider.complete` call below — which is what "abort this turn"
-    // actually means. The provider's own node:http idle/total timeout
-    // (idleTimeoutMs 600s + totalTimeoutMs 30min, see providers/node-fetch.ts)
-    // is the safety net for a genuinely hung aux LLM; we don't need a second
-    // one here. NB: aux runs on `agent.provider` itself, so it inherits the
+    // actually means. The provider's own node:http idle/total timeout (set
+    // per-provider in providers/codex.ts + deepseek.ts — e.g. codex defaults
+    // 30min idle / 90min total; node-fetch.ts honors them) is the safety net
+    // for a genuinely hung aux LLM; we don't need a second one here. NB: aux runs on `agent.provider` itself, so it inherits the
     // same node:http transport — Bun's global-fetch ~300s wall (the old
     // failure mode that timed out every aux call) no longer applies.
     //

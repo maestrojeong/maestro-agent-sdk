@@ -17,6 +17,7 @@ import { getMcpServersForQuery } from "@/platform/mcp-config";
 // `platform/env-bootstrap.ts` for the full rationale and safety notes.
 bootstrapHostPath();
 
+import { MODEL_DEEPSEEK_V4_PRO } from "@/platform/config";
 import {
   AnthropicProvider,
   detectThinkingKeyword,
@@ -26,6 +27,7 @@ import {
 import type { Provider, ProviderContentBlock, ProviderMessage } from "@/providers/base";
 import { CodexResponsesProvider } from "@/providers/codex";
 import { DeepseekProvider } from "@/providers/deepseek";
+import { FallbackProvider } from "@/providers/fallback";
 import { maestroRegistry } from "@/registry";
 import {
   isWellFormedMessage,
@@ -893,6 +895,12 @@ export function applySkillAllowlist<T extends { name: string }>(
  *   - `gpt-5.*` / `gpt-4.*` / `o3` / `o4`  → CodexResponsesProvider
  *     (ChatGPT-OAuth-backed Responses API at
  *     chatgpt.com/backend-api/codex; reads ~/.codex/auth.json).
+ *     When `DEEPSEEK_API_KEY` is present, the codex provider is wrapped in a
+ *     `FallbackProvider` that retries against DeepSeek (`deepseek-v4-pro`) if
+ *     codex fails before producing any output (OAuth dead, HTTP 4xx/5xx,
+ *     connect/TTFB timeout). Auto-on — no flag — because the only cost when
+ *     codex is healthy is one cheap wrapper object; the fallback provider is
+ *     lazily constructed and never touched unless codex actually fails.
  *   - `deepseek-*`                          → DeepseekProvider
  *     (DEEPSEEK_API_KEY env).
  *   - everything else (claude-*, custom full ids)
@@ -906,7 +914,14 @@ export function applySkillAllowlist<T extends { name: string }>(
  */
 export function providerForModel(resolvedModel: string): Provider {
   if (isCodexModel(resolvedModel)) {
-    return CodexResponsesProvider.fromEnv();
+    const codex = CodexResponsesProvider.fromEnv();
+    // Auto-on DeepSeek fallback when an API key is configured. The fallback
+    // provider is constructed lazily (only if codex actually fails), so a
+    // healthy-codex turn pays nothing beyond the wrapper allocation.
+    if (process.env.DEEPSEEK_API_KEY) {
+      return new FallbackProvider(codex, () => DeepseekProvider.fromEnv(), MODEL_DEEPSEEK_V4_PRO);
+    }
+    return codex;
   }
   if (resolvedModel.startsWith("deepseek-")) {
     return DeepseekProvider.fromEnv();

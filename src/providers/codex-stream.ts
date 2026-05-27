@@ -153,7 +153,11 @@ export async function* parseCodexStream(
     }
 
     // ── 2. Text deltas ────────────────────────────────────────────────────
-    if (t === "response.output_text.delta" && typeof evt.delta === "string" && evt.delta.length > 0) {
+    if (
+      t === "response.output_text.delta" &&
+      typeof evt.delta === "string" &&
+      evt.delta.length > 0
+    ) {
       // text_delta is fire-and-forget — the loop accumulates per-message
       // text on its own side. We also accumulate locally so the final
       // `message_complete` event's optional backfill has a source.
@@ -165,10 +169,7 @@ export async function* parseCodexStream(
     }
 
     // ── 3. Function-call argument deltas ─────────────────────────────────
-    if (
-      t === "response.function_call_arguments.delta" &&
-      typeof evt.output_index === "number"
-    ) {
+    if (t === "response.function_call_arguments.delta" && typeof evt.output_index === "number") {
       const entry = itemsByIndex.get(evt.output_index);
       if (!entry || entry.kind !== "function_call") continue;
       const chunk = evt.delta ?? evt.arguments ?? "";
@@ -181,21 +182,28 @@ export async function* parseCodexStream(
       continue;
     }
 
-    if (
-      t === "response.function_call_arguments.done" &&
-      typeof evt.output_index === "number"
-    ) {
+    if (t === "response.function_call_arguments.done" && typeof evt.output_index === "number") {
       const entry = itemsByIndex.get(evt.output_index);
       if (!entry || entry.kind !== "function_call") continue;
-      // The .done event sometimes carries the FULL arguments string. If our
-      // accumulator is empty (no deltas arrived — codex's chatgpt backend
-      // occasionally streams the args only at completion), backfill from
-      // the .done payload.
-      if (entry.argsBuf.length === 0 && typeof evt.arguments === "string") {
+      // The .done event carries the AUTHORITATIVE full arguments. Arg deltas
+      // can be incomplete (codex's chatgpt backend hiccups, or emits a few
+      // deltas then jumps to .done; also response.incomplete mid-call), which
+      // leaves `argsBuf` a TRUNCATED PREFIX → downstream JSON.parse fails with
+      // "Unterminated string" and the tool runs with empty input. Since deltas
+      // are sequential, `argsBuf` is a prefix of the full string: emit only the
+      // MISSING SUFFIX so the consumer's accumulated buffer becomes complete.
+      // (When no deltas arrived, argsBuf="" and startsWith is trivially true →
+      // suffix == full args, identical to the old empty-backfill behavior.)
+      if (
+        typeof evt.arguments === "string" &&
+        evt.arguments.length > entry.argsBuf.length &&
+        evt.arguments.startsWith(entry.argsBuf)
+      ) {
+        const suffix = evt.arguments.slice(entry.argsBuf.length);
         entry.argsBuf = evt.arguments;
         const id = entry.callId || entry.id;
         if (id) {
-          yield { type: "tool_use_input_delta", id, partial_json: evt.arguments };
+          yield { type: "tool_use_input_delta", id, partial_json: suffix };
         }
       }
       continue;
@@ -233,14 +241,23 @@ export async function* parseCodexStream(
         entry.toolCompleteEmitted = true;
         const id = entry.callId || entry.id;
         if (id && entry.name) {
-          // Backfill args from the closed item payload if our accumulator
-          // is empty (some codex builds skip the delta phase entirely).
-          if (entry.argsBuf.length === 0 && typeof evt.item?.arguments === "string") {
-            entry.argsBuf = evt.item.arguments;
+          // Authoritative full args on the closed item. Backfill the missing
+          // suffix (same rationale as `function_call_arguments.done` above):
+          // some codex builds skip deltas entirely (argsBuf=""), others send
+          // an incomplete prefix — in both cases emit only what's missing so
+          // the consumer's buffer is complete before tool_use_complete.
+          const itemArgs = evt.item?.arguments;
+          if (
+            typeof itemArgs === "string" &&
+            itemArgs.length > entry.argsBuf.length &&
+            itemArgs.startsWith(entry.argsBuf)
+          ) {
+            const suffix = itemArgs.slice(entry.argsBuf.length);
+            entry.argsBuf = itemArgs;
             yield {
               type: "tool_use_input_delta",
               id,
-              partial_json: entry.argsBuf,
+              partial_json: suffix,
             };
           }
           yield { type: "tool_use_complete", id, name: entry.name };
