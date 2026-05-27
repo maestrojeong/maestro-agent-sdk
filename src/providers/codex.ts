@@ -114,8 +114,8 @@ export interface CodexProviderOptions {
    * time-to-first-byte (the gpt-5.* Codex backend buffers reasoning before
    * sending headers) and mid-stream stalls. This replaces the old reliance on
    * Bun's hard-coded ~300 s fetch ceiling (which `AbortSignal` could not raise;
-   * see `node-fetch.ts`). Default 600_000 ms (10 min) — matches Hermes' stale
-   * watchdog floor for large (>100K-token) contexts. Production showed gpt-5.5
+   * see `node-fetch.ts`). Default 1_800_000 ms (30 min) — wide headroom above
+   * Hermes' stale watchdog floor for large (>100K-token) contexts. Production showed gpt-5.5
    * TTFB hitting ~230 s on big bodies and a 240 s default false-cutting a
    * legitimately slow response, so we give wide headroom; a true hang is still
    * bounded by this idle window plus the `totalTimeoutMs` backstop.
@@ -123,8 +123,9 @@ export interface CodexProviderOptions {
   idleTimeoutMs?: number;
   /**
    * Absolute wall-clock ceiling (ms) for the whole request + stream. The hard
-   * backstop if the model keeps dribbling bytes forever. Default 1_800_000 ms
-   * (30 min), matching Hermes' `HERMES_API_TIMEOUT` default.
+   * backstop if the model keeps dribbling bytes forever. Default 5_400_000 ms
+   * (90 min) — well above Hermes' `HERMES_API_TIMEOUT` default to allow very
+   * long reasoning turns.
    */
   totalTimeoutMs?: number;
   /**
@@ -195,8 +196,8 @@ export class CodexResponsesProvider implements Provider {
     this.baseUrl = (opts.baseUrl ?? DEFAULT_CODEX_BASE_URL).replace(/\/+$/, "");
     this.refreshTimeoutMs = opts.refreshTimeoutMs ?? 20_000;
     this.refreshSkewSeconds = opts.refreshSkewSeconds;
-    this.idleTimeoutMs = opts.idleTimeoutMs ?? 600_000;
-    this.totalTimeoutMs = opts.totalTimeoutMs ?? opts.fetchTimeoutMs ?? 1_800_000;
+    this.idleTimeoutMs = opts.idleTimeoutMs ?? 1_800_000;
+    this.totalTimeoutMs = opts.totalTimeoutMs ?? opts.fetchTimeoutMs ?? 5_400_000;
     this.toolOutputWireCapChars = opts.toolOutputWireCapChars ?? 4_000;
     this.keepRecentToolOutputsFull = opts.keepRecentToolOutputsFull ?? 2;
     this.compactionTriggerRatio = opts.compactionTriggerRatio ?? 0.35;
