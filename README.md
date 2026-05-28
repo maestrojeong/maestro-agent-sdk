@@ -104,17 +104,26 @@ for await (const event of runConversation(agent, "Summarize today's news.")) {
 }
 ```
 
-> **Effort scale.** `effort` drives both the thinking budget _and_ the
-> tool-iteration cap. The model also sees its remaining-iteration count in a
-> `<system-reminder>` block every turn so it can self-pace. Knobs:
+> **Effort scale.** `effort` is the *reasoning-depth* knob — it is **decoupled
+> from the iteration cap** (split in v0.1.16). The tool-iteration cap comes only
+> from `maxIterations`, which defaults to **unbounded** (`Number.POSITIVE_INFINITY`)
+> since v0.1.26; the loop runs until the model emits `end_turn` or the host
+> aborts. The model still sees its remaining-iteration count in a
+> `<system-reminder>` block every turn so it can self-pace. What `effort` drives:
 >
-> | effort  | thinking budget | iteration cap |
-> |---------|----------------:|--------------:|
-> | `low`   |          2 048  |             5 |
-> | `medium`|          8 192  |            20 |
-> | `high`  |         16 384  |            50 |
-> | `xhigh` |         32 768  |            90 |
-> | `max`   |         65 536  |           200 |
+> | effort   | persona (`## Working mode`) | thinking budget (Anthropic) | `reasoning_effort` (Codex / DeepSeek) |
+> |----------|-----------------------------|----------------------------:|---------------------------------------|
+> | `low`    | answer fast — one file, no cross-check  | — (off)  | `low`    |
+> | `medium` | focused work — one area, in-file check  | — (off)  | `medium` |
+> | `high`   | careful work — multi-file + verify      |   4 096  | `high`   |
+> | `xhigh`  | thorough — survey then drill down       |  10 000  | `xhigh`  |
+> | `max`    | exhaustive — all files, all edge cases  |  31 999  | `max`    |
+>
+> `effort` resolves to `medium` when omitted. The Anthropic thinking budget is
+> combined (max) with any prompt keyword budget (`detectThinkingKeyword`:
+> "think harder" / "끝까지 생각" → 31 999, etc.) so end-users can opt into
+> thinking without an effort flag. `effort` also propagates to spawned
+> sub-agents as `parentEffort`.
 
 More runnable scripts live under [`examples/`](./examples) — Anthropic, DeepSeek,
 a custom-tool walkthrough, and a `skill_write` demo.
