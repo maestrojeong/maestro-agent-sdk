@@ -97,16 +97,6 @@ export interface MaestroSessionMeta {
   createdAt: string;
   /** `MAESTRO_SDK_VERSION` at write time. Useful for cross-version debugging. */
   sdkVersion: string;
-  /** Resolved skills directory the live loop loaded from (per-call override,
-   *  env var, keyed profile, or `<cwd>/.skills` default). Recorded so a
-   *  later forensic sweep can answer "which catalog did this session see?"
-   *  without reconstructing the precedence chain. Updated on every save. */
-  skillsDir?: string;
-  /** Named skill profile the session was created with (corresponds to
-   *  `AgentQueryOptions.skillKey`). Distinct from `skillsDir` because the
-   *  resolved path can change across calls (env var flip, explicit
-   *  override) while the conceptual profile identity stays constant. */
-  skillKey?: string;
   /** Opaque host-controlled bag (topicId, groupId, anything). Passed through
    *  verbatim. The SDK only writes / reads it as a JSON value. */
   metadata?: Record<string, unknown>;
@@ -224,8 +214,6 @@ export interface SaveSessionMetaInput {
   cwd?: string;
   userId?: string;
   createdAt?: string;
-  skillsDir?: string;
-  skillKey?: string;
   metadata?: Record<string, unknown>;
   /** v0.1.18+: see `MaestroSessionMeta.parentSessionId`. Set by `forkSessionAt`. */
   parentSessionId?: string;
@@ -253,10 +241,6 @@ function buildMeta(sessionId: string, input: SaveSessionMetaInput): MaestroSessi
   };
   const userId = input.userId ?? existing?.userId;
   if (userId !== undefined) meta.userId = userId;
-  const skillsDir = input.skillsDir ?? existing?.skillsDir;
-  if (skillsDir !== undefined) meta.skillsDir = skillsDir;
-  const skillKey = input.skillKey ?? existing?.skillKey;
-  if (skillKey !== undefined) meta.skillKey = skillKey;
   const metadata = input.metadata ?? existing?.metadata;
   if (metadata !== undefined) meta.metadata = metadata;
   const parentSessionId = input.parentSessionId ?? existing?.parentSessionId;
@@ -431,8 +415,6 @@ export function forkSessionAt(opts: ForkSessionAtOptions): ForkSessionAtResult {
   };
   const userId = opts.userId ?? parentMeta?.userId;
   if (userId !== undefined) metaInput.userId = userId;
-  if (parentMeta?.skillsDir !== undefined) metaInput.skillsDir = parentMeta.skillsDir;
-  if (parentMeta?.skillKey !== undefined) metaInput.skillKey = parentMeta.skillKey;
   if (opts.metadata !== undefined) {
     metaInput.metadata = { ...(parentMeta?.metadata ?? {}), ...opts.metadata };
   } else if (parentMeta?.metadata !== undefined) {

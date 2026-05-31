@@ -278,44 +278,6 @@ export interface AgentQueryOptions {
    */
   hooks?: AgentHooks;
   /**
-   * Named skill profile within the per-cwd `.skills/` directory. The SDK
-   * resolves the skill catalog source as:
-   *
-   *   - `<cwd>/.skills/<skillKey>/`            when set
-   *   - `<cwd>/.skills/<MAESTRO_DEFAULT_SKILL_KEY>/` when omitted (literally
-   *     `<cwd>/.skills/default/` — the constant is exported so hosts can
-   *     reference it symbolically).
-   *
-   * Every skill lives under a named key — the SDK never loads from the
-   * `.skills/` root directly. This keeps the layout uniform so a caller
-   * scanning the filesystem can answer "which profiles exist?" with one
-   * `readdir`.
-   *
-   * Use case: one workspace, multiple disjoint skill sets. A topic /
-   * session passes a key (e.g. "legal", "coding"); the agent's catalog
-   * is whatever lives under that subdirectory. New skills the agent
-   * writes during the session naturally land in the same subdir — the
-   * keyed dir IS the loader root, so created skills stay scoped to the
-   * key without extra plumbing.
-   *
-   * This is the only knob the SDK exposes for skill-source routing —
-   * `(cwd, skillKey)` is a deterministic pair, so two sessions with the
-   * same pair load the same catalog and there's no env-var / explicit-
-   * dir precedence chain to reason about.
-   */
-  skillKey?: string;
-  /**
-   * Whitelist of skill names this call may surface. When provided, the
-   * loaded catalog is filtered down to entries whose `name` matches one
-   * of the listed values BEFORE curation, index rendering, and
-   * `skill_view` registration. Unknown names in the list are silently
-   * ignored (no error) so a host can safely pass a superset.
-   *
-   * Omit (or pass `undefined`) to allow every loaded skill — the default
-   * pre-0.1.5 behavior.
-   */
-  allowedSkills?: string[];
-  /**
    * Opaque host-controlled bag persisted alongside the session as part of
    * the rollout `_meta` header. The SDK reads and writes this verbatim and
    * never interprets its shape — useful for round-tripping `topicId`,
@@ -359,7 +321,7 @@ export interface AgentQueryOptions {
    * Promoted tools become callable from the next turn onward, and the
    * active set survives session resume via the rollout `_meta` header.
    *
-   * Built-in tools (Read/Write/Edit/Bash/Glob/Grep/Task family/skills) are
+   * Built-in tools (Read/Write/Edit/Bash/Glob/Grep/Task family) are
    * **never** deferred — they always ride the wire. The flag only controls
    * the MCP path.
    *

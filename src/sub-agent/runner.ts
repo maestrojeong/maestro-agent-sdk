@@ -12,17 +12,15 @@ import { effortToThinkingBudget } from "@/providers/anthropic";
 import type { Provider, ProviderContentBlock, ProviderMessage } from "@/providers/base";
 import { getNativeMaxOutputTokens } from "@/registry";
 import { deleteMaestroSession } from "@/session-store";
-import { loadSkillsCached, type SkillEntry } from "@/skills/loader";
 import { createBashTool } from "@/tools/builtin/bash";
 import { createEditTool } from "@/tools/builtin/edit";
 import { globTool } from "@/tools/builtin/glob";
 import { grepTool } from "@/tools/builtin/grep";
 import { createReadTool } from "@/tools/builtin/read";
-import { createSkillViewTool } from "@/tools/builtin/skill_view";
 import { webFetchTool } from "@/tools/builtin/web_fetch";
 import { createWriteTool } from "@/tools/builtin/write";
 import { getFileStateTracker } from "@/tools/file-state";
-import { ToolRegistry } from "@/tools/registry";
+import { ToolRegistry, type ToolHandler } from "@/tools/registry";
 import type { EffortLevel, TokenUsage } from "@/types";
 
 /**
@@ -71,8 +69,19 @@ export interface RunSubAgentOptions {
   /** Parent's abort signal. When the parent aborts, the sub-agent's
    *  in-flight provider call cancels too. */
   parentAbortSignal?: AbortSignal;
-  /** Pre-loaded skill catalog. Same set the parent sees. */
-  skills: SkillEntry[];
+  /**
+   * Additional tool handlers to inject into the sub-agent's registry.
+   * Use this to forward MCP tools from the parent session:
+   *
+   *   extraTools: parentTools.allHandlers().filter(h =>
+   *     h.schema.name.startsWith("mcp__")
+   *   )
+   *
+   * Handlers are registered after the builtin set, so a name collision
+   * with a builtin throws (same as a double-register in any registry).
+   * Unknown / colliding names should be filtered by the caller.
+   */
+  extraTools?: ToolHandler[];
 }
 
 export interface RunSubAgentResult {
@@ -136,11 +145,11 @@ function loadOverlay(kind: SubagentType): string {
 /**
  * Build the per-subagent-type tool registry.
  *
- * `general` — bash + Read + Write + Edit + Glob + Grep + WebFetch + skill_view.
- * `explore` — Read + Glob + Grep + WebFetch + skill_view only. NO bash, write, edit —
+ * `general` — bash + Read + Write + Edit + Glob + Grep + WebFetch.
+ * `explore` — Read + Glob + Grep + WebFetch only. NO bash, write, edit —
  *             the role is read-only by construction.
  * `plan`    — bash (read-only usage: ls/tree/git log/etc.) + Read + Glob + Grep +
- *             WebFetch + skill_view. NO Write/Edit — the role is to
+ *             WebFetch. NO Write/Edit — the role is to
  *             produce a plan document, not to implement it.
  *
  * Neither registers `Agent` (recursion cap) or the Task* family
@@ -154,7 +163,7 @@ function loadOverlay(kind: SubagentType): string {
 function buildToolRegistry(
   kind: SubagentType,
   subSessionId: string,
-  skills: SkillEntry[],
+  extraTools?: ToolHandler[],
   abortSignal?: AbortSignal,
 ): ToolRegistry {
   const tools = new ToolRegistry();
@@ -171,9 +180,6 @@ function buildToolRegistry(
   tools.register(globTool);
   tools.register(grepTool);
   tools.register(webFetchTool);
-  if (skills.length > 0) {
-    tools.register(createSkillViewTool({ skills, sessionId: subSessionId }));
-  }
 
   if (kind === "general") {
     tools.register(createBashTool({ signal: abortSignal }));
@@ -189,6 +195,18 @@ function buildToolRegistry(
     tools.register(createBashTool({ signal: abortSignal }));
   }
   // `explore` and `plan` stop here — no write/edit tools.
+
+  // Extra tools (e.g. MCP handlers forwarded from the parent) are
+  // registered last so builtins always take precedence on a name
+  // collision. The caller is responsible for filtering out tools it
+  // doesn't want to expose to the sub-agent.
+  if (extraTools) {
+    for (const t of extraTools) {
+      if (!tools.has(t.schema.name)) {
+        tools.register(t);
+      }
+    }
+  }
 
   return tools;
 }
@@ -222,7 +240,7 @@ export async function runSubAgent(opts: RunSubAgentOptions): Promise<RunSubAgent
   const tools = buildToolRegistry(
     opts.subagentType,
     subSessionId,
-    opts.skills,
+    opts.extraTools,
     opts.parentAbortSignal,
   );
   const overlay = loadOverlay(opts.subagentType);
@@ -318,6 +336,3 @@ export async function runSubAgent(opts: RunSubAgentOptions): Promise<RunSubAgent
   return { text: finalText, usage, subSessionId, aborted };
 }
 
-/** Convenience re-export for test setup — lets tests prime the loaded
- *  catalog without re-fetching from disk. */
-export { loadSkillsCached };
