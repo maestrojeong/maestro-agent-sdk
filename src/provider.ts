@@ -397,9 +397,18 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
     .filter((s): s is string => typeof s === "string" && s.length > 0)
     .join("\n\n");
 
+  // Collect MCP tool handlers to forward to sub-agents. Only tools whose
+  // name starts with "mcp__" are forwarded — builtins are always registered
+  // fresh in the sub-agent's own registry, and deferred tools that haven't
+  // been activated yet are excluded (the sub-agent would see unknown schemas
+  // if we forwarded a deferred but un-promoted handler).
+  const mcpToolHandlers = tools
+    .allHandlers()
+    .filter((h) => h.schema.name.startsWith("mcp__") && !tools.isDeferred(h.schema.name));
+
   // Register the `Agent` tool last — it captures the resolved model,
   // effort, augmented system prompt (parent base for sub-agents), and the
-  // already-loaded skill catalog. Registered only on the PARENT call;
+  // MCP tool handlers to forward. Registered only on the PARENT call;
   // sub-agents do NOT get an Agent tool because `runSubAgent` builds its
   // own registry without registering one (advisor: depth=1 cap).
   tools.register(
@@ -410,6 +419,7 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
         parentModel: resolvedModel,
         ...(resolvedEffort ? { parentEffort: resolvedEffort } : {}),
         ...(opts.abortController?.signal ? { parentAbortSignal: opts.abortController.signal } : {}),
+        ...(mcpToolHandlers.length > 0 ? { extraTools: mcpToolHandlers } : {}),
       },
     }),
   );

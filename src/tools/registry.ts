@@ -358,6 +358,18 @@ export class ToolRegistry {
   isParallelSafe(name: string): boolean {
     return this.tools.get(name)?.parallelSafe === true;
   }
+
+  /**
+   * Return every registered handler. Useful for forwarding a selected
+   * subset of the parent registry (e.g. MCP tools) to a sub-agent via
+   * `RunSubAgentOptions.extraTools`.
+   *
+   * Ordering matches insertion order. Deferred / active state is NOT
+   * carried — the caller decides registration options for the sub-agent.
+   */
+  allHandlers(): ToolHandler[] {
+    return Array.from(this.tools.values());
+  }
 }
 
 /**

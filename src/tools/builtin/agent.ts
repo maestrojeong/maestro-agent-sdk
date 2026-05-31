@@ -1,5 +1,6 @@
 import { type RunSubAgentOptions, runSubAgent, type SubagentType } from "@/sub-agent/runner";
 import type { ToolHandler } from "@/tools/registry";
+export type { ToolHandler };
 
 /**
  * `Agent` builtin — spawn a focused sub-agent for one delegated task.
@@ -48,6 +49,7 @@ export interface AgentToolFactoryOptions {
     | "parentModel"
     | "parentEffort"
     | "parentAbortSignal"
+    | "extraTools"
   >;
 }
 
@@ -122,6 +124,7 @@ export function createAgentTool(opts: AgentToolFactoryOptions): ToolHandler {
         ...(opts.parent.parentAbortSignal
           ? { parentAbortSignal: opts.parent.parentAbortSignal }
           : {}),
+        ...(opts.parent.extraTools ? { extraTools: opts.parent.extraTools } : {}),
       });
 
       if (result.aborted) {

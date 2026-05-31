@@ -20,7 +20,7 @@ import { createReadTool } from "@/tools/builtin/read";
 import { webFetchTool } from "@/tools/builtin/web_fetch";
 import { createWriteTool } from "@/tools/builtin/write";
 import { getFileStateTracker } from "@/tools/file-state";
-import { ToolRegistry } from "@/tools/registry";
+import { ToolRegistry, type ToolHandler } from "@/tools/registry";
 import type { EffortLevel, TokenUsage } from "@/types";
 
 /**
@@ -69,6 +69,19 @@ export interface RunSubAgentOptions {
   /** Parent's abort signal. When the parent aborts, the sub-agent's
    *  in-flight provider call cancels too. */
   parentAbortSignal?: AbortSignal;
+  /**
+   * Additional tool handlers to inject into the sub-agent's registry.
+   * Use this to forward MCP tools from the parent session:
+   *
+   *   extraTools: parentTools.allHandlers().filter(h =>
+   *     h.schema.name.startsWith("mcp__")
+   *   )
+   *
+   * Handlers are registered after the builtin set, so a name collision
+   * with a builtin throws (same as a double-register in any registry).
+   * Unknown / colliding names should be filtered by the caller.
+   */
+  extraTools?: ToolHandler[];
 }
 
 export interface RunSubAgentResult {
@@ -150,6 +163,7 @@ function loadOverlay(kind: SubagentType): string {
 function buildToolRegistry(
   kind: SubagentType,
   subSessionId: string,
+  extraTools?: ToolHandler[],
   abortSignal?: AbortSignal,
 ): ToolRegistry {
   const tools = new ToolRegistry();
@@ -181,6 +195,18 @@ function buildToolRegistry(
     tools.register(createBashTool({ signal: abortSignal }));
   }
   // `explore` and `plan` stop here — no write/edit tools.
+
+  // Extra tools (e.g. MCP handlers forwarded from the parent) are
+  // registered last so builtins always take precedence on a name
+  // collision. The caller is responsible for filtering out tools it
+  // doesn't want to expose to the sub-agent.
+  if (extraTools) {
+    for (const t of extraTools) {
+      if (!tools.has(t.schema.name)) {
+        tools.register(t);
+      }
+    }
+  }
 
   return tools;
 }
@@ -214,6 +240,7 @@ export async function runSubAgent(opts: RunSubAgentOptions): Promise<RunSubAgent
   const tools = buildToolRegistry(
     opts.subagentType,
     subSessionId,
+    opts.extraTools,
     opts.parentAbortSignal,
   );
   const overlay = loadOverlay(opts.subagentType);
