@@ -78,7 +78,6 @@ describe("v0.1.5 rollout meta header — save / load round-trip", () => {
       {
         cwd: "/some/path",
         userId: "u-42",
-        skillsDir: "/some/path/.skills",
         metadata: { topicId: "topic-x" },
       },
     );
@@ -89,7 +88,6 @@ describe("v0.1.5 rollout meta header — save / load round-trip", () => {
     expect(head._meta.version).toBe(1);
     expect(head._meta.cwd).toBe("/some/path");
     expect(head._meta.userId).toBe("u-42");
-    expect(head._meta.skillsDir).toBe("/some/path/.skills");
     expect(head._meta.metadata).toEqual({ topicId: "topic-x" });
     expect(head._meta.sdkVersion).toBe(MAESTRO_SDK_VERSION);
     expect(typeof head._meta.createdAt).toBe("string");
@@ -97,59 +95,6 @@ describe("v0.1.5 rollout meta header — save / load round-trip", () => {
 
     const first = JSON.parse(lines[1]);
     expect(first.role).toBe("user");
-  });
-
-  test("skillsDir is preserved across re-saves like other meta fields", () => {
-    const sid = uuid();
-    tracked.push(sid);
-    saveMaestroSession(sid, [{ role: "user", content: "v1" }], {
-      cwd: "/proj/a",
-      skillsDir: "/proj/a/.skills",
-    });
-    const first = loadMaestroSessionMeta(sid);
-    expect(first?.skillsDir).toBe("/proj/a/.skills");
-    // Re-save without meta — prior skillsDir should ride along.
-    saveMaestroSession(sid, [
-      { role: "user", content: "v1" },
-      { role: "assistant", content: [{ type: "text", text: "ack" }] },
-    ]);
-    const second = loadMaestroSessionMeta(sid);
-    expect(second?.skillsDir).toBe("/proj/a/.skills");
-  });
-
-  test("skillKey is recorded in meta and preserved across re-saves", () => {
-    const sid = uuid();
-    tracked.push(sid);
-    saveMaestroSession(sid, [{ role: "user", content: "v1" }], {
-      cwd: "/proj/a",
-      skillsDir: "/proj/a/.skills/legal",
-      skillKey: "legal",
-    });
-    expect(loadMaestroSessionMeta(sid)?.skillKey).toBe("legal");
-
-    // Re-save without skillKey: prior key persists.
-    saveMaestroSession(sid, [
-      { role: "user", content: "v1" },
-      { role: "assistant", content: [{ type: "text", text: "ack" }] },
-    ]);
-    expect(loadMaestroSessionMeta(sid)?.skillKey).toBe("legal");
-  });
-
-  test("skillKey can be updated to a new value on re-save", () => {
-    const sid = uuid();
-    tracked.push(sid);
-    saveMaestroSession(sid, [{ role: "user", content: "v1" }], {
-      cwd: "/proj/a",
-      skillKey: "legal",
-    });
-    expect(loadMaestroSessionMeta(sid)?.skillKey).toBe("legal");
-
-    // Caller explicitly hands a different key — meta updates.
-    saveMaestroSession(sid, [{ role: "user", content: "v2" }], {
-      cwd: "/proj/a",
-      skillKey: "coding",
-    });
-    expect(loadMaestroSessionMeta(sid)?.skillKey).toBe("coding");
   });
 
   test("loadMaestroSessionMeta returns null for missing file", () => {

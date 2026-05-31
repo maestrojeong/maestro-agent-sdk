@@ -1,7 +1,7 @@
 /**
  * maestro-agent-sdk — public API.
  *
- * Provider-agnostic agent loop with built-in tools, skills, memory, MCP,
+ * Provider-agnostic agent loop with built-in tools, memory, MCP,
  * and host-controlled guardrails (LLM pre/post hooks + tool hooks).
  * See README.md for a quick start.
  */
@@ -40,15 +40,12 @@ export { onShutdown, runShutdown } from "@/platform/lifecycle";
 export { type LogFn, type Logger, setLogger } from "@/platform/logger";
 export { type McpResolver, type McpServerMap, setMcpResolver } from "@/platform/mcp-config";
 export {
-  applySkillAllowlist,
   DEFAULT_MAX_ITERATIONS,
   isAbortError,
   isTimeoutError,
   iterationBudgetLine,
-  MAESTRO_DEFAULT_SKILL_KEY,
   maestroProvider,
   providerForModel,
-  resolveSkillsDir,
   wrapUpOverlayLine,
 } from "@/provider";
 export {
@@ -125,11 +122,6 @@ export {
   type MaestroSessionMeta,
   maestroSessionsDir,
 } from "@/session-store";
-export { curateSkills } from "@/skills/curator";
-export { buildSkillsIndex } from "@/skills/index-builder";
-// ─── Skills ──────────────────────────────────────────────────────────────────
-export { findSkillByName, loadSkillsCached, type SkillEntry } from "@/skills/loader";
-export { bumpView, loadUsage, type SkillCounters } from "@/skills/usage";
 // ─── State (todos) ───────────────────────────────────────────────────────────
 export { dropTaskStore, getTaskStore, type TaskEntry, type TaskStatus } from "@/state/tasks";
 export type { ConversationEntry } from "@/storage/conversations";
@@ -147,8 +139,6 @@ export { createEditTool } from "@/tools/builtin/edit";
 export { compileGlob, globTool } from "@/tools/builtin/glob";
 export { grepTool } from "@/tools/builtin/grep";
 export { createReadTool } from "@/tools/builtin/read";
-export { createSkillViewTool } from "@/tools/builtin/skill_view";
-export { createSkillWriteTool } from "@/tools/builtin/skill_write";
 export {
   createTaskCreateTool,
   createTaskGetTool,

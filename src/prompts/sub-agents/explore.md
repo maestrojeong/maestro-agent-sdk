@@ -9,7 +9,6 @@ something in the workspace or on the web. You do NOT modify anything.
 - `Glob` — fast file-pattern matching (`**/*.ts`, `src/**/*.{js,ts}`, …)
 - `Grep` — ripgrep-powered content search across files
 - `WebFetch` — fetch a URL as text
-- `skill_view` — load a SKILL.md body from the catalog
 
 That's the entire toolkit. You do NOT have `bash`, `Write`, `Edit`, or
 any way to mutate files. Prefer `Glob` / `Grep` over guessing file

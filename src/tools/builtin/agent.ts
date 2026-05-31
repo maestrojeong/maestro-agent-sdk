@@ -10,12 +10,12 @@ import type { ToolHandler } from "@/tools/registry";
  *
  * Three scoped types:
  *   - `general` — full builtin toolkit (bash + Read + Write + Edit +
- *     Glob + Grep + WebFetch + skill_view). Use for self-contained units of work.
- *   - `explore` — read-only (Read + Glob + Grep + WebFetch + skill_view). Use for
+ *     Glob + Grep + WebFetch). Use for self-contained units of work.
+ *   - `explore` — read-only (Read + Glob + Grep + WebFetch). Use for
  *     finding / surveying / reporting tasks where you don't want the
  *     sub-agent mutating files by accident.
- *   - `plan`    — architect mode (bash [read-only] + Read + Glob + Grep + WebFetch +
- *     skill_view). Use BEFORE implementing: produces a structured plan document
+ *   - `plan`    — architect mode (bash [read-only] + Read + Glob + Grep + WebFetch).
+ *     Use BEFORE implementing: produces a structured plan document
  *     (goal / affected files / step-by-step / trade-offs / risks). No write/edit.
  *
  * `parallelSafe: false` — sub-agent invocation spawns a child loop with
@@ -39,8 +39,8 @@ import type { ToolHandler } from "@/tools/registry";
 
 export interface AgentToolFactoryOptions {
   /** Parent context the sub-agent inherits from. The runner uses these to
-   *  build the sub-agent's system prompt, model, abort signal, and skill
-   *  catalog — none of which the model needs to (or should) pass. */
+   *  build the sub-agent's system prompt, model, and abort signal — none of
+   *  which the model needs to (or should) pass. */
   parent: Pick<
     RunSubAgentOptions,
     | "parentSessionId"
@@ -48,7 +48,6 @@ export interface AgentToolFactoryOptions {
     | "parentModel"
     | "parentEffort"
     | "parentAbortSignal"
-    | "skills"
   >;
 }
 
@@ -64,8 +63,8 @@ export function createAgentTool(opts: AgentToolFactoryOptions): ToolHandler {
         "Spawn a focused sub-agent to do ONE delegated task and return its final text. " +
         "The sub-agent has its own context — your tool calls, files-Read state, and todo list " +
         "are NOT shared with it. Use `general` for self-contained work that may need bash/Write/Edit, " +
-        "and `explore` for read-only surveys (Read/Glob/Grep/WebFetch/skill_view only), " +
-        "and `plan` for pre-implementation architecture planning (bash[read-only]/Read/Glob/Grep/WebFetch/skill_view — no write/edit). " +
+        "and `explore` for read-only surveys (Read/Glob/Grep/WebFetch only), " +
+        "and `plan` for pre-implementation architecture planning (bash[read-only]/Read/Glob/Grep/WebFetch — no write/edit). " +
         "The sub-agent cannot spawn its own sub-agents (no recursion). Pass a self-contained " +
         "prompt — the sub-agent sees ONLY that prompt and the inherited system context.",
       input_schema: {
@@ -81,9 +80,9 @@ export function createAgentTool(opts: AgentToolFactoryOptions): ToolHandler {
           subagent_type: {
             type: "string",
             description:
-              "Sub-agent role. 'general' = full builtin toolkit (bash/Read/Write/Edit/Glob/Grep/WebFetch/skill_view). " +
-              "'explore' = read-only (Read/Glob/Grep/WebFetch/skill_view — no bash, no write, no edit). " +
-              "'plan' = architect mode (bash[read-only]/Read/Glob/Grep/WebFetch/skill_view — no write, no edit); outputs a structured plan document.",
+              "Sub-agent role. 'general' = full builtin toolkit (bash/Read/Write/Edit/Glob/Grep/WebFetch). " +
+              "'explore' = read-only (Read/Glob/Grep/WebFetch — no bash, no write, no edit). " +
+              "'plan' = architect mode (bash[read-only]/Read/Glob/Grep/WebFetch — no write, no edit); outputs a structured plan document.",
           },
           prompt: {
             type: "string",
@@ -123,7 +122,6 @@ export function createAgentTool(opts: AgentToolFactoryOptions): ToolHandler {
         ...(opts.parent.parentAbortSignal
           ? { parentAbortSignal: opts.parent.parentAbortSignal }
           : {}),
-        skills: opts.parent.skills,
       });
 
       if (result.aborted) {

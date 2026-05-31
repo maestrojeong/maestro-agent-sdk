@@ -36,9 +36,6 @@ import {
   saveMaestroSession,
   trimToSafePrefix,
 } from "@/session-store";
-import { curateSkills } from "@/skills/curator";
-import { buildSkillsIndex } from "@/skills/index-builder";
-import { loadSkillsCached } from "@/skills/loader";
 import { getTaskStore } from "@/state/tasks";
 import { createAgentTool } from "@/tools/builtin/agent";
 import { askUserQuestionTool } from "@/tools/builtin/ask_user_question";
@@ -52,8 +49,6 @@ import { createEditTool } from "@/tools/builtin/edit";
 import { globTool } from "@/tools/builtin/glob";
 import { grepTool } from "@/tools/builtin/grep";
 import { createReadTool } from "@/tools/builtin/read";
-import { createSkillViewTool } from "@/tools/builtin/skill_view";
-import { createSkillWriteTool } from "@/tools/builtin/skill_write";
 import {
   createTaskCreateTool,
   createTaskGetTool,
@@ -194,86 +189,6 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
   tools.register(createTaskGetTool({ store: taskStore }));
   tools.register(createTaskOutputTool(taskStore));
   tools.register(createTaskStopTool(taskStore));
-
-  // --- Skills: load SKILL.md catalog + register `skill_view` ---------------
-  //
-  // Domain accuracy lever (Phase 2). The model gets:
-  //   - A `## Skills (mandatory)` block appended to the system prompt (60-char
-  //     summary per skill) so prefix caching covers the catalog across turns.
-  //   - A `skill_view(name)` builtin so it can pull the full SKILL.md body on
-  //     demand (progressive disclosure — saves the per-turn cost of inlining
-  //     every skill body).
-  //
-  // Source-dir resolution is deterministic from `(opts.cwd, opts.skillKey)`:
-  //   - `opts.skillKey` set    → `<cwd>/.skills/<skillKey>/`
-  //   - `opts.skillKey` unset  → `<cwd>/.skills/default/`
-  //
-  // No env var, no explicit dir override — one workspace, one keyed
-  // profile, one catalog. Skills always live under a named key
-  // subdirectory; the root `.skills/` only ever holds key dirs. Skills
-  // live alongside the project the agent is working on; the SDK never
-  // writes into a global directory. Empty dir is the expected starting
-  // state — agents populate it autonomously (or a host seeds it from a
-  // template). Multiple disjoint skill sets in one cwd are partitioned
-  // by `skillKey` subdirectories.
-  //
-  // After loading we apply `opts.allowedSkills` (if provided) as a name
-  // whitelist BEFORE curation, so curator + index-builder + skill_view all
-  // see the same filtered set. Unknown names are silently ignored — a host
-  // can pass a superset of names that may or may not exist in the catalog.
-  //
-  // Failures (rootDir missing, unreadable, every file malformed) reduce to an
-  // empty catalog — the loop still runs with just bash + MCP tools.
-  const skillsDir = resolveSkillsDir(opts);
-
-  // skill_write: agent-autonomous skill authoring. Registered up front
-  // (independent of catalog state) so the agent can author the first skill
-  // into an empty `.skills/<key>/` directory — without this the cold-start
-  // "no skills yet, but the agent wants to bootstrap one" path would have
-  // no entry point. Writes land at `<skillsDir>/<name>/skill.md` so the
-  // resolved (cwd, skillKey) routing automatically scopes new skills to
-  // the current profile. Cache invalidation inside the tool means the
-  // next provider call picks up the write.
-  tools.register(createSkillWriteTool({ skillsDir }));
-
-  let skillsBlock = "";
-  // Hoisted to outer scope so the Agent tool (registered below, after
-  // model/effort resolve) can pass the same skill catalog to sub-agents.
-  let loadedSkills: ReturnType<typeof loadSkillsCached> = [];
-  try {
-    const allSkills = loadSkillsCached(skillsDir);
-    // Apply per-call allowlist BEFORE the curator/index so every downstream
-    // consumer sees the same filtered set. Empty array would mean "no skills
-    // allowed" — we treat undefined as "all allowed" to keep backward compat.
-    const skills = applySkillAllowlist(allSkills, opts.allowedSkills);
-    loadedSkills = skills;
-    if (skills.length > 0) {
-      // Curator filters the catalog: archived skills (agent-created, never
-      // viewed, >60 days old) are dropped from the system-prompt index but
-      // stay reachable via skill_view by exact name. Bundled skills under
-      // the upstream snapshot directory are protected from archival.
-      // skill_view still sees the full set — model can resolve any name
-      // the user explicitly mentions even if it's been archived.
-      const curated = curateSkills(skills);
-      const visibleSkills = curated.map((c) => c.skill);
-      tools.register(createSkillViewTool({ skills, sessionId })); // full set
-      skillsBlock = buildSkillsIndex(visibleSkills);
-      logger.info(
-        {
-          agent: "maestro",
-          skillsDir,
-          skillCount: skills.length,
-          totalCount: allSkills.length,
-          visibleCount: visibleSkills.length,
-          archivedCount: skills.length - visibleSkills.length,
-          filtered: opts.allowedSkills !== undefined,
-        },
-        "maestroProvider: skill catalog loaded (curated)",
-      );
-    }
-  } catch (e) {
-    logger.warn({ err: e, skillsDir }, "maestroProvider: skill catalog load failed (degraded)");
-  }
 
   // --- MCP pool: spawn every configured server, register their tools -------
   //
@@ -471,28 +386,14 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
     });
   }
 
-  // Skills index goes into the system prompt (NOT a user message) so
-  // Anthropic's prefix cache covers it across every turn — the catalog only
-  // changes when SKILL.md files on disk change, while user messages roll
-  // every turn. Append, don't prepend: caller-supplied systemPrompt is
-  // identity / instructions that should still anchor the prompt, and the
-  // skills block reads naturally as a final "and also, here's what tools
-  // you have access to" section.
-  //
-  // The optional effort persona slots BETWEEN the caller's systemPrompt and
-  // the skills catalog. Three layers in fixed order:
+  // Effort persona is appended after the caller's systemPrompt. Two layers
+  // in fixed order:
   //   1. caller identity / instructions    — anchors who the model is
   //   2. effort persona (this layer)       — names the working mode + verbs
-  //   3. skills catalog                     — "tools you can reach for"
-  // Reading top-down, the model first knows what it's for, then how hard it
-  // should push, then what's available. The persona is a pure function of
-  // `resolvedEffort` so it stays prefix-cache stable across every call at a
-  // given level — same five strings cycle. Skipping the layer (undefined
-  // effort or `effortToPersonaPrompt` returning undefined) keeps the
-  // historical no-effort prompt byte-identical so existing callers don't
-  // see a cache miss after the upgrade.
+  // The persona is a pure function of `resolvedEffort` so it stays
+  // prefix-cache stable across every call at a given level.
   const personaBlock = effortToPersonaPrompt(resolvedEffort);
-  const augmentedSystemPrompt = [opts.systemPrompt, personaBlock, skillsBlock]
+  const augmentedSystemPrompt = [opts.systemPrompt, personaBlock]
     .filter((s): s is string => typeof s === "string" && s.length > 0)
     .join("\n\n");
 
@@ -509,7 +410,6 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
         parentModel: resolvedModel,
         ...(resolvedEffort ? { parentEffort: resolvedEffort } : {}),
         ...(opts.abortController?.signal ? { parentAbortSignal: opts.abortController.signal } : {}),
-        skills: loadedSkills,
       },
     }),
   );
@@ -684,8 +584,6 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
         const activeDeferred = opts.enableToolSearch === true ? tools.serializeActive() : undefined;
         saveMaestroSession(sessionId, safePrefix, {
           cwd: opts.cwd,
-          skillsDir,
-          ...(opts.skillKey !== undefined ? { skillKey: opts.skillKey } : {}),
           ...(opts.userId !== undefined ? { userId: opts.userId } : {}),
           ...(opts.sessionMetadata !== undefined ? { metadata: opts.sessionMetadata } : {}),
           ...(activeDeferred !== undefined ? { activeDeferredTools: activeDeferred } : {}),
@@ -818,74 +716,6 @@ export function wrapUpOverlayLine(remaining: number, max: number): string | null
   if (max <= 3) return null;
   if (remaining > 2) return null;
   return "[wrap-up zone] Tools are now disabled and the thinking budget is trimmed. No further tool calls are possible — synthesize the final answer from existing context.";
-}
-
-/**
- * Skill profile name used when `AgentQueryOptions.skillKey` is omitted.
- *
- * Every skill the SDK loads lives under `<cwd>/.skills/<key>/` — there is
- * no "uncategorized" slot directly beneath `.skills/`. When the caller
- * doesn't specify a key, the SDK routes to this default subdirectory so
- * the on-disk layout stays uniformly `key → catalog`. Hosts that want
- * a different default name can pass `skillKey: "their-name"` explicitly
- * on every call; the constant is exported so they can reference it
- * symbolically rather than hard-coding the string.
- */
-export const MAESTRO_DEFAULT_SKILL_KEY = "default" as const;
-
-/**
- * Resolve the directory the skill catalog should be loaded from for this
- * call. Deterministic from `(opts.cwd, opts.skillKey)`:
- *
- *   - `opts.skillKey` set    → `<cwd>/.skills/<skillKey>/`
- *   - `opts.skillKey` unset  → `<cwd>/.skills/default/`
- *
- * Every loaded skill lives under a named key — the SDK never reads from
- * `<cwd>/.skills/` directly. This keeps the layout uniform so a caller
- * scanning the filesystem can answer "which profiles exist in this
- * workspace?" with one `readdir`.
- *
- * The per-cwd `.skills/` convention treats every session's working
- * directory as its own skill scope — agents create, edit, and consume
- * SKILL.md files inside the workspace they're operating on, with no
- * global side effects on `~/.maestro/skills/` or on a peer SDK like
- * Claude Code's `~/.claude/skills/`. The result is project-local
- * autonomy: a `.skills/` dir checks into source control with the project,
- * ships with the repo, and sub-agents inherit the parent's catalog
- * because they share the cwd.
- *
- * `skillKey` partitions the per-cwd catalog: one workspace can host
- * multiple disjoint skill sets (e.g. "legal" topic vs "coding" topic
- * sharing the same `cwd`), and each session selects its profile via the
- * key. The keyed dir IS the loader's root, so any skill the agent writes
- * during the session naturally lands in the same profile.
- *
- * Hosts can pre-create a keyed dir as a symlink to share skills across
- * profiles. The SDK itself takes no opinion on cross-profile sharing.
- *
- * Exported so hosts can recompute the same value (e.g. for a pre-warm
- * step that calls `loadSkillsCached` ahead of a provider invocation).
- */
-export function resolveSkillsDir(opts: { cwd: string; skillKey?: string }): string {
-  return join(opts.cwd, ".skills", opts.skillKey ?? MAESTRO_DEFAULT_SKILL_KEY);
-}
-
-/**
- * Filter a loaded SkillEntry catalog by an optional `allowedSkills` whitelist.
- * `undefined` returns the input unchanged (default "all allowed" behavior for
- * pre-v0.1.5 hosts); an empty array intentionally returns nothing (the host
- * explicitly opted into "no skills"). Unknown names are silently ignored — a
- * host can pass a superset of names that may or may not exist.
- *
- * Generic over the SkillEntry shape so sub-agents and tests can reuse it
- * with their own narrowed types without `as SkillEntry` casts.
- */
-export function applySkillAllowlist<T extends { name: string }>(
-  skills: T[],
-  allowedSkills?: string[],
-): T[] {
-  if (allowedSkills === undefined) return skills;
-  return skills.filter((s) => allowedSkills.includes(s.name));
 }
 
 /**

@@ -12,13 +12,11 @@ import { effortToThinkingBudget } from "@/providers/anthropic";
 import type { Provider, ProviderContentBlock, ProviderMessage } from "@/providers/base";
 import { getNativeMaxOutputTokens } from "@/registry";
 import { deleteMaestroSession } from "@/session-store";
-import { loadSkillsCached, type SkillEntry } from "@/skills/loader";
 import { createBashTool } from "@/tools/builtin/bash";
 import { createEditTool } from "@/tools/builtin/edit";
 import { globTool } from "@/tools/builtin/glob";
 import { grepTool } from "@/tools/builtin/grep";
 import { createReadTool } from "@/tools/builtin/read";
-import { createSkillViewTool } from "@/tools/builtin/skill_view";
 import { webFetchTool } from "@/tools/builtin/web_fetch";
 import { createWriteTool } from "@/tools/builtin/write";
 import { getFileStateTracker } from "@/tools/file-state";
@@ -71,8 +69,6 @@ export interface RunSubAgentOptions {
   /** Parent's abort signal. When the parent aborts, the sub-agent's
    *  in-flight provider call cancels too. */
   parentAbortSignal?: AbortSignal;
-  /** Pre-loaded skill catalog. Same set the parent sees. */
-  skills: SkillEntry[];
 }
 
 export interface RunSubAgentResult {
@@ -136,11 +132,11 @@ function loadOverlay(kind: SubagentType): string {
 /**
  * Build the per-subagent-type tool registry.
  *
- * `general` — bash + Read + Write + Edit + Glob + Grep + WebFetch + skill_view.
- * `explore` — Read + Glob + Grep + WebFetch + skill_view only. NO bash, write, edit —
+ * `general` — bash + Read + Write + Edit + Glob + Grep + WebFetch.
+ * `explore` — Read + Glob + Grep + WebFetch only. NO bash, write, edit —
  *             the role is read-only by construction.
  * `plan`    — bash (read-only usage: ls/tree/git log/etc.) + Read + Glob + Grep +
- *             WebFetch + skill_view. NO Write/Edit — the role is to
+ *             WebFetch. NO Write/Edit — the role is to
  *             produce a plan document, not to implement it.
  *
  * Neither registers `Agent` (recursion cap) or the Task* family
@@ -154,7 +150,6 @@ function loadOverlay(kind: SubagentType): string {
 function buildToolRegistry(
   kind: SubagentType,
   subSessionId: string,
-  skills: SkillEntry[],
   abortSignal?: AbortSignal,
 ): ToolRegistry {
   const tools = new ToolRegistry();
@@ -171,9 +166,6 @@ function buildToolRegistry(
   tools.register(globTool);
   tools.register(grepTool);
   tools.register(webFetchTool);
-  if (skills.length > 0) {
-    tools.register(createSkillViewTool({ skills, sessionId: subSessionId }));
-  }
 
   if (kind === "general") {
     tools.register(createBashTool({ signal: abortSignal }));
@@ -222,7 +214,6 @@ export async function runSubAgent(opts: RunSubAgentOptions): Promise<RunSubAgent
   const tools = buildToolRegistry(
     opts.subagentType,
     subSessionId,
-    opts.skills,
     opts.parentAbortSignal,
   );
   const overlay = loadOverlay(opts.subagentType);
@@ -318,6 +309,3 @@ export async function runSubAgent(opts: RunSubAgentOptions): Promise<RunSubAgent
   return { text: finalText, usage, subSessionId, aborted };
 }
 
-/** Convenience re-export for test setup — lets tests prime the loaded
- *  catalog without re-fetching from disk. */
-export { loadSkillsCached };
