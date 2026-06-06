@@ -72,6 +72,7 @@ import type { ToolResultTruncationMetadata } from "@/core/tool-result-truncation
  * ProviderMessage reference.
  */
 import type { ProviderMessage } from "@/providers/base";
+import type { HookRegistration } from "@/tools/registry";
 
 export interface TokenUsage {
   inputTokens: number;
@@ -346,4 +347,27 @@ export interface AgentQueryOptions {
    * loop via `maestroProvider`.
    */
   toolResultTruncation?: import("@/core/tool-result-truncation").ToolResultTruncationConfig;
+  /**
+   * Pre/post hooks that fire around every tool dispatch for this call.
+   * Applied to the `ToolRegistry` before any tool executes — useful for
+   * access control, audit logging, or input/output scrubbing.
+   *
+   * Pre hook can `allow`, `modify` (substitute input), or `block` the call.
+   * Post hook can rewrite the output string.
+   *
+   * Hooks fire in array order. A blocked call skips post hooks entirely.
+   */
+  toolHooks?: HookRegistration[];
+  /**
+   * Guardrail fired right before each provider API call.
+   * Receives the full messages array; can `allow`, `reject_content`
+   * (inject a user message and continue), or `tripwire` (abort the run).
+   */
+  llmPreHook?: LlmPreHook;
+  /**
+   * Guardrail fired after each turn completes but before the `result`
+   * UnifiedEvent is yielded. Receives the assembled assistant text.
+   * Can `allow`, `reject_content` (rewrite the result), or `tripwire`.
+   */
+  llmPostHook?: LlmPostHook;
 }
