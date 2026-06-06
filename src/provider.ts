@@ -142,6 +142,12 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
 
   const tools = new ToolRegistry();
 
+  // Caller-supplied tool hooks (pre/post dispatch guardrails). Applied before
+  // any tool registrations so every tool — builtins + MCP — is covered.
+  if (opts.toolHooks) {
+    for (const hook of opts.toolHooks) tools.use(hook);
+  }
+
   // v0.1.19+: when `opts.enableBackgroundBash` is set, swap the default
   // foreground-only bash for one that honors `run_in_background:true`
   // AND register the polling + kill tools. The registry handle is bound
@@ -481,6 +487,8 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
     // (gpt-5.5, opus, deepseek-v4-pro) to their cheapest sibling.
     ...(opts.auxModel ? { auxModel: opts.auxModel } : {}),
     ...(opts.toolResultTruncation ? { toolResultTruncation: opts.toolResultTruncation } : {}),
+    ...(opts.llmPreHook ? { llmPreHook: opts.llmPreHook } : {}),
+    ...(opts.llmPostHook ? { llmPostHook: opts.llmPostHook } : {}),
   });
 
   // Wire abort → close MCP pool early. Without this, an aborted turn could
