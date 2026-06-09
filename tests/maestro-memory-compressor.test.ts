@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { COMPACTED_MARKER_OPEN } from "@/memory/active-task-template";
-import { compressIfNeeded } from "@/memory/compressor";
+import { compactMessagesNow, compressIfNeeded } from "@/memory/compressor";
 import { estimateTokens } from "@/memory/token-estimate";
 import type {
   Provider,
@@ -106,6 +106,111 @@ describe("compressIfNeeded — threshold gating", () => {
     expect(
       out.find((m) => typeof m.content === "string" && m.content.startsWith(COMPACTED_MARKER_OPEN)),
     ).toBeUndefined();
+  });
+});
+
+describe("compactMessagesNow — manual trigger", () => {
+  test("forces aux compaction even when automatic threshold would skip", async () => {
+    const provider = new RecordingProvider(
+      [
+        "## Active Task",
+        "manual compaction",
+        "## Goal",
+        "compact on demand",
+        "## Constraints",
+        "- preserve active task",
+        "## Key Decisions",
+        "- expose a public trigger",
+        "## Pending",
+        "- persist canonical summary",
+        "## Next Steps",
+        "- continue",
+        "## Files",
+        "- src/memory/compressor.ts",
+        "## Recent context",
+        "- manual trigger test",
+      ].join("\n"),
+    );
+    const messages = buildBigHistory(20, 500);
+    const before = messages.slice();
+
+    const result = await compactMessagesNow(messages, {
+      auxProvider: provider,
+      auxModel: TEST_AUX_MODEL,
+      contextWindow: 1_000_000,
+      triggerRatio: 0.9,
+      headProtect: 2,
+      tailProtect: 2,
+      mutate: false,
+    });
+
+    expect(provider.calls.length).toBeGreaterThanOrEqual(1);
+    expect(result.didStartAux).toBe(true);
+    expect(result.didCompact).toBe(true);
+    expect(result.summary).toContain("manual compaction");
+    expect(result.canonicalMessages.length).toBe(messages.length + 2);
+    expect(messages).toEqual(before);
+    expect(
+      result.wireMessages.some(
+        (m) =>
+          m.role === "user" &&
+          typeof m.content === "string" &&
+          m.content.startsWith(COMPACTED_MARKER_OPEN),
+      ),
+    ).toBe(true);
+  });
+
+  test("persists the compaction marker before protected tail so fast-path resume keeps tail", async () => {
+    const provider = new RecordingProvider(
+      [
+        "## Active Task",
+        "manual compaction",
+        "## Goal",
+        "compact on demand",
+        "## Constraints",
+        "- preserve active task",
+        "## Key Decisions",
+        "- marker sits before tail",
+        "## Pending",
+        "- continue",
+        "## Next Steps",
+        "- resume",
+        "## Files",
+        "- src/memory/compressor.ts",
+        "## Recent context",
+        "- summary deliberately omits tail sentinels",
+      ].join("\n"),
+    );
+    const messages = [
+      ...buildBigHistory(20, 500),
+      userText("TAIL_USER_SENTINEL"),
+      assistantText("TAIL_ASSISTANT_SENTINEL"),
+    ];
+
+    const first = await compactMessagesNow(messages, {
+      auxProvider: provider,
+      auxModel: TEST_AUX_MODEL,
+      contextWindow: 1_000_000,
+      triggerRatio: 0.9,
+      headProtect: 2,
+      tailProtect: 2,
+    });
+    expect(first.didCompact).toBe(true);
+
+    const secondProvider = new RecordingProvider("should not be called");
+    const secondWire = await compressIfNeeded(first.canonicalMessages, {
+      auxProvider: secondProvider,
+      auxModel: TEST_AUX_MODEL,
+      contextWindow: 8192,
+      triggerRatio: 0.8,
+      headProtect: 2,
+      tailProtect: 2,
+    });
+
+    expect(secondProvider.calls.length).toBe(0);
+    const serialized = JSON.stringify(secondWire);
+    expect(serialized).toContain("TAIL_USER_SENTINEL");
+    expect(serialized).toContain("TAIL_ASSISTANT_SENTINEL");
   });
 });
 
@@ -449,14 +554,24 @@ describe("compressIfNeeded — file-based aux tool loop", () => {
     const provider = new MultiRoundProvider([
       {
         content: [
-          { type: "tool_use", id: "call_1", name: "read_compaction_log", input: { offset: 1, limit: 300 } },
+          {
+            type: "tool_use",
+            id: "call_1",
+            name: "read_compaction_log",
+            input: { offset: 1, limit: 300 },
+          },
         ],
         stopReason: "tool_use",
         usage: { inputTokens: 50, outputTokens: 20 },
       },
       {
         content: [
-          { type: "tool_use", id: "call_2", name: "read_compaction_log", input: { offset: 301, limit: 300 } },
+          {
+            type: "tool_use",
+            id: "call_2",
+            name: "read_compaction_log",
+            input: { offset: 301, limit: 300 },
+          },
         ],
         stopReason: "tool_use",
         usage: { inputTokens: 100, outputTokens: 25 },
@@ -505,9 +620,7 @@ describe("compressIfNeeded — file-based aux tool loop", () => {
 
     // Round 3 must contain pairing for both tool_uses across the conversation.
     const round3Messages = provider.calls[2].messages;
-    const allBlocks = round3Messages.flatMap((m) =>
-      Array.isArray(m.content) ? m.content : [],
-    );
+    const allBlocks = round3Messages.flatMap((m) => (Array.isArray(m.content) ? m.content : []));
     const toolResultIds = allBlocks
       .filter((b) => b.type === "tool_result")
       .map((b) => (b.type === "tool_result" ? b.tool_use_id : ""));
@@ -525,6 +638,74 @@ describe("compressIfNeeded — file-based aux tool loop", () => {
 
     // onCompactionResult reports both flags true on a clean success run.
     expect(resultMeta).toEqual({ didStartAux: true, didCompact: true });
+  });
+
+  test("aux compaction reads pruned old tool output instead of raw content", async () => {
+    const stalePayload = `STALE_RAW_OUTPUT_${"x".repeat(2_000)}`;
+    const finalSummary =
+      "## Active Task\nx\n## Goal\ny\n## Pending\n- nothing\n## Files\n## Recent context\n- ok";
+    const provider = new MultiRoundProvider([
+      {
+        content: [
+          {
+            type: "tool_use",
+            id: "read_1",
+            name: "read_compaction_log",
+            input: { offset: 1, limit: 500 },
+          },
+        ],
+        stopReason: "tool_use",
+        usage: { inputTokens: 50, outputTokens: 20 },
+      },
+      {
+        content: [{ type: "text", text: finalSummary }],
+        stopReason: "end_turn",
+        usage: { inputTokens: 200, outputTokens: 100 },
+      },
+    ]);
+    const messages: ProviderMessage[] = [
+      userText("initial task"),
+      assistantText("ack"),
+      userText("inspect stale output"),
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "old_tool",
+            name: "Bash",
+            input: { command: "cat huge.log" },
+          },
+        ],
+      },
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "old_tool", content: stalePayload }],
+      },
+      assistantText("noted"),
+      ...buildBigHistory(20, 5_000),
+    ];
+
+    await compressIfNeeded(messages, {
+      auxProvider: provider,
+      auxModel: TEST_AUX_MODEL,
+      contextWindow: 8192,
+      triggerRatio: 0.8,
+    });
+
+    const round2Messages = provider.calls[1].messages;
+    const lastUser = round2Messages[round2Messages.length - 1];
+    expect(lastUser.role).toBe("user");
+    expect(Array.isArray(lastUser.content)).toBe(true);
+    if (!Array.isArray(lastUser.content)) throw new Error("expected tool_result user turn");
+    const chunkBlock = lastUser.content.find((b) => b.type === "tool_result");
+    expect(chunkBlock).toBeDefined();
+    if (!chunkBlock || chunkBlock.type !== "tool_result") {
+      throw new Error("expected read_compaction_log tool result");
+    }
+    expect(chunkBlock.content).toContain("[Tool output removed: Bash");
+    expect(chunkBlock.content).toContain("command=cat huge.log");
+    expect(chunkBlock.content).not.toContain("STALE_RAW_OUTPUT");
   });
 
   test("tool-loop empty rounds fall back to one direct summary call", async () => {
@@ -673,9 +854,7 @@ describe("compressIfNeeded — H1/H2 regression", () => {
   function assistantWithContent(blocks: Array<Record<string, unknown>>): ProviderMessage {
     return { role: "assistant", content: blocks as ProviderMessage["content"] };
   }
-  function userToolResults(
-    pairs: Array<{ id: string; content: string }>,
-  ): ProviderMessage {
+  function userToolResults(pairs: Array<{ id: string; content: string }>): ProviderMessage {
     return {
       role: "user",
       content: pairs.map((p) => ({ type: "tool_result", tool_use_id: p.id, content: p.content })),
@@ -700,36 +879,25 @@ describe("compressIfNeeded — H1/H2 regression", () => {
     // ...padding to reach threshold...
     const head = [
       plainUser("edit config.json"),
-      assistantWithContent([
-        { type: "tool_use", id: "t1", name: "read", input: {} },
-      ]),
+      assistantWithContent([{ type: "tool_use", id: "t1", name: "read", input: {} }]),
       userToolResults([{ id: "t1", content: "file contents" }]),
-      assistantWithContent([
-        { type: "tool_use", id: "t2", name: "grep", input: {} },
-      ]),
+      assistantWithContent([{ type: "tool_use", id: "t2", name: "grep", input: {} }]),
       userToolResults([{ id: "t2", content: "grep results" }]),
-      assistantWithContent([
-        { type: "tool_use", id: "t3", name: "write", input: {} },
-      ]),
+      assistantWithContent([{ type: "tool_use", id: "t3", name: "write", input: {} }]),
       userToolResults([{ id: "t3", content: "wrote file" }]),
-      assistantWithContent([
-        { type: "tool_use", id: "t4", name: "bash", input: {} },
-      ]),
+      assistantWithContent([{ type: "tool_use", id: "t4", name: "bash", input: {} }]),
       userToolResults([{ id: "t4", content: "test output" }]),
       assistantText("all done, the change is complete"),
       plainUser("also fix the CSS while you're at it"),
     ];
     // Add padding so we definitely cross the compaction threshold.
-    const messages = [
-      ...head,
-      ...buildBigHistory(20, 500),
-    ];
+    const messages = [...head, ...buildBigHistory(20, 500)];
 
     const rec = new RecordingProvider();
     const out = await compressIfNeeded(messages, {
       auxProvider: rec,
       auxModel: TEST_AUX_MODEL,
-      contextWindow: 8192,  // small window forces compaction
+      contextWindow: 8192, // small window forces compaction
       headProtect: 2, // just the first pair
     });
 
@@ -752,7 +920,10 @@ describe("compressIfNeeded — H1/H2 regression", () => {
 
     // Verify a compaction marker exists.
     const summaryMsgs = out.filter(
-      (m) => m.role === "user" && typeof m.content === "string" && m.content.includes(COMPACTED_MARKER_OPEN),
+      (m) =>
+        m.role === "user" &&
+        typeof m.content === "string" &&
+        m.content.includes(COMPACTED_MARKER_OPEN),
     );
     expect(summaryMsgs.length).toBe(1);
   });
@@ -829,9 +1000,7 @@ describe("compressIfNeeded — H1/H2 regression", () => {
               j > idx &&
               m.role === "user" &&
               Array.isArray(m.content) &&
-              m.content.some(
-                (b) => b.type === "tool_result" && b.tool_use_id === tu.id,
-              ),
+              m.content.some((b) => b.type === "tool_result" && b.tool_use_id === tu.id),
           );
           expect(found).toBe(true);
         }
@@ -850,9 +1019,7 @@ describe("compressIfNeeded — H1/H2 regression", () => {
         { type: "tool_use", id: "a", name: "Read", input: { file: "a.ts" } },
       ]),
       userToolResults([{ id: "a", content: "AAA" }]),
-      assistantWithContent([
-        { type: "tool_use", id: "b", name: "Grep", input: { pattern: "x" } },
-      ]),
+      assistantWithContent([{ type: "tool_use", id: "b", name: "Grep", input: { pattern: "x" } }]),
       userToolResults([{ id: "b", content: "BBB" }]),
       assistantText("done"),
       ...buildBigHistory(20, 500),

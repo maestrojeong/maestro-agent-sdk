@@ -16,13 +16,14 @@ import type { ProviderContentBlock, ProviderMessage } from "@/providers/base";
  *     tokens. md5(content)[:12] (see hash.ts) — non-cryptographic, picked
  *     for parity with the Python reference and cost on the per-turn path.
  *
- *   Pass 2 — Age-based 1-line summary.
+ *   Pass 2 — Age-based output removal.
  *     For tool_result blocks older than `ageTurnsThreshold` user-turns,
- *     replace large content with a structured 1-liner that names the tool,
- *     points at the original arguments, and notes size. The model gets a
- *     stable cue for "I called X and got back ~N bytes" without paying for
- *     the bytes. Recent results (inside the protected tail) stay verbatim so
- *     the model can still reason over fresh tool output.
+ *     remove the actual output bytes and leave only a structured marker that
+ *     names the tool, points at the original arguments, and notes size. The
+ *     model gets a stable cue for "I called X and got back ~N bytes" without
+ *     paying for, or being distracted by, stale bytes. Recent results (inside
+ *     the protected tail) stay verbatim so the model can still reason over
+ *     fresh tool output.
  *
  * Both passes are pure (`messages` not mutated) — caller can freely send the
  * returned array to the provider without losing the canonical history they
@@ -40,8 +41,8 @@ import type { ProviderContentBlock, ProviderMessage } from "@/providers/base";
 
 export interface PruneOptions {
   /**
-   * Tool_result blocks N user-turns or older from the tail get age-summarized
-   * by pass 2. Counting in user-turns (not raw messages) matches upstream's
+   * Tool_result blocks N user-turns or older from the tail have their content
+   * removed by pass 2. Counting in user-turns (not raw messages) matches upstream's
    * notion of "conversation rounds" and avoids fence-posting around assistant
    * + tool_result pairings.
    *
@@ -51,7 +52,7 @@ export interface PruneOptions {
   ageTurnsThreshold?: number;
   /** Disable pass 1 (dedup). Default: true. */
   dedup?: boolean;
-  /** Disable pass 2 (age-based summary). Default: true. */
+  /** Disable pass 2 (age-based output removal). Default: true. */
   summarizeOld?: boolean;
   /**
    * Pass 3 (JSON-aware tool_use input shrink) — truncate string fields
@@ -84,7 +85,7 @@ export interface PruneOptions {
 const MIN_PRUNE_CHARS = 200;
 
 /**
- * Apply pass 1 (dedup) + pass 2 (age-based summary) to a message array.
+ * Apply pass 1 (dedup) + pass 2 (age-based output removal) to a message array.
  *
  * Returns a new array — input `messages` and the inner block arrays are not
  * mutated, so the caller can keep the original around for persistence.
@@ -126,9 +127,9 @@ export function pruneMessages(
     pruned = applyDedup(messages);
   }
 
-  // ----------------------- Pass 2: summarize -----------------------
-  if (summarizeOld && protectedFromIdx > 0) {
-    pruned = applyAgeSummary(pruned, protectedFromIdx, callIndex);
+  // ----------------------- Pass 2: remove old output -----------------------
+  if (summarizeOld) {
+    pruned = applyAgeRemoval(pruned, protectedFromIdx, callIndex);
   }
 
   // ----------------------- Pass 3: tool_use arg shrink -----------------------
@@ -252,21 +253,21 @@ function applyDedup(messages: ProviderMessage[]): ProviderMessage[] {
 
 /**
  * Pass 2 — replace tool_result content older than the protect boundary with
- * a structured 1-line summary that points at the original tool_use.
+ * a structured 1-line removal marker that points at the original tool_use.
  *
  * Skips:
  *   - Non-string content (multimodal etc.)
  *   - Content already below MIN_PRUNE_CHARS (savings would be negative)
  *   - Content that already looks like a pass-1 dedup placeholder
- *   - Content that already looks like our own pass-2 summary (idempotent)
+ *   - Content that already looks like our own pass-2 marker (idempotent)
  */
-function applyAgeSummary(
+function applyAgeRemoval(
   messages: ProviderMessage[],
   protectedFromIdx: number,
   callIndex: Map<string, ToolCallRef>,
 ): ProviderMessage[] {
   const out: ProviderMessage[] = messages.map((m) => m);
-  for (let i = 0; i < protectedFromIdx; i++) {
+  for (let i = 0; i < messages.length; i++) {
     const msg = out[i];
     if (msg.role !== "user" || !Array.isArray(msg.content)) continue;
     let mutated = false;
@@ -274,16 +275,22 @@ function applyAgeSummary(
       if (block.type !== "tool_result") return block;
       const c = block.content;
       if (typeof c !== "string") return block;
-      if (c.length < MIN_PRUNE_CHARS) return block;
       if (c.startsWith("[Duplicate tool output")) return block;
-      if (c.startsWith("[Summarized:")) return block;
+      if (c.startsWith("[Tool output removed:")) return block;
+      const isLegacySummary = c.startsWith("[Summarized:");
+      if (!isLegacySummary && i >= protectedFromIdx) return block;
       const ref = callIndex.get(block.tool_use_id);
-      const summary = summarizeToolResult(ref, c);
+      const marker = isLegacySummary
+        ? removedLegacySummaryMarker(ref, c)
+        : c.length < MIN_PRUNE_CHARS
+          ? undefined
+          : removedToolResultMarker(ref, c);
+      if (!marker) return block;
       mutated = true;
       return {
         type: "tool_result",
         tool_use_id: block.tool_use_id,
-        content: summary,
+        content: marker,
         ...(block.is_error !== undefined ? { is_error: block.is_error } : {}),
       };
     });
@@ -295,31 +302,43 @@ function applyAgeSummary(
 }
 
 /**
- * Render a 1-line summary of a tool result. Mirrors upstream's
- * `_summarize_tool_result` shape but doesn't enumerate every tool name —
- * the prefix "[Summarized:" lets us cheaply detect already-summarized
- * blocks on a re-pass, and the (name, lines, chars) tuple is the same set
- * of breadcrumbs the model uses to decide "did I see this before".
+ * Render a 1-line marker for an old tool result whose output bytes were
+ * intentionally removed from the model context. We keep the same breadcrumbs
+ * the model needs to recognize the call (tool, compact arg hint, size) but do
+ * not preserve a content head preview.
  *
  * If `ref` is missing (tool_use was trimmed away by an earlier compression
  * or rollout) we fall back to a generic shape — better to lose tool-name
  * fidelity than to leave several KB of stale tool output in the prompt.
  */
-function summarizeToolResult(ref: ToolCallRef | undefined, content: string): string {
+function removedToolResultMarker(ref: ToolCallRef | undefined, content: string): string {
   const lineCount = content.split("\n").length;
   const tool = ref?.name ?? "tool";
   // Short argument hint helps the model recognize repeat calls. We cap at
-  // 80 chars total to stay well under the original payload size — anything
-  // longer defeats the purpose of summarization.
+  // 80 chars total to stay well under the original payload size.
   const argHint = ref ? formatArgHint(ref.input) : "";
-  const head = head80(content);
-  return `[Summarized: ${tool}${argHint} — ${lineCount} lines, ${content.length} chars, head: ${JSON.stringify(head)}]`;
+  return `[Tool output removed: ${tool}${argHint} — ${lineCount} lines, ${content.length} chars omitted from model context]`;
 }
 
-/** First 80 chars of the content, single-line (newlines collapsed to spaces). */
-function head80(s: string): string {
-  const flat = s.replace(/\s+/g, " ").trim();
-  return flat.length > 80 ? `${flat.slice(0, 77)}...` : flat;
+function removedLegacySummaryMarker(ref: ToolCallRef | undefined, content: string): string {
+  const parsed = parseLegacySummaryMarker(content);
+  const call = ref ? `${ref.name}${formatArgHint(ref.input)}` : (parsed?.call ?? "tool");
+  const size = parsed?.size ?? `${content.split("\n").length} lines, ${content.length} chars`;
+  return `[Tool output removed: ${call} — ${size} omitted from model context]`;
+}
+
+function parseLegacySummaryMarker(content: string): { call: string; size: string } | undefined {
+  const prefix = "[Summarized:";
+  if (!content.startsWith(prefix)) return undefined;
+  const body = content.slice(prefix.length).trim();
+  const separator = body.indexOf(" — ");
+  if (separator < 0) return undefined;
+  const call = body.slice(0, separator).trim();
+  const rest = body.slice(separator + " — ".length);
+  const headIdx = rest.indexOf(", head:");
+  const size = (headIdx >= 0 ? rest.slice(0, headIdx) : rest.replace(/\]$/, "")).trim();
+  if (!call || !size) return undefined;
+  return { call, size };
 }
 
 /** A compact "k1=v1 k2=v2" hint, capped so a giant args object doesn't blow

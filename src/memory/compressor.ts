@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -49,6 +49,22 @@ export interface CompressOptions {
   triggerRatio?: number;
   headProtect?: number;
   tailProtect?: number;
+  /**
+   * Force the aux compaction path even when token estimates are below the
+   * automatic threshold. Used by the public manual-compaction wrapper.
+   *
+   * Safety gates that protect message structure still apply: too-short
+   * histories, empty middles, missing aux provider/model, aux failures, and
+   * the savings gate can still return a non-compacted wire.
+   */
+  force?: boolean;
+  /**
+   * Minimum token-savings ratio required before a new summary is persisted.
+   * Automatic compaction defaults to 0.1. Manual compaction wrappers lower
+   * this to 0 so a caller can compact on demand as long as the result does
+   * not grow the wire payload.
+   */
+  minSavingsRatio?: number;
   auxModel?: string;
   auxProvider?: Provider;
   disablePruneFallback?: boolean;
@@ -110,6 +126,42 @@ export interface CompressOptions {
    * (~265 s observed in production).
    */
   maxAuxChars?: number;
+}
+
+export interface CompactMessagesNowOptions
+  extends Omit<CompressOptions, "auxProvider" | "auxModel" | "force"> {
+  /** Provider used for the one-off aux summary call. */
+  auxProvider: Provider;
+  /** Model id sent to `auxProvider.complete` for the summary call. */
+  auxModel: string;
+  /**
+   * Whether to mutate the supplied canonical `messages` array with the
+   * persisted compaction marker + summary pair on success. Default true,
+   * matching `compressIfNeeded` and the live agent loop. Set false when the
+   * caller wants a compacted copy without touching its in-memory history.
+   */
+  mutate?: boolean;
+}
+
+export interface CompactMessagesNowResult {
+  /**
+   * Canonical history after the manual attempt. On success this contains the
+   * internal compaction marker + summary pair; this is the array a host should
+   * persist for future incremental compactions.
+   */
+  canonicalMessages: ProviderMessage[];
+  /**
+   * Provider-ready compacted view returned by the compressor. On success it is
+   * `[head, <compacted-history>summary</...>, tail]`; on fallback paths it may
+   * be a pruned or emergency-tail view.
+   */
+  wireMessages: ProviderMessage[];
+  /** True when the aux provider call was actually entered. */
+  didStartAux: boolean;
+  /** True when a new summary was persisted into `canonicalMessages`. */
+  didCompact: boolean;
+  /** Newly produced summary text, present only on successful compaction. */
+  summary?: string;
 }
 
 const COMPACTOR_MIN_SAVINGS_RATIO = 0.1;
@@ -321,13 +373,58 @@ function compactionBlockIndices(messages: ProviderMessage[]): Set<number> {
   return indices;
 }
 
+function cleanMessagesWithIndexMap(
+  messages: ProviderMessage[],
+  skipIndices: Set<number>,
+): { cleanMessages: ProviderMessage[]; cleanToOriginal: number[] } {
+  const cleanMessages: ProviderMessage[] = [];
+  const cleanToOriginal: number[] = [];
+  for (let i = 0; i < messages.length; i++) {
+    if (skipIndices.has(i)) continue;
+    cleanMessages.push(messages[i]);
+    cleanToOriginal.push(i);
+  }
+  return { cleanMessages, cleanToOriginal };
+}
+
+function originalIndexForCleanBoundary(
+  cleanToOriginal: number[],
+  cleanIndex: number,
+  originalLength: number,
+): number {
+  if (cleanIndex >= cleanToOriginal.length) return originalLength;
+  return cleanToOriginal[Math.max(0, cleanIndex)] ?? originalLength;
+}
+
+function persistCompactionBlock(
+  messages: ProviderMessage[],
+  summaryText: string,
+  insertAtOriginalIdx: number,
+  prevCompaction?: { userIdx: number; assistantIdx: number; summary: string },
+): void {
+  let insertAt = Math.min(Math.max(0, insertAtOriginalIdx), messages.length);
+  if (prevCompaction) {
+    messages.splice(prevCompaction.userIdx, 2);
+    if (prevCompaction.userIdx < insertAt) {
+      insertAt -= 2;
+    }
+    insertAt = Math.min(Math.max(0, insertAt), messages.length);
+  }
+  messages.splice(
+    insertAt,
+    0,
+    { role: "user", content: COMPACTION_MARKER },
+    { role: "assistant", content: summaryText },
+  );
+}
+
 // ─── public API ───────────────────────────────────────────────────────────
 
 /**
  * Run the auto-compaction pipeline.
  *
  * Steps:
- *   1. Prune (cheap: dedup, age-summary, truncate tool output).
+ *   1. Prune (cheap: dedup, old tool-output removal, truncate tool input).
  *   2. Re-estimate tokens. If below threshold, return pruned.
  *   3. Snap head/tail boundaries. If no middle, return pruned.
  *   4. Find previous compaction blocks → extract last summary for
@@ -358,6 +455,8 @@ export async function compressIfNeeded(
     const headProtect = opts.headProtect ?? 2;
     const tailProtect = opts.tailProtect ?? 6;
     const auxModel = opts.auxModel;
+    const force = opts.force === true;
+    const minSavingsRatio = opts.minSavingsRatio ?? COMPACTOR_MIN_SAVINGS_RATIO;
 
     // Fast-path: short conversations can't trigger compaction.
     const minSize = headProtect + 1 + tailProtect;
@@ -368,32 +467,36 @@ export async function compressIfNeeded(
     // Cheap pre-gate: skip prune when well under threshold.
     const threshold = contextWindow * triggerRatio;
     const rawTokens = estimateTokens(messages);
-    if (rawTokens < threshold * 0.5) {
+    if (!force && rawTokens < threshold * 0.5) {
       return messages;
     }
 
-    // Fast-path: wire payload (summary + delta)가 이미 threshold 이하면 aux 생략.
+    // Step 1: prune. This is the cheap zero-LLM pass that removes stale
+    // tool_result bytes from the model-facing view while keeping canonical
+    // `messages` intact for persistence/resume.
+    const pruned = pruneMessages(messages);
+    const prunedTokens = estimateTokens(pruned);
+    const skipIndices = compactionBlockIndices(messages);
+    const { cleanMessages: cleanPrunedMessages, cleanToOriginal } = cleanMessagesWithIndexMap(
+      pruned,
+      skipIndices,
+    );
+
+    // Fast-path: wire payload (summary + pruned delta)가 이미 threshold 이하면 aux 생략.
     const prevCompaction = findLastCompaction(messages);
-    if (prevCompaction) {
+    if (!force && prevCompaction) {
       const summaryMsg: ProviderMessage = {
         role: "assistant",
         content: prevCompaction.summary,
       };
-      const post = messages.slice(prevCompaction.assistantIdx + 1);
+      const post = pruned.slice(prevCompaction.assistantIdx + 1);
       const effectiveTokens = estimateTokens([summaryMsg, ...post]);
       if (effectiveTokens < threshold) {
-        const skipIndices = compactionBlockIndices(messages);
-        const cleanMessages = messages.filter((_, i) => !skipIndices.has(i));
-        const tail = messages.slice(prevCompaction.assistantIdx + 1);
-        return buildCompactedWire(cleanMessages, prevCompaction.summary, headProtect, tail);
+        return buildCompactedWire(cleanPrunedMessages, prevCompaction.summary, headProtect, post);
       }
     }
 
-    // Step 1: prune.
-    const pruned = pruneMessages(messages);
-    const prunedTokens = estimateTokens(pruned);
-
-    if (prunedTokens < threshold) {
+    if (!force && prunedTokens < threshold) {
       return pruned;
     }
 
@@ -401,17 +504,17 @@ export async function compressIfNeeded(
     // fast-path above. Reuse the result for the incremental prompt path.
     const previousSummary = prevCompaction?.summary;
 
-    // Build a compaction-free view of canonical messages for all wire
-    // boundary calculations (FIX #1: head/tail must never contain
-    // sentinel markers).
-    const skipIndices = compactionBlockIndices(messages);
-    const cleanMessages = messages.filter((_, i) => !skipIndices.has(i));
-
-    // Snap wire boundaries on the clean view.
-    const cleanHeadEnd = snapHeadEnd(cleanMessages, Math.min(headProtect, cleanMessages.length));
+    // Snap wire boundaries on the pruned clean view. Using pruned here keeps
+    // stale tool_result bytes out of both the aux compaction transcript and
+    // the final provider wire. Canonical `messages` are still used for
+    // compaction-marker persistence below.
+    const cleanHeadEnd = snapHeadEnd(
+      cleanPrunedMessages,
+      Math.min(headProtect, cleanPrunedMessages.length),
+    );
     const cleanTailStart = snapTailStart(
-      cleanMessages,
-      Math.max(cleanMessages.length - tailProtect, 0),
+      cleanPrunedMessages,
+      Math.max(cleanPrunedMessages.length - tailProtect, 0),
     );
     if (cleanTailStart <= cleanHeadEnd) {
       return pruned;
@@ -427,9 +530,9 @@ export async function compressIfNeeded(
       // Delta: everything after the summary assistant up to (but not including) the tail.
       const deltaStart = prevCompaction.assistantIdx + 1;
       const deltaEnd = messages.length - tailProtect;
-      auxMiddle = messages.slice(deltaStart, Math.max(deltaStart, deltaEnd));
+      auxMiddle = pruned.slice(deltaStart, Math.max(deltaStart, deltaEnd));
     } else {
-      auxMiddle = cleanMessages.slice(cleanHeadEnd, cleanTailStart);
+      auxMiddle = cleanPrunedMessages.slice(cleanHeadEnd, cleanTailStart);
     }
 
     // Step 5: aux LLM call.
@@ -754,33 +857,36 @@ ${previousSummary ? `Previous summary for context:\n${previousSummary}` : ""}`,
       // which meant `finally` fired before `didCompact` could be set →
       // onCompactionResult always reported `didCompact: false` on success.
       // Moving it inside the try lets the meta callback see the truth.
-      const tail = cleanMessages.slice(cleanTailStart);
-      const compacted = buildCompactedWire(cleanMessages, summaryText, headProtect, tail);
+      const tail = cleanPrunedMessages.slice(cleanTailStart);
+      const compacted = buildCompactedWire(cleanPrunedMessages, summaryText, headProtect, tail);
       const compactedTokens = estimateTokens(compacted);
 
       // Degenerate check — MUST run before persisting compaction blocks.
       const savings = prunedTokens - compactedTokens;
       const ratio = savings / prunedTokens;
-      if (ratio < COMPACTOR_MIN_SAVINGS_RATIO) {
+      if (ratio < minSavingsRatio) {
         logger.info(
           {
             prunedTokens,
             compactedTokens,
             ratio,
+            minSavingsRatio,
           },
           "compressIfNeeded: low savings — discarding compacted result",
         );
         return pruned;
       }
 
-      // Persist compaction blocks AFTER savings gate.
-      if (prevCompaction) {
-        messages[prevCompaction.userIdx] = { role: "user", content: COMPACTION_MARKER };
-        messages[prevCompaction.assistantIdx] = { role: "assistant", content: summaryText };
-      } else {
-        messages.push({ role: "user", content: COMPACTION_MARKER });
-        messages.push({ role: "assistant", content: summaryText });
-      }
+      // Persist compaction blocks AFTER the summarized middle and BEFORE the
+      // protected tail. The next incremental pass treats everything after the
+      // summary assistant as unsummarized delta, so tail must live after the
+      // marker pair or it can disappear from the fast-path wire.
+      persistCompactionBlock(
+        messages,
+        summaryText,
+        originalIndexForCleanBoundary(cleanToOriginal, cleanTailStart, messages.length),
+        prevCompaction,
+      );
       try {
         opts.onCompactionSummary?.(summaryText);
       } catch (cbErr) {
@@ -804,8 +910,13 @@ ${previousSummary ? `Previous summary for context:\n${previousSummary}` : ""}`,
       if (opts.disablePruneFallback) return messages;
       const fallbackSummary = opts.lastGoodSummary?.trim() || previousSummary;
       if (fallbackSummary?.trim()) {
-        const tail = cleanMessages.slice(cleanTailStart);
-        const fallback = buildCompactedWire(cleanMessages, fallbackSummary, headProtect, tail);
+        const tail = cleanPrunedMessages.slice(cleanTailStart);
+        const fallback = buildCompactedWire(
+          cleanPrunedMessages,
+          fallbackSummary,
+          headProtect,
+          tail,
+        );
         logger.info(
           {
             prunedTokens,
@@ -852,6 +963,57 @@ ${previousSummary ? `Previous summary for context:\n${previousSummary}` : ""}`,
       }
     }
   }
+}
+
+/**
+ * Public manual compaction trigger for hosts that already own a
+ * ProviderMessage[] history.
+ *
+ * Unlike `compressIfNeeded`, this bypasses automatic token-threshold gates and
+ * asks the aux LLM to compact now. It still preserves the compressor's
+ * structural safety checks and defaults the savings gate to 0%: a manual
+ * compaction can happen below the automatic threshold, but it will not persist
+ * a summary that makes the on-wire context larger.
+ */
+export async function compactMessagesNow(
+  messages: ProviderMessage[],
+  opts: CompactMessagesNowOptions,
+): Promise<CompactMessagesNowResult> {
+  const {
+    mutate = true,
+    minSavingsRatio,
+    onCompactionResult,
+    onCompactionSummary,
+    ...compressOpts
+  } = opts;
+  const canonicalMessages = mutate ? messages : messages.slice();
+  let meta: { didStartAux: boolean; didCompact: boolean } = {
+    didStartAux: false,
+    didCompact: false,
+  };
+  let summary: string | undefined;
+
+  const wireMessages = await compressIfNeeded(canonicalMessages, {
+    ...compressOpts,
+    force: true,
+    minSavingsRatio: minSavingsRatio ?? 0,
+    onCompactionResult: (m) => {
+      meta = m;
+      onCompactionResult?.(m);
+    },
+    onCompactionSummary: (s) => {
+      summary = s;
+      onCompactionSummary?.(s);
+    },
+  });
+
+  return {
+    canonicalMessages,
+    wireMessages,
+    didStartAux: meta.didStartAux,
+    didCompact: meta.didCompact,
+    ...(summary !== undefined ? { summary } : {}),
+  };
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────────

@@ -152,7 +152,7 @@ export interface AgentHooks {
 }
 
 /**
- * Options accepted by `maestroProvider.query()` — the host-facing entry point.
+ * Options accepted by `maestroProvider(...)` — the host-facing entry point.
  *
  * Most fields are optional; only `prompt`, `cwd`, `systemPrompt` are strictly
  * required to drive the loop. The rest let the host plug in session

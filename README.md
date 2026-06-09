@@ -226,6 +226,34 @@ treats their first line as a regular message. Hosts that want to inspect
 session metadata without reading the full message log can call
 `loadMaestroSessionMeta(sessionId)`.
 
+## Manual compaction
+
+Automatic compaction runs inside `maestroProvider(...)` when the context
+budget is high. Hosts can also force a compaction pass between turns:
+
+```ts
+import {
+  compactMaestroSession,
+  providerForModel,
+  resolveAuxModel,
+} from "maestro-agent-sdk";
+
+const model = "gpt-5.4-mini";
+const result = await compactMaestroSession({
+  sessionId,
+  auxProvider: providerForModel(model),
+  auxModel: resolveAuxModel(model),
+  focusTopic: "auth refactor",
+});
+
+if (result.didCompact) {
+  console.log("compacted", result.summary);
+}
+```
+
+For custom storage, use `compactMessagesNow(messages, { auxProvider, auxModel })`
+and persist `result.canonicalMessages` when `result.didCompact` is true.
+
 ## Positioning — a building block, not a product
 
 maestro-agent-sdk is an agent *runtime*, not an agent *product*. You pick the UI, the provider mix, the guardrail rules, the storage layer.
