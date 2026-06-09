@@ -1,16 +1,12 @@
 import { describe, expect, test } from "vitest";
 import { hashToolContent } from "@/memory/hash";
-import {
-  __MIN_PRUNE_CHARS,
-  estimateTokenSavings,
-  pruneMessages,
-} from "@/memory/prune";
+import { __MIN_PRUNE_CHARS, estimateTokenSavings, pruneMessages } from "@/memory/prune";
 import type { ProviderMessage } from "@/providers/base";
 
 /**
  * Pure-logic pruning tests for the Maestro token-savings pre-pass.
  *
- * These exercise the two passes (dedup, age-based summary) and the
+ * These exercise the two passes (dedup, age-based output removal) and the
  * independently — every test creates a fresh
  * `messages` array reference so the module-level WeakMap state never
  * leaks between cases.
@@ -119,8 +115,8 @@ describe("pruneMessages — Pass 1 (dedup)", () => {
   });
 });
 
-describe("pruneMessages — Pass 2 (age-based summary)", () => {
-  test("tool_results older than ageTurnsThreshold are summarized", () => {
+describe("pruneMessages — Pass 2 (age-based output removal)", () => {
+  test("tool_results older than ageTurnsThreshold have their output removed", () => {
     const big = bigStr("lorem ipsum ");
     // 12 user-turn pairs so the oldest fall outside a 10-user-turn protect window.
     const messages: ProviderMessage[] = [];
@@ -137,10 +133,12 @@ describe("pruneMessages — Pass 2 (age-based summary)", () => {
     });
 
     // First few tool_result turns (older than 10 user-turns from the tail)
-    // should be summarized.
+    // should have their stale output removed while retaining call metadata.
     const firstResultBlock = (out[2].content as Array<{ content: string }>)[0];
-    expect(firstResultBlock.content.startsWith("[Summarized: bash")).toBe(true);
+    expect(firstResultBlock.content.startsWith("[Tool output removed: bash")).toBe(true);
     expect(firstResultBlock.content).toContain("command=cmd-0");
+    expect(firstResultBlock.content).toContain("omitted from model context");
+    expect(firstResultBlock.content).not.toContain("lorem ipsum");
 
     // Last tool_result must remain verbatim (inside protect window).
     const lastResultIdx = messages.length - 2;
@@ -159,7 +157,7 @@ describe("pruneMessages — Pass 2 (age-based summary)", () => {
     expect((out[2].content as Array<{ content: string }>)[0].content).toBe(big);
   });
 
-  test("summarize disabled via opts.summarizeOld=false leaves old results intact", () => {
+  test("old-output removal disabled via opts.summarizeOld=false leaves old results intact", () => {
     const big = bigStr("lorem ");
     const messages: ProviderMessage[] = [];
     for (let i = 0; i < 12; i++) {
@@ -174,8 +172,39 @@ describe("pruneMessages — Pass 2 (age-based summary)", () => {
     // First tool_result still verbatim.
     expect((out[2].content as Array<{ content: string }>)[0].content).toContain("lorem");
   });
-});
 
+  test("legacy summarized tool_results are rewritten without the old head preview", () => {
+    const legacy =
+      '[Summarized: bash command=cmd-0 — 42 lines, 12345 chars, head: "SECRET_HEAD_PREVIEW"]';
+    const messages: ProviderMessage[] = [
+      makeUserTurn("q0"),
+      makeToolUseTurn("tu_0", "bash", { command: "cmd-0" }),
+      makeToolResultTurn("tu_0", legacy),
+      makeAssistantText("a0"),
+      makeUserTurn("q1"),
+      makeAssistantText("a1"),
+      makeUserTurn("q2"),
+      makeAssistantText("a2"),
+      makeUserTurn("q3"),
+      makeAssistantText("a3"),
+      makeUserTurn("q4"),
+      makeAssistantText("a4"),
+    ];
+
+    const out = pruneMessages(messages, {
+      dedup: false,
+      ageTurnsThreshold: 10,
+    });
+
+    const block = (out[2].content as Array<{ content: string }>)[0];
+    expect(block.content.startsWith("[Tool output removed: bash")).toBe(true);
+    expect(block.content).toContain("command=cmd-0");
+    expect(block.content).toContain("42 lines, 12345 chars");
+    expect(block.content).toContain("omitted from model context");
+    expect(block.content).not.toContain("SECRET_HEAD_PREVIEW");
+    expect(block.content).not.toContain("[Summarized:");
+  });
+});
 
 describe("pruneMessages — edge cases", () => {
   test("empty array is returned as-is", () => {

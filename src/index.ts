@@ -31,8 +31,20 @@ export type { MaestroMcpClient, MaestroMcpServerSpec, MaestroMcpTool } from "@/m
 export { ACTIVE_TASK_TEMPLATE, wrapCompactedSummary } from "@/memory/active-task-template";
 export { resolveAuxModel } from "@/memory/aux-model-map";
 // ─── Memory / compression ────────────────────────────────────────────────────
-export { compressIfNeeded } from "@/memory/compressor";
+export {
+  type CompactMessagesNowOptions,
+  type CompactMessagesNowResult,
+  type CompressOptions,
+  compactMessagesNow,
+  compressIfNeeded,
+  findLastCompactionSummary,
+} from "@/memory/compressor";
 export { hashToolContent } from "@/memory/hash";
+export {
+  type CompactMaestroSessionOptions,
+  type CompactMaestroSessionResult,
+  compactMaestroSession,
+} from "@/memory/manual-compaction";
 export { buildSystemReminder } from "@/memory/reminder";
 export { estimateTokens } from "@/memory/token-estimate";
 export { onShutdown, runShutdown } from "@/platform/lifecycle";
@@ -121,6 +133,7 @@ export {
   loadMaestroSessionMeta,
   type MaestroSessionMeta,
   maestroSessionsDir,
+  type SaveSessionMetaInput,
 } from "@/session-store";
 // ─── State (todos) ───────────────────────────────────────────────────────────
 export { dropTaskStore, getTaskStore, type TaskEntry, type TaskStatus } from "@/state/tasks";
