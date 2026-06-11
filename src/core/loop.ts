@@ -18,7 +18,7 @@ import type {
   ProviderMessage,
   ProviderResponse,
 } from "@/providers/base";
-import type { ToolExecuteResult } from "@/tools/registry";
+import type { PreparedToolDispatch, ToolExecuteResult } from "@/tools/registry";
 import type { TokenUsage, UnifiedEvent } from "@/types";
 
 // v0.1.16: removed `EFFORT_LEVELS` + `nextEffortLevel`. The previous
@@ -568,44 +568,55 @@ export async function* runConversation(
       return;
     }
 
-    // Dispatch tools in two phases so independent reads / fetches run in
+    // Dispatch tools in ordered batches so independent reads / fetches run in
     // parallel while side-effecting calls (Write/Edit/Bash/most MCP) stay
-    // sequential:
-    //   Phase A — every tool whose handler is `parallelSafe: true` runs via
-    //             Promise.all. dispatch() never throws (errors are wrapped as
-    //             {error: ...} strings) so the batch always settles.
-    //   Phase B — remaining tools run one-by-one in their original order so
-    //             write/edit ordering is deterministic and unrelated bash
-    //             invocations don't race on ports/files/env.
+    // sequential and act as ordering barriers:
+    //   - Consecutive parallel-safe calls are dispatched via Promise.all.
+    //   - A serial call flushes any pending parallel batch, then runs alone.
+    //   - Later parallel-safe calls wait until earlier serial calls finish.
     //
     // `results` is indexed by the position in `toolUses` so the final yield
     // + push order matches what the model emitted, regardless of completion
     // order. Anthropic requires `tool_result` blocks in one user turn to
     // align with their corresponding `tool_use` ids; preserving the order
     // also keeps the conversation log easier to read.
+    //
+    // PreToolUse hooks can mutate inputs, so scheduling must use the prepared
+    // dispatch's effective input rather than the raw model input. Otherwise a
+    // hook could turn a read-only Agent call into a write-capable one after it
+    // had already been classified as parallel-safe.
     const results = new Array<ToolExecuteResult>(toolUses.length);
-    const parallelIndices: number[] = [];
-    const serialIndices: number[] = [];
-    for (let i = 0; i < toolUses.length; i++) {
-      if (agent.tools.isParallelSafe(toolUses[i].name)) {
-        parallelIndices.push(i);
-      } else {
-        serialIndices.push(i);
-      }
-    }
-
-    if (parallelIndices.length > 0) {
-      const parallelResults = await Promise.all(
-        parallelIndices.map((i) => agent.tools.dispatch(toolUses[i].name, toolUses[i].input)),
+    const parallelBatch: Array<{ index: number; prepared: PreparedToolDispatch }> = [];
+    const flushParallelBatch = async () => {
+      if (parallelBatch.length === 0) return;
+      const batch = parallelBatch.splice(0);
+      const batchResults = await Promise.all(
+        batch.map(({ prepared }) => agent.tools.dispatchPrepared(prepared)),
       );
-      for (let k = 0; k < parallelIndices.length; k++) {
-        results[parallelIndices[k]] = parallelResults[k];
+      for (let i = 0; i < batch.length; i++) {
+        results[batch[i].index] = batchResults[i];
       }
+    };
+
+    for (let i = 0; i < toolUses.length; i++) {
+      if (!agent.tools.isParallelSafe(toolUses[i].name, toolUses[i].input)) {
+        // A raw-serial tool is an ordering barrier before its PreToolUse
+        // hooks too. Hosts often use those hooks for policy checks that
+        // inspect current filesystem/session state, so don't let a later
+        // serial hook observe state before earlier parallel-safe tools have
+        // finished.
+        await flushParallelBatch();
+      }
+      const prepared = await agent.tools.prepareDispatch(toolUses[i].name, toolUses[i].input);
+      if (prepared.parallelSafe) {
+        parallelBatch.push({ index: i, prepared });
+        continue;
+      }
+      await flushParallelBatch();
+      results[i] = await agent.tools.dispatchPrepared(prepared);
     }
 
-    for (const i of serialIndices) {
-      results[i] = await agent.tools.dispatch(toolUses[i].name, toolUses[i].input);
-    }
+    await flushParallelBatch();
 
     // Cap the surfaced UnifiedEvent `content` at TOOL_RESULT_PREVIEW_MAX to
     // match claude/codex, but decide per-tool whether the model sees the full
