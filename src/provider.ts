@@ -402,7 +402,7 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
   // The persona is a pure function of `resolvedEffort` so it stays
   // prefix-cache stable across every call at a given level.
   const personaBlock = effortToPersonaPrompt(resolvedEffort);
-  const imageHandlingBlock = deepseekImageHandlingPrompt(resolvedModel, tools.has("GeminiImageQA"));
+  const imageHandlingBlock = deepseekImageHandlingPrompt(resolvedModel, tools.has("View"));
   const augmentedSystemPrompt = [opts.systemPrompt, personaBlock, imageHandlingBlock]
     .filter((s): s is string => typeof s === "string" && s.length > 0)
     .join("\n\n");
@@ -803,7 +803,7 @@ export function deepseekImageHandlingPrompt(
 ): string | undefined {
   if (!resolvedModel.startsWith("deepseek-")) return undefined;
   const fallback = geminiImageQaAvailable
-    ? "When the user asks about an attached image file path, call `GeminiImageQA` with the absolute `image_path` and a focused `question` before answering."
+    ? "When the user asks about an attached image file path, call `View` with the absolute `image_path` and a focused `question` before answering."
     : "When the user asks about an attached image file path, use available OCR/text-extraction tools or explain that visual inspection requires a vision tool.";
   return [
     "## Image Handling",

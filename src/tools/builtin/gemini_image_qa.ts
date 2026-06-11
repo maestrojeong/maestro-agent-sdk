@@ -37,7 +37,7 @@ export function createGeminiImageQATool(opts: GeminiImageQAToolOptions = {}): To
   return {
     parallelSafe: true,
     schema: {
-      name: "GeminiImageQA",
+      name: "View",
       description:
         "Ask Gemini a question about a local image file and return plain text. " +
         "Use this when the active DeepSeek model cannot inspect an attached image directly. " +
@@ -60,20 +60,20 @@ export function createGeminiImageQATool(opts: GeminiImageQAToolOptions = {}): To
     async execute(input) {
       const apiKey = opts.apiKey ?? process.env.GEMINI_API_KEY;
       if (!apiKey || apiKey.trim().length === 0) {
-        return JSON.stringify({ error: "GeminiImageQA: GEMINI_API_KEY env var is not set" });
+        return JSON.stringify({ error: "View: GEMINI_API_KEY env var is not set" });
       }
 
       const imagePath = typeof input.image_path === "string" ? input.image_path : "";
       if (!imagePath) {
-        return JSON.stringify({ error: "GeminiImageQA: missing 'image_path' argument" });
+        return JSON.stringify({ error: "View: missing 'image_path' argument" });
       }
       if (!isAbsolute(imagePath)) {
         return JSON.stringify({
-          error: `GeminiImageQA: image_path must be absolute, got '${imagePath}'`,
+          error: `View: image_path must be absolute, got '${imagePath}'`,
         });
       }
       if (!existsSync(imagePath)) {
-        return JSON.stringify({ error: `GeminiImageQA: file does not exist: ${imagePath}` });
+        return JSON.stringify({ error: `View: file does not exist: ${imagePath}` });
       }
 
       let stat: Stats;
@@ -81,19 +81,19 @@ export function createGeminiImageQATool(opts: GeminiImageQAToolOptions = {}): To
         stat = statSync(imagePath);
       } catch (e) {
         return JSON.stringify({
-          error: `GeminiImageQA: stat failed: ${e instanceof Error ? e.message : String(e)}`,
+          error: `View: stat failed: ${e instanceof Error ? e.message : String(e)}`,
         });
       }
       if (stat.isDirectory()) {
         return JSON.stringify({
-          error: `GeminiImageQA: '${imagePath}' is a directory, not an image file`,
+          error: `View: '${imagePath}' is a directory, not an image file`,
         });
       }
 
       const maxImageBytes = opts.maxImageBytes ?? MAX_IMAGE_BYTES;
       if (stat.size > maxImageBytes) {
         return JSON.stringify({
-          error: `GeminiImageQA: file size ${stat.size} exceeds ${maxImageBytes} byte inline cap`,
+          error: `View: file size ${stat.size} exceeds ${maxImageBytes} byte inline cap`,
           size: stat.size,
           cap: maxImageBytes,
         });
@@ -103,14 +103,14 @@ export function createGeminiImageQATool(opts: GeminiImageQAToolOptions = {}): To
       const mimeType = IMAGE_MEDIA_TYPES[ext];
       if (!mimeType) {
         return JSON.stringify({
-          error: `GeminiImageQA: unsupported image extension '${ext || "(none)"}'`,
+          error: `View: unsupported image extension '${ext || "(none)"}'`,
           supported: Object.keys(IMAGE_MEDIA_TYPES),
         });
       }
 
       const question = typeof input.question === "string" ? input.question.trim() : "";
       if (!question) {
-        return JSON.stringify({ error: "GeminiImageQA: missing 'question' argument" });
+        return JSON.stringify({ error: "View: missing 'question' argument" });
       }
 
       let imageBase64: string;
@@ -118,7 +118,7 @@ export function createGeminiImageQATool(opts: GeminiImageQAToolOptions = {}): To
         imageBase64 = readFileSync(imagePath).toString("base64");
       } catch (e) {
         return JSON.stringify({
-          error: `GeminiImageQA: read failed: ${e instanceof Error ? e.message : String(e)}`,
+          error: `View: read failed: ${e instanceof Error ? e.message : String(e)}`,
         });
       }
 
@@ -159,11 +159,11 @@ export function createGeminiImageQATool(opts: GeminiImageQAToolOptions = {}): To
         const err = e as { name?: string; message?: string };
         if (err.name === "AbortError") {
           return JSON.stringify({
-            error: `GeminiImageQA: timeout after ${opts.timeoutMs ?? FETCH_TIMEOUT_MS}ms`,
+            error: `View: timeout after ${opts.timeoutMs ?? FETCH_TIMEOUT_MS}ms`,
           });
         }
         return JSON.stringify({
-          error: `GeminiImageQA: fetch failed: ${err.message ?? String(e)}`,
+          error: `View: fetch failed: ${err.message ?? String(e)}`,
         });
       }
       clearTimeout(timer);
@@ -171,7 +171,7 @@ export function createGeminiImageQATool(opts: GeminiImageQAToolOptions = {}): To
       if (!response.ok) {
         const text = await safeText(response);
         return JSON.stringify({
-          error: `GeminiImageQA: Gemini API HTTP ${response.status} ${response.statusText}`,
+          error: `View: Gemini API HTTP ${response.status} ${response.statusText}`,
           body: text.slice(0, 1000),
         });
       }
@@ -181,14 +181,14 @@ export function createGeminiImageQATool(opts: GeminiImageQAToolOptions = {}): To
         data = (await response.json()) as GeminiGenerateContentResponse;
       } catch (e) {
         return JSON.stringify({
-          error: `GeminiImageQA: invalid JSON response: ${e instanceof Error ? e.message : String(e)}`,
+          error: `View: invalid JSON response: ${e instanceof Error ? e.message : String(e)}`,
         });
       }
 
       const text = extractGeminiText(data);
       if (!text) {
         return JSON.stringify({
-          error: "GeminiImageQA: Gemini response did not include text",
+          error: "View: Gemini response did not include text",
           finishReason: data.candidates?.[0]?.finishReason,
           promptFeedback: data.promptFeedback,
         });

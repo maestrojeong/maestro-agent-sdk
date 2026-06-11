@@ -23,10 +23,10 @@ afterEach(() => {
   rmSync(tmp, { recursive: true, force: true });
 });
 
-describe("GeminiImageQA", () => {
+describe("View Gemini image QA tool", () => {
   test("schema exposes image_path + question", () => {
     const tool = createGeminiImageQATool({ apiKey: "gem-test" });
-    expect(tool.schema.name).toBe("GeminiImageQA");
+    expect(tool.schema.name).toBe("View");
     expect(tool.schema.input_schema.required).toEqual(["image_path", "question"]);
     expect(tool.schema.input_schema.properties).toHaveProperty("image_path");
     expect(tool.schema.input_schema.properties).toHaveProperty("question");
@@ -139,7 +139,7 @@ describe("GeminiImageQA", () => {
   });
 });
 
-describe("DeepSeek-only GeminiImageQA registration policy", () => {
+describe("DeepSeek-only View registration policy", () => {
   test("registers only for DeepSeek models when GEMINI_API_KEY is present", () => {
     expect(
       shouldRegisterGeminiImageQATool("deepseek-v4-flash", {
@@ -173,12 +173,12 @@ describe("DeepSeek-only GeminiImageQA registration policy", () => {
   test("adds DeepSeek image-handling prompt when the model cannot inspect images", () => {
     const withGemini = deepseekImageHandlingPrompt("deepseek-v4-flash", true) ?? "";
     expect(withGemini).toContain("cannot inspect image pixels");
-    expect(withGemini).toContain("GeminiImageQA");
+    expect(withGemini).toContain("View");
     expect(withGemini).toContain("image_path");
 
     const withoutGemini = deepseekImageHandlingPrompt("deepseek-v4-flash", false) ?? "";
     expect(withoutGemini).toContain("OCR/text-extraction");
-    expect(withoutGemini).not.toContain("call `GeminiImageQA`");
+    expect(withoutGemini).not.toContain("call `View`");
 
     expect(deepseekImageHandlingPrompt("claude-sonnet-4-6", true)).toBeUndefined();
   });
