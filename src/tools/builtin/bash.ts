@@ -314,12 +314,12 @@ export function createOutputRing(cap: number): OutputRing {
   let dropped = 0;
   // total bytes observed — sum of head, tail, and dropped. Useful for
   // future telemetry; not exposed yet.
-  let total = 0;
+  let _total = 0;
 
   return {
     append(text: string) {
       if (text.length === 0) return;
-      total += text.length;
+      _total += text.length;
 
       // Phase 1: while the head buffer has room, fill it first.
       if (head.length < headCap) {

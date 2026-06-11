@@ -194,7 +194,7 @@ export function createBackgroundBashRegistry(opts?: {
 
   return {
     spawn({ command, cwd, maxOutputBytes }) {
-      if (!command || !command.trim()) {
+      if (!command?.trim()) {
         return { error: "Bash: empty command" };
       }
       let resolvedCwd: string | undefined;

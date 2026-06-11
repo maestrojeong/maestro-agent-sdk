@@ -19,7 +19,7 @@ A generalizable agent runtime. Swap providers, inject your own logger/MCP resolv
 
 - **Agent loop** — provider-driven tool-calling loop with iteration cap, abort signal, LLM pre/post guardrail hooks, and event stream.
 - **Pluggable providers** — first-class adapters for Anthropic (Claude) and DeepSeek V4; provider-neutral message schema so adding OpenAI / Gemini / Ollama is a thin file.
-- **Built-in tools** — `bash`, `Read`, `Write`, `Edit`, `MultiEdit`, `Glob`, `Grep`, `Agent` (sub-agent delegation), `TaskCreate`/`TaskUpdate`/`TaskList`/`TaskGet`, `WebFetch` (optional SSRF policy via `createWebFetchTool`), `skill_view`, `skill_write`. Bring your own via `ToolRegistry`. Grep shells out to ripgrep (`rg`) so install it if you want the tool active; the SDK surfaces a structured error pointing to the install path when missing. Tool primitives are also importable from the `maestro-agent-sdk/tools` subpath when you don't need the rest of the runtime.
+- **Built-in tools** — `bash`, `Read`, `Write`, `Edit`, `MultiEdit`, `Glob`, `Grep`, `Agent` (sub-agent delegation), `TaskCreate`/`TaskUpdate`/`TaskList`/`TaskGet`, `WebFetch` (optional SSRF policy via `createWebFetchTool`), `skill_view`, `skill_write`, `View` (Gemini image QA — DeepSeek only, see [Image handling](#image-handling-deepseek)). Bring your own via `ToolRegistry`. Grep shells out to ripgrep (`rg`) so install it if you want the tool active; the SDK surfaces a structured error pointing to the install path when missing. Tool primitives are also importable from the `maestro-agent-sdk/tools` subpath when you don't need the rest of the runtime.
 - **MCP** — built-in client pool (stdio + SSE) so any MCP server (`@modelcontextprotocol/sdk`) shows up as tools.
 - **Skills** — per-workspace `.skills/<skillKey>/<name>/skill.md` packages with FTS-style indexing, on-demand body load (`skill_view`), and agent-autonomous authoring (`skill_write`).
 - **Memory** — automatic context compression (summarization + pruning) when the token budget is hit. Reuses the agent's own model for compaction — no separate model knob.
@@ -104,6 +104,32 @@ for await (const event of runConversation(agent, "Summarize today's news.")) {
 }
 ```
 
+## Image handling (DeepSeek)
+
+DeepSeek models cannot inspect image pixels directly. When `GEMINI_API_KEY` is
+set and the active model starts with `deepseek-`, the SDK automatically registers
+a `View` tool backed by `gemini-2.5-flash`:
+
+```ts
+// No extra setup needed — GEMINI_API_KEY in env is enough.
+// The View tool is registered automatically for deepseek-* models.
+const provider = new DeepseekProvider({ apiKey: process.env.DEEPSEEK_API_KEY! });
+// Set GEMINI_API_KEY= in your environment.
+```
+
+The model calls `View({ image_path: "/abs/path/to/file.png", question: "..." })`
+and receives a plain-text answer from Gemini. Supported formats: PNG, JPG, WebP,
+GIF (≤ 10 MB). For Anthropic models the `View` tool is never registered — they
+handle images natively.
+
+You can also register the tool manually:
+
+```ts
+import { createGeminiImageQATool } from "maestro-agent-sdk";
+
+tools.register(createGeminiImageQATool({ apiKey: process.env.GEMINI_API_KEY }));
+```
+
 > **Effort scale.** `effort` is the *reasoning-depth* knob — it is **decoupled
 > from the iteration cap** (split in v0.1.16). The tool-iteration cap comes only
 > from `maxIterations`, which defaults to **unbounded** (`Number.POSITIVE_INFINITY`)
@@ -145,6 +171,7 @@ The SDK resolves its data directory at module load. Override via env var
 | Env var | Default | What it does |
 |---|---|---|
 | `MAESTRO_DATA_DIR` | `~/.maestro` | Where session JSONLs and todo stores live. `maestroSessionsDir()` resolves to `<DATA_DIR>/sessions`. |
+| `GEMINI_API_KEY` | — | Enables the `View` image-QA tool when using a DeepSeek model. See [Image handling](#image-handling-deepseek). |
 
 Everything else is per-call: pass `cwd`, `model`, `effort`, etc. through
 `AIAgentConfig` / `AgentQueryOptions`. The memory compressor reuses the
