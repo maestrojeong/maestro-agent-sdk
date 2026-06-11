@@ -816,6 +816,221 @@ describe("runConversation (streaming path)", () => {
     ]);
   });
 
+  test("function parallelSafe uses each tool input and serial calls are ordering barriers", async () => {
+    const { provider } = makeProvider([
+      {
+        content: [
+          {
+            type: "tool_use",
+            id: "p1",
+            name: "dynamic",
+            input: { mode: "parallel", label: "p1", delay: 5 },
+          },
+          {
+            type: "tool_use",
+            id: "s1",
+            name: "dynamic",
+            input: { mode: "serial", label: "s1", delay: 2 },
+          },
+          {
+            type: "tool_use",
+            id: "p2",
+            name: "dynamic",
+            input: { mode: "parallel", label: "p2", delay: 5 },
+          },
+        ],
+        stopReason: "tool_use",
+        usage: { inputTokens: 1, outputTokens: 1 },
+      },
+      {
+        content: [{ type: "text", text: "done" }],
+        stopReason: "end_turn",
+        usage: { inputTokens: 1, outputTokens: 1 },
+      },
+    ]);
+    const tools = new ToolRegistry();
+    const seenModes: unknown[] = [];
+    const order: string[] = [];
+    let inFlight = 0;
+    let maxInFlight = 0;
+
+    tools.register({
+      parallelSafe(input) {
+        seenModes.push(input.mode);
+        return input.mode === "parallel";
+      },
+      schema: {
+        name: "dynamic",
+        description: "",
+        input_schema: { type: "object", properties: {} },
+      },
+      async execute(input) {
+        const label = String(input.label);
+        const delay = Number(input.delay ?? 0);
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        order.push(`${label}:start`);
+        await new Promise((r) => setTimeout(r, delay));
+        order.push(`${label}:end`);
+        inFlight--;
+        return label.toUpperCase();
+      },
+    });
+
+    const agent = new AIAgent(provider, tools, { model: "x", systemPrompt: "" });
+    await collect(runConversation(agent, initialMessages("go")));
+
+    expect(seenModes).toEqual(["parallel", "serial", "parallel"]);
+    expect(maxInFlight).toBe(1);
+    expect(order.indexOf("s1:start")).toBeGreaterThan(order.indexOf("p1:end"));
+    expect(order.indexOf("p2:start")).toBeGreaterThan(order.indexOf("s1:end"));
+  });
+
+  test("serial tool PreToolUse hooks run after earlier parallel batch finishes", async () => {
+    const { provider } = makeProvider([
+      {
+        content: [
+          { type: "tool_use", id: "p1", name: "parallel_read", input: {} },
+          { type: "tool_use", id: "s1", name: "serial_write", input: {} },
+        ],
+        stopReason: "tool_use",
+        usage: { inputTokens: 1, outputTokens: 1 },
+      },
+      {
+        content: [{ type: "text", text: "done" }],
+        stopReason: "end_turn",
+        usage: { inputTokens: 1, outputTokens: 1 },
+      },
+    ]);
+    const tools = new ToolRegistry();
+    const order: string[] = [];
+    const preSawParallelFinished: boolean[] = [];
+    let parallelFinished = false;
+
+    tools.register({
+      parallelSafe: true,
+      schema: {
+        name: "parallel_read",
+        description: "",
+        input_schema: { type: "object", properties: {} },
+      },
+      async execute() {
+        order.push("parallel:start");
+        await new Promise((r) => setTimeout(r, 5));
+        parallelFinished = true;
+        order.push("parallel:end");
+        return "READ";
+      },
+    });
+    tools.register({
+      schema: {
+        name: "serial_write",
+        description: "",
+        input_schema: { type: "object", properties: {} },
+      },
+      async execute() {
+        order.push("serial:execute");
+        return "WRITE";
+      },
+    });
+    tools.use({
+      pre(ctx) {
+        if (ctx.toolName === "serial_write") {
+          preSawParallelFinished.push(parallelFinished);
+          order.push(`serial:pre:${parallelFinished}`);
+        }
+        return { decision: "allow" };
+      },
+    });
+
+    const agent = new AIAgent(provider, tools, { model: "x", systemPrompt: "" });
+    await collect(runConversation(agent, initialMessages("go")));
+
+    expect(preSawParallelFinished).toEqual([true]);
+    expect(order).toEqual([
+      "parallel:start",
+      "parallel:end",
+      "serial:pre:true",
+      "serial:execute",
+    ]);
+  });
+
+  test("parallelSafe is evaluated after PreToolUse modifies the input", async () => {
+    const { provider } = makeProvider([
+      {
+        content: [
+          {
+            type: "tool_use",
+            id: "t1",
+            name: "dynamic",
+            input: { mode: "parallel", label: "first", delay: 5, forceSerial: true },
+          },
+          {
+            type: "tool_use",
+            id: "t2",
+            name: "dynamic",
+            input: { mode: "parallel", label: "second", delay: 5 },
+          },
+        ],
+        stopReason: "tool_use",
+        usage: { inputTokens: 1, outputTokens: 1 },
+      },
+      {
+        content: [{ type: "text", text: "done" }],
+        stopReason: "end_turn",
+        usage: { inputTokens: 1, outputTokens: 1 },
+      },
+    ]);
+    const tools = new ToolRegistry();
+    const seenByParallelSafe: unknown[] = [];
+    const seenByExecute: unknown[] = [];
+    const order: string[] = [];
+    let preCalls = 0;
+    let inFlight = 0;
+    let maxInFlight = 0;
+
+    tools.register({
+      parallelSafe(input) {
+        seenByParallelSafe.push(input.mode);
+        return input.mode === "parallel";
+      },
+      schema: {
+        name: "dynamic",
+        description: "",
+        input_schema: { type: "object", properties: {} },
+      },
+      async execute(input) {
+        seenByExecute.push(input.mode);
+        const label = String(input.label);
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        order.push(`${label}:start`);
+        await new Promise((r) => setTimeout(r, Number(input.delay ?? 0)));
+        order.push(`${label}:end`);
+        inFlight--;
+        return label.toUpperCase();
+      },
+    });
+    tools.use({
+      pre(ctx) {
+        preCalls++;
+        if (ctx.input.forceSerial) {
+          return { decision: "modify", input: { ...ctx.input, mode: "serial" } };
+        }
+        return { decision: "allow" };
+      },
+    });
+
+    const agent = new AIAgent(provider, tools, { model: "x", systemPrompt: "" });
+    await collect(runConversation(agent, initialMessages("go")));
+
+    expect(preCalls).toBe(2);
+    expect(seenByParallelSafe).toEqual(["serial", "parallel"]);
+    expect(seenByExecute).toEqual(["serial", "parallel"]);
+    expect(maxInFlight).toBe(1);
+    expect(order).toEqual(["first:start", "first:end", "second:start", "second:end"]);
+  });
+
   test("non-parallelSafe tools dispatch sequentially in toolUses order", async () => {
     // Two side-effecting tools (no parallelSafe flag = default false).
     // `inFlight` must never exceed 1 — proves sequential dispatch.
