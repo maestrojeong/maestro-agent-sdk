@@ -149,6 +149,7 @@ export {
   createKillBashTool,
 } from "@/tools/builtin/bash_background";
 export { createEditTool } from "@/tools/builtin/edit";
+export { createGeminiImageQATool } from "@/tools/builtin/gemini_image_qa";
 export { compileGlob, globTool } from "@/tools/builtin/glob";
 export { grepTool } from "@/tools/builtin/grep";
 export { createReadTool } from "@/tools/builtin/read";

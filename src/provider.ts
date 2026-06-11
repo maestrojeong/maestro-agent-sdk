@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
 import { AIAgent } from "@/core/agent";
 import { isAbortError, isTimeoutError } from "@/core/is-abort-error";
 import { runConversation } from "@/core/loop";
@@ -46,6 +45,7 @@ import {
   createKillBashTool,
 } from "@/tools/builtin/bash_background";
 import { createEditTool } from "@/tools/builtin/edit";
+import { createGeminiImageQATool } from "@/tools/builtin/gemini_image_qa";
 import { globTool } from "@/tools/builtin/glob";
 import { grepTool } from "@/tools/builtin/grep";
 import { createReadTool } from "@/tools/builtin/read";
@@ -140,6 +140,9 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
   // multi-turn plan survives across calls.
   const taskStore = getTaskStore(sessionId);
 
+  const requestedModel = opts.model ?? maestroRegistry.defaultModel;
+  const resolvedModel = maestroRegistry.expandModelAlias(requestedModel);
+
   const tools = new ToolRegistry();
 
   // Caller-supplied tool hooks (pre/post dispatch guardrails). Applied before
@@ -184,6 +187,9 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
   tools.register(globTool);
   tools.register(grepTool);
   tools.register(webFetchTool);
+  if (shouldRegisterGeminiImageQATool(resolvedModel)) {
+    tools.register(createGeminiImageQATool({ apiKey: process.env.GEMINI_API_KEY }));
+  }
   // AskUserQuestion — ask the user a question mid-task, get answer next turn
   tools.register(askUserQuestionTool);
   // Task family — granular CRUD replacing the v0.1.x TodoWrite. All four
@@ -244,9 +250,6 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
   if (opts.enableToolSearch === true) {
     tools.register(createToolSearchTool({ registry: tools }));
   }
-
-  const requestedModel = opts.model ?? maestroRegistry.defaultModel;
-  const resolvedModel = maestroRegistry.expandModelAlias(requestedModel);
 
   // Resolve effort up-front (was previously deferred until after history
   // hydration) so we can both build the initial system-reminder with the
@@ -399,7 +402,8 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
   // The persona is a pure function of `resolvedEffort` so it stays
   // prefix-cache stable across every call at a given level.
   const personaBlock = effortToPersonaPrompt(resolvedEffort);
-  const augmentedSystemPrompt = [opts.systemPrompt, personaBlock]
+  const imageHandlingBlock = deepseekImageHandlingPrompt(resolvedModel, tools.has("GeminiImageQA"));
+  const augmentedSystemPrompt = [opts.systemPrompt, personaBlock, imageHandlingBlock]
     .filter((s): s is string => typeof s === "string" && s.length > 0)
     .join("\n\n");
 
@@ -777,6 +781,36 @@ export function providerForModel(resolvedModel: string): Provider {
     return DeepseekProvider.fromEnv();
   }
   return AnthropicProvider.fromEnv();
+}
+
+/**
+ * DeepSeek cannot currently consume Maestro image blocks natively in this
+ * adapter, so when a Gemini API key is configured we expose a narrow vision
+ * fallback tool only for DeepSeek models. Other providers keep their existing
+ * tool menu and avoid unnecessary third-party image upload/cost.
+ */
+export function shouldRegisterGeminiImageQATool(
+  resolvedModel: string,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const key = env.GEMINI_API_KEY;
+  return resolvedModel.startsWith("deepseek-") && typeof key === "string" && key.trim().length > 0;
+}
+
+export function deepseekImageHandlingPrompt(
+  resolvedModel: string,
+  geminiImageQaAvailable: boolean,
+): string | undefined {
+  if (!resolvedModel.startsWith("deepseek-")) return undefined;
+  const fallback = geminiImageQaAvailable
+    ? "When the user asks about an attached image file path, call `GeminiImageQA` with the absolute `image_path` and a focused `question` before answering."
+    : "When the user asks about an attached image file path, use available OCR/text-extraction tools or explain that visual inspection requires a vision tool.";
+  return [
+    "## Image Handling",
+    "The active DeepSeek model cannot inspect image pixels, image files, or image content directly from file paths.",
+    fallback,
+    "Do not claim you inspected an image unless a vision/OCR tool returned evidence.",
+  ].join("\n");
 }
 
 /**

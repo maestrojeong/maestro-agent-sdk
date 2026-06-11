@@ -33,10 +33,9 @@ const DEFAULT_LINE_LIMIT = 2000;
 
 /**
  * Image extensions Read auto-promotes to multimodal `image` content blocks.
- * Everything in this set MUST also be a Claude / DeepSeek-supported media
- * type when fed back to the API — png/jpeg/webp/gif cover both Anthropic
- * (`image/png|jpeg|webp|gif`) and the OpenAI-compatible DeepSeek shape
- * (`image_url` accepts any data URI but practically the same four).
+ * Everything in this set MUST also be a provider-supported media type when
+ * fed back to the API. Vision-capable providers can render these natively;
+ * text-only adapters may down-convert them to a placeholder.
  *
  * Extensions outside this set still take the text path; binary text-decode
  * gibberish is the model's problem to spot, matching v0.1.17 behavior.
@@ -81,8 +80,9 @@ export function createReadTool(opts: ReadToolOptions = {}): ToolHandler {
       name: "Read",
       description:
         "Read a file from the local filesystem. Returns line-numbered text for plain " +
-        "files, an image content block for PNG/JPG/WebP/GIF (the model sees the image " +
-        "natively via vision), or extracted PDF text for .pdf files (line-numbered, one " +
+        "files, an image content block for PNG/JPG/WebP/GIF (vision-capable providers " +
+        "can inspect it natively; text-only adapters may require OCR or a vision helper), " +
+        "or extracted PDF text for .pdf files (line-numbered, one " +
         "line per text run). file_path must be absolute. For text: optional offset " +
         "(1-based line number) and limit narrow the slice; without limit at most 2000 " +
         "lines are returned. For PDFs: offset/limit treat units as PAGES (1-based), with " +
