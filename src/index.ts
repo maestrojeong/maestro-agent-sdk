@@ -167,6 +167,7 @@ export {
   type PostToolUseContext,
   type PostToolUseHook,
   type PostToolUseResult,
+  type PreparedToolDispatch,
   type PreToolUseContext,
   type PreToolUseDecision,
   type PreToolUseHook,

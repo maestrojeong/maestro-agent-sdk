@@ -1,3 +1,4 @@
+import { logger } from "@/platform/logger";
 import type { MaestroToolResultBlock, ProviderToolSchema } from "@/providers/base";
 
 /**
@@ -92,10 +93,35 @@ export interface ToolHandler {
    * blocks in one assistant response; running independent reads in parallel
    * cuts latency dramatically. Default false (safer). Mark true on tools
    * with no observable side effects (pure reads, idempotent fetches).
+   *
+   * Function form: called with the actual tool input so a tool can decide
+   * per-call (e.g. Agent: explore/plan → parallel-safe, general → serial).
+   *
+   * v0.1.36 breaking-ish change: this was `boolean` before the function form
+   * existed. Never truthiness-check this field directly — a function is
+   * always truthy even when it would return false for every input. Ask
+   * `ToolRegistry.isParallelSafe(name, input)` instead; it handles both
+   * forms and fails safe (serial) when the function throws.
    */
-  parallelSafe?: boolean;
+  parallelSafe?: boolean | ((input: Record<string, unknown>) => boolean);
   execute(input: Record<string, unknown>): Promise<ToolExecuteResult>;
 }
+
+export type PreparedToolDispatch =
+  | {
+      state: "done";
+      toolName: string;
+      input: Record<string, unknown>;
+      parallelSafe: false;
+      result: ToolExecuteResult;
+    }
+  | {
+      state: "ready";
+      toolName: string;
+      input: Record<string, unknown>;
+      parallelSafe: boolean;
+      handler: ToolHandler;
+    };
 
 /**
  * v0.1.22+: per-registration options. Currently the only knob is `deferred`
@@ -295,26 +321,36 @@ export class ToolRegistry {
    *     binary content needs policy review.
    */
   async dispatch(name: string, input: Record<string, unknown>): Promise<ToolExecuteResult> {
-    const handler = this.tools.get(name);
-    if (!handler) {
-      return JSON.stringify({ error: `unknown tool: ${name}` });
+    const prepared = await this.prepareDispatchInternal(name, input, false);
+    return this.dispatchPrepared(prepared);
+  }
+
+  /**
+   * Apply PreToolUse hooks and compute the parallel-safety decision from the
+   * effective input the tool will actually see. Used by the agent loop so
+   * input-mutating hooks cannot make a write-capable call run in parallel.
+   */
+  async prepareDispatch(
+    name: string,
+    input: Record<string, unknown>,
+  ): Promise<PreparedToolDispatch> {
+    return this.prepareDispatchInternal(name, input, true);
+  }
+
+  /**
+   * Execute a prepared dispatch. The prepared value must come from this
+   * registry; it carries the handler selected before scheduling so Pre hooks
+   * are not re-run after the loop has made its serial/parallel decision.
+   */
+  async dispatchPrepared(prepared: PreparedToolDispatch): Promise<ToolExecuteResult> {
+    if (prepared.state === "done") {
+      return prepared.result;
     }
 
-    let currentInput = input;
-    for (const hook of this.hooks) {
-      if (!hook.pre) continue;
-      const decision = await hook.pre({ toolName: name, input: currentInput });
-      if (decision.decision === "block") {
-        return JSON.stringify({ error: decision.error });
-      }
-      if (decision.decision === "modify") {
-        currentInput = decision.input;
-      }
-    }
-
+    const { handler, input, toolName } = prepared;
     let output: ToolExecuteResult;
     try {
-      output = await handler.execute(currentInput);
+      output = await handler.execute(input);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       return JSON.stringify({ error: msg });
@@ -330,8 +366,8 @@ export class ToolRegistry {
         // payloads pass through untouched — see ToolExecuteResult JSDoc.
         const previewIn = typeof output === "string" ? output : previewOfBlocks(output);
         const result = await hook.post({
-          toolName: name,
-          input: currentInput,
+          toolName,
+          input,
           output: previewIn,
         });
         if (typeof result.output === "string" && typeof output === "string") {
@@ -349,19 +385,87 @@ export class ToolRegistry {
     return output;
   }
 
+  private async prepareDispatchInternal(
+    name: string,
+    input: Record<string, unknown>,
+    evaluateParallelSafe: boolean,
+  ): Promise<PreparedToolDispatch> {
+    const handler = this.tools.get(name);
+    if (!handler) {
+      return {
+        state: "done",
+        toolName: name,
+        input,
+        parallelSafe: false,
+        result: JSON.stringify({ error: `unknown tool: ${name}` }),
+      };
+    }
+
+    let currentInput = input;
+    for (const hook of this.hooks) {
+      if (!hook.pre) continue;
+      const decision = await hook.pre({ toolName: name, input: currentInput });
+      if (decision.decision === "block") {
+        return {
+          state: "done",
+          toolName: name,
+          input: currentInput,
+          parallelSafe: false,
+          result: JSON.stringify({ error: decision.error }),
+        };
+      }
+      if (decision.decision === "modify") {
+        currentInput = decision.input;
+      }
+    }
+
+    return {
+      state: "ready",
+      toolName: name,
+      input: currentInput,
+      parallelSafe: evaluateParallelSafe
+        ? this.handlerParallelSafe(handler, name, currentInput)
+        : false,
+      handler,
+    };
+  }
+
   /**
    * True when `name` is registered AND its handler is flagged parallelSafe.
    * Unknown tools and unflagged tools default to false — the loop falls
    * through to sequential dispatch, which is the safe default for any tool
    * with side effects (write/edit/bash/most MCP).
+   *
+   * When `parallelSafe` is a function, it is called with the tool's actual
+   * input so per-call decisions are possible (e.g. Agent tool: explore/plan
+   * → parallel-safe, general → serial).
    */
-  isParallelSafe(name: string): boolean {
-    return this.tools.get(name)?.parallelSafe === true;
+  isParallelSafe(name: string, input: Record<string, unknown> = {}): boolean {
+    return this.handlerParallelSafe(this.tools.get(name), name, input);
+  }
+
+  private handlerParallelSafe(
+    handler: ToolHandler | undefined,
+    name: string,
+    input: Record<string, unknown>,
+  ): boolean {
+    const ps = handler?.parallelSafe;
+    if (typeof ps === "function") {
+      try {
+        return ps(input);
+      } catch (e) {
+        // Serial dispatch is the fail-safe default, but a throwing
+        // parallelSafe is a bug in the handler — surface it.
+        logger.warn({ err: e, tool: name }, "parallelSafe() threw; falling back to serial");
+        return false;
+      }
+    }
+    return ps === true;
   }
 
   /**
-   * Return every registered handler. Useful for forwarding a selected
-   * subset of the parent registry (e.g. MCP tools) to a sub-agent via
+   * Return every registered handler. Useful for forwarding a selected subset
+   * of the parent registry (e.g. MCP tools) to a `general` sub-agent via
    * `RunSubAgentOptions.extraTools`.
    *
    * Ordering matches insertion order. Deferred / active state is NOT

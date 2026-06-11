@@ -36,9 +36,9 @@ export {
   createTaskCreateTool,
   createTaskGetTool,
   createTaskListTool,
-  createTaskUpdateTool,
   createTaskOutputTool,
   createTaskStopTool,
+  createTaskUpdateTool,
 } from "@/tools/builtin/tasks";
 export {
   htmlToMarkdown,
@@ -61,6 +61,7 @@ export {
   type PostToolUseContext,
   type PostToolUseHook,
   type PostToolUseResult,
+  type PreparedToolDispatch,
   type PreToolUseContext,
   type PreToolUseDecision,
   type PreToolUseHook,
