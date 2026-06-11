@@ -1,5 +1,10 @@
-import { type RunSubAgentOptions, runSubAgent, type SubagentType } from "@/sub-agent/runner";
+// SUBAGENT_CAPABILITIES comes from its own module (not runner.ts) because it
+// is read at module-eval time — importing it through runner.ts would hit the
+// provider → agent → runner → provider cycle before runner finishes evaluating.
+import { SUBAGENT_CAPABILITIES, type SubagentType } from "@/sub-agent/capabilities";
+import { type RunSubAgentOptions, runSubAgent } from "@/sub-agent/runner";
 import type { ToolHandler } from "@/tools/registry";
+
 export type { ToolHandler };
 
 /**
@@ -15,14 +20,13 @@ export type { ToolHandler };
  *   - `explore` — read-only (Read + Glob + Grep + WebFetch). Use for
  *     finding / surveying / reporting tasks where you don't want the
  *     sub-agent mutating files by accident.
- *   - `plan`    — architect mode (bash [read-only] + Read + Glob + Grep + WebFetch).
+ *   - `plan`    — architect mode (Read + Glob + Grep + WebFetch). No bash, no write/edit.
  *     Use BEFORE implementing: produces a structured plan document
- *     (goal / affected files / step-by-step / trade-offs / risks). No write/edit.
+ *     (goal / affected files / step-by-step / trade-offs / risks).
  *
- * `parallelSafe: false` — sub-agent invocation spawns a child loop with
- * side effects (file writes for `general`, MCP-less Anthropic API calls
- * for both). Running two in parallel would race the API rate limits + the
- * shared file-state tracker registry.
+ * `parallelSafe` — input-dependent: `explore` and `plan` are read-only and run
+ * concurrently when the model calls multiple in one turn. `general` is serial
+ * (may write/edit files, filesystem race risk).
  *
  * Schema parity (v0.1.9):
  *   - `description` is accepted (3-5 word label). Surfaces to logs / UI;
@@ -53,12 +57,16 @@ export interface AgentToolFactoryOptions {
   >;
 }
 
-const ALL_SUBAGENT_TYPES: SubagentType[] = ["general", "explore", "plan"] satisfies SubagentType[];
+// Both derived from SUBAGENT_CAPABILITIES — the runner's capability table is
+// the single source of truth for which kinds exist and which are
+// parallel-safe (read-only, no extra/MCP tools).
+const ALL_SUBAGENT_TYPES = Object.keys(SUBAGENT_CAPABILITIES) as SubagentType[];
 const VALID_TYPES = new Set<SubagentType>(ALL_SUBAGENT_TYPES);
 
 export function createAgentTool(opts: AgentToolFactoryOptions): ToolHandler {
   return {
-    parallelSafe: false,
+    parallelSafe: (input) =>
+      SUBAGENT_CAPABILITIES[input.subagent_type as SubagentType]?.parallelSafe ?? false,
     schema: {
       name: "Agent",
       description:
@@ -66,7 +74,7 @@ export function createAgentTool(opts: AgentToolFactoryOptions): ToolHandler {
         "The sub-agent has its own context — your tool calls, files-Read state, and todo list " +
         "are NOT shared with it. Use `general` for self-contained work that may need bash/Write/Edit, " +
         "and `explore` for read-only surveys (Read/Glob/Grep/WebFetch only), " +
-        "and `plan` for pre-implementation architecture planning (bash[read-only]/Read/Glob/Grep/WebFetch — no write/edit). " +
+        "and `plan` for pre-implementation architecture planning (Read/Glob/Grep/WebFetch — no bash, no write/edit). " +
         "The sub-agent cannot spawn its own sub-agents (no recursion). Pass a self-contained " +
         "prompt — the sub-agent sees ONLY that prompt and the inherited system context.",
       input_schema: {
@@ -83,8 +91,8 @@ export function createAgentTool(opts: AgentToolFactoryOptions): ToolHandler {
             type: "string",
             description:
               "Sub-agent role. 'general' = full builtin toolkit (bash/Read/Write/Edit/Glob/Grep/WebFetch). " +
-              "'explore' = read-only (Read/Glob/Grep/WebFetch — no bash, no write, no edit). " +
-              "'plan' = architect mode (bash[read-only]/Read/Glob/Grep/WebFetch — no write, no edit); outputs a structured plan document.",
+              "'explore' = read-only (Read/Glob/Grep/WebFetch — no bash, no write, no edit); parallel-safe — multiple explore calls in one turn run concurrently. " +
+              "'plan' = architect mode (Read/Glob/Grep/WebFetch — no bash, no write, no edit); outputs a structured plan document; parallel-safe — multiple plan calls in one turn run concurrently.",
           },
           prompt: {
             type: "string",

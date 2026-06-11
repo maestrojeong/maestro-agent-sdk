@@ -12,6 +12,7 @@ import { effortToThinkingBudget } from "@/providers/anthropic";
 import type { Provider, ProviderContentBlock, ProviderMessage } from "@/providers/base";
 import { getNativeMaxOutputTokens } from "@/registry";
 import { deleteMaestroSession } from "@/session-store";
+import { SUBAGENT_CAPABILITIES, type SubagentType } from "@/sub-agent/capabilities";
 import { createBashTool } from "@/tools/builtin/bash";
 import { createEditTool } from "@/tools/builtin/edit";
 import { globTool } from "@/tools/builtin/glob";
@@ -20,15 +21,16 @@ import { createReadTool } from "@/tools/builtin/read";
 import { webFetchTool } from "@/tools/builtin/web_fetch";
 import { createWriteTool } from "@/tools/builtin/write";
 import { getFileStateTracker } from "@/tools/file-state";
-import { ToolRegistry, type ToolHandler } from "@/tools/registry";
+import { type ToolHandler, ToolRegistry } from "@/tools/registry";
 import type { EffortLevel, TokenUsage } from "@/types";
 
 /**
  * Sub-agent runner — spawns a fresh maestro loop for a delegated task.
  *
  * Architecture decisions (advisor-reviewed):
- *   - **No MCP in v1.** Sub-agents are scoped roles, not parent-lite. If
- *     MCP-rich exploration is needed, the user spawns a new topic.
+ *   - **Scoped MCP forwarding.** Only `general` receives parent-forwarded
+ *     MCP tools. `explore` / `plan` stay builtin-only read scopes so their
+ *     Agent calls remain safe to parallelize.
  *   - **Inherit parent model + effort.** Uses `providerForModel()` to
  *     select the correct provider (Anthropic / DeepSeek) based on parent
  *     model. No override knob — keeps the model from picking a smaller
@@ -48,7 +50,8 @@ import type { EffortLevel, TokenUsage } from "@/types";
  *     No recursion. Grandchildren require the parent to re-delegate.
  */
 
-export type SubagentType = "general" | "explore" | "plan";
+// Re-exported so existing importers (`agent.ts`, tests) keep one import site.
+export { SUBAGENT_CAPABILITIES, type SubagentType };
 
 export interface RunSubAgentOptions {
   subagentType: SubagentType;
@@ -70,7 +73,10 @@ export interface RunSubAgentOptions {
    *  in-flight provider call cancels too. */
   parentAbortSignal?: AbortSignal;
   /**
-   * Additional tool handlers to inject into the sub-agent's registry.
+   * Additional tool handlers to inject into a `general` sub-agent's registry.
+   * `explore` and `plan` intentionally ignore these so read-only sub-agent
+   * roles cannot accidentally receive write-capable MCP tools.
+   *
    * Use this to forward MCP tools from the parent session:
    *
    *   extraTools: parentTools.allHandlers().filter(h =>
@@ -130,10 +136,21 @@ function resolveMaxTokens(parentModel: string): number {
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const OVERLAY_DIR = join(__dirname, "..", "prompts", "sub-agents");
 
+// Overlay contents are static for the process lifetime; cache per kind so
+// parallel explore/plan spawns don't each re-read the same file with
+// event-loop-blocking sync I/O. Failed reads are NOT cached — a file
+// restored at runtime is picked up, and the warn below keeps firing as the
+// signal that something is wrong.
+const overlayCache = new Map<SubagentType, string>();
+
 function loadOverlay(kind: SubagentType): string {
+  const cached = overlayCache.get(kind);
+  if (cached !== undefined) return cached;
   const path = join(OVERLAY_DIR, `${kind}.md`);
   try {
-    return readFileSync(path, "utf8");
+    const overlay = readFileSync(path, "utf8");
+    overlayCache.set(kind, overlay);
+    return overlay;
   } catch (e) {
     // Fall back to a tiny inline reminder so a missing prompt file doesn't
     // crash the whole call. The sub-agent will still know it's scoped.
@@ -145,12 +162,13 @@ function loadOverlay(kind: SubagentType): string {
 /**
  * Build the per-subagent-type tool registry.
  *
- * `general` — bash + Read + Write + Edit + Glob + Grep + WebFetch.
+ * `general` — bash + Read + Write + Edit + Glob + Grep + WebFetch,
+ *             plus any parent-forwarded extra tools.
  * `explore` — Read + Glob + Grep + WebFetch only. NO bash, write, edit —
- *             the role is read-only by construction.
- * `plan`    — bash (read-only usage: ls/tree/git log/etc.) + Read + Glob + Grep +
- *             WebFetch. NO Write/Edit — the role is to
- *             produce a plan document, not to implement it.
+ *             no MCP/extra tools; the role is read-only by construction.
+ * `plan`    — Read + Glob + Grep + WebFetch. NO bash, write, edit —
+ *             no MCP/extra tools; same tool set as explore, but outputs a
+ *             structured plan document.
  *
  * Neither registers `Agent` (recursion cap) or the Task* family
  * (sub-agents don't plan iteratively — the plan is handed back to the parent).
@@ -158,7 +176,10 @@ function loadOverlay(kind: SubagentType): string {
  * Glob and Grep are registered for ALL types: they are read-only filesystem
  * tools that carry no mutation risk.
  *
- * belongs wherever Edit is available).
+ * Keep the overlay prompts in `src/prompts/sub-agents/<kind>.md` in sync —
+ * each one hard-codes its kind's tool list for the model. A test in
+ * `tests/maestro-sub-agent.test.ts` fails if a registered tool is missing
+ * from its kind's overlay.
  */
 function buildToolRegistry(
   kind: SubagentType,
@@ -187,20 +208,14 @@ function buildToolRegistry(
     tools.register(createEditTool({ tracker: fileTracker }));
   }
 
-  if (kind === "plan") {
-    // bash is useful for read-only structural queries (ls, tree, git log,
-    // cargo tree, npm ls, …) that help the planner understand the codebase.
-    // Write/Edit are intentionally excluded — the plan sub-agent
-    // produces a plan document, not implementation code.
-    tools.register(createBashTool({ signal: abortSignal }));
-  }
   // `explore` and `plan` stop here — no write/edit tools.
 
-  // Extra tools (e.g. MCP handlers forwarded from the parent) are
-  // registered last so builtins always take precedence on a name
-  // collision. The caller is responsible for filtering out tools it
-  // doesn't want to expose to the sub-agent.
-  if (extraTools) {
+  // Extra tools (e.g. MCP handlers forwarded from the parent) are gated by
+  // the capability table: only kinds with `acceptsExtraTools` (currently
+  // `general`) receive them — otherwise write-capable MCP tools would
+  // invalidate the parallelSafe contract. Extra tools are registered last so
+  // builtins always take precedence on a name collision.
+  if (SUBAGENT_CAPABILITIES[kind].acceptsExtraTools && extraTools) {
     for (const t of extraTools) {
       if (!tools.has(t.schema.name)) {
         tools.register(t);
@@ -210,6 +225,8 @@ function buildToolRegistry(
 
   return tools;
 }
+
+export { buildToolRegistry as __buildToolRegistryForTest };
 
 /**
  * Run a sub-agent to completion. Returns its final text + accumulated
@@ -335,4 +352,3 @@ export async function runSubAgent(opts: RunSubAgentOptions): Promise<RunSubAgent
 
   return { text: finalText, usage, subSessionId, aborted };
 }
-
