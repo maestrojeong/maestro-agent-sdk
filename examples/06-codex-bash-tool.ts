@@ -47,9 +47,7 @@ async function main() {
         process.stdout.write(event.content);
         break;
       case "tool_use":
-        console.error(
-          `\n[tool_use] ${event.name} ${JSON.stringify(event.input).slice(0, 120)}`,
-        );
+        console.error(`\n[tool_use] ${event.name} ${JSON.stringify(event.input).slice(0, 120)}`);
         break;
       case "tool_result":
         console.error(`[tool_result] ${String(event.content).slice(0, 120)}`);

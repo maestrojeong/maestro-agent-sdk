@@ -444,6 +444,19 @@ export class ToolRegistry {
     return this.handlerParallelSafe(this.tools.get(name), name, input);
   }
 
+  /**
+   * True when a tool is definitely serial before PreToolUse hooks run.
+   *
+   * Function-valued `parallelSafe` depends on the post-hook effective input,
+   * so evaluating it here would either duplicate side effects or classify
+   * against the wrong input. Treat those dynamic tools as prepare-safe; the
+   * actual scheduling decision still happens exactly once in prepareDispatch.
+   */
+  requiresSequentialPreparation(name: string): boolean {
+    const ps = this.tools.get(name)?.parallelSafe;
+    return ps !== true && typeof ps !== "function";
+  }
+
   private handlerParallelSafe(
     handler: ToolHandler | undefined,
     name: string,

@@ -1,4 +1,11 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { DATA_DIR } from "@/platform/config";
 import { logger } from "@/platform/logger";
@@ -33,13 +40,16 @@ function isMemoryState(value: unknown): value is MaestroMemoryState {
   );
 }
 
-function normalizeMemoryState(value: MaestroMemoryState | Record<string, unknown>): MaestroMemoryState {
+function normalizeMemoryState(
+  value: MaestroMemoryState | Record<string, unknown>,
+): MaestroMemoryState {
   const raw = value as Record<string, unknown>;
-  const summary = typeof raw.summary === "string"
-    ? raw.summary
-    : typeof raw.activeSummary === "string"
-      ? raw.activeSummary
-      : "";
+  const summary =
+    typeof raw.summary === "string"
+      ? raw.summary
+      : typeof raw.activeSummary === "string"
+        ? raw.activeSummary
+        : "";
   return {
     version: 1,
     sessionId: String(raw.sessionId),

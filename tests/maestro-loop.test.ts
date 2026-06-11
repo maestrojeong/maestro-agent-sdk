@@ -947,12 +947,7 @@ describe("runConversation (streaming path)", () => {
     await collect(runConversation(agent, initialMessages("go")));
 
     expect(preSawParallelFinished).toEqual([true]);
-    expect(order).toEqual([
-      "parallel:start",
-      "parallel:end",
-      "serial:pre:true",
-      "serial:execute",
-    ]);
+    expect(order).toEqual(["parallel:start", "parallel:end", "serial:pre:true", "serial:execute"]);
   });
 
   test("parallelSafe is evaluated after PreToolUse modifies the input", async () => {

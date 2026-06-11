@@ -599,7 +599,7 @@ export async function* runConversation(
     };
 
     for (let i = 0; i < toolUses.length; i++) {
-      if (!agent.tools.isParallelSafe(toolUses[i].name, toolUses[i].input)) {
+      if (agent.tools.requiresSequentialPreparation(toolUses[i].name)) {
         // A raw-serial tool is an ordering barrier before its PreToolUse
         // hooks too. Hosts often use those hooks for policy checks that
         // inspect current filesystem/session state, so don't let a later
