@@ -120,9 +120,7 @@ export type ResponsesContentPart =
  *     so call-result ordering with surrounding text is preserved (matches
  *     DeepSeek/Anthropic intent).
  */
-export function translateMessageToResponsesItems(
-  msg: ProviderMessage,
-): ResponsesInputItem[] {
+export function translateMessageToResponsesItems(msg: ProviderMessage): ResponsesInputItem[] {
   // String-content fast path covers DeepSeek-style plain text replays.
   if (typeof msg.content === "string") {
     return [

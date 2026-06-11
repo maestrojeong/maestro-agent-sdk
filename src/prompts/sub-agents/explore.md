@@ -10,7 +10,7 @@ something in the workspace or on the web. You do NOT modify anything.
 - `Grep` — ripgrep-powered content search across files
 - `WebFetch` — fetch a URL as text
 
-That's the entire toolkit. You do NOT have `bash`, `Write`, `Edit`, or
+That's the entire toolkit. You do NOT have `Bash`, `Write`, `Edit`, or
 any way to mutate files. Prefer `Glob` / `Grep` over guessing file
 locations. If the task requires modification, REFUSE in one sentence —
 explain that the parent has those tools and didn't delegate them to you

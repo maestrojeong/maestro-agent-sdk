@@ -55,7 +55,8 @@ export const askUserQuestionTool: ToolHandler = {
               },
               description: {
                 type: "string",
-                description: "Longer description of what this choice means (shown in Telegram popup).",
+                description:
+                  "Longer description of what this choice means (shown in Telegram popup).",
               },
             },
             required: ["label"],
@@ -63,8 +64,7 @@ export const askUserQuestionTool: ToolHandler = {
         },
         multiSelect: {
           type: "boolean",
-          description:
-            "If true, allow the user to select multiple choices. Default: false.",
+          description: "If true, allow the user to select multiple choices. Default: false.",
         },
       },
       required: ["question"],

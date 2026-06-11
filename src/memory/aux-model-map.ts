@@ -108,7 +108,10 @@ export function resolveAuxModel(mainModel: string): string {
   if (mainModel.startsWith("claude-")) {
     return MODEL_SONNET;
   }
-  if (mainModel === "deepseek-pro" || (mainModel.startsWith("deepseek-v") && mainModel.includes("pro"))) {
+  if (
+    mainModel === "deepseek-pro" ||
+    (mainModel.startsWith("deepseek-v") && mainModel.includes("pro"))
+  ) {
     return MODEL_DEEPSEEK_V4_FLASH;
   }
   if (mainModel.startsWith("gpt-5") && !mainModel.includes("mini")) {

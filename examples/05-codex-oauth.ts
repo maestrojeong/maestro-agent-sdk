@@ -82,9 +82,7 @@ async function main() {
         console.error(`\n[tool] ${event.name}`);
         break;
       case "result":
-        console.error(
-          `\n[done] stop=${event.stopReason} usage=${JSON.stringify(event.usage)}`,
-        );
+        console.error(`\n[done] stop=${event.stopReason} usage=${JSON.stringify(event.usage)}`);
         break;
       case "error":
         console.error(`\n[error] ${event.content}`);

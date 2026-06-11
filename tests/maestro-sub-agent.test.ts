@@ -1,10 +1,16 @@
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { maestroSessionPath } from "@/session-store";
+import {
+  __buildToolRegistryForTest,
+  SUBAGENT_CAPABILITIES,
+  type SubagentType,
+} from "@/sub-agent/runner";
 import { createAgentTool } from "@/tools/builtin/agent";
 import { __resetAllTrackers, __trackerCount, getFileStateTracker } from "@/tools/file-state";
+import type { ToolHandler } from "@/tools/registry";
 
 /**
  * Tests for the Phase 3.1 Sub-agent dispatch (Agent tool + runner).
@@ -53,8 +59,14 @@ describe("Agent tool — schema + validation", () => {
     expect(props.description).toBeDefined();
   });
 
-  test("parallelSafe is false", () => {
-    expect(makeTool().parallelSafe).toBe(false);
+  test("parallelSafe is a function that returns true for explore and plan only", () => {
+    const ps = makeTool().parallelSafe;
+    expect(typeof ps).toBe("function");
+    const fn = ps as (input: Record<string, unknown>) => boolean;
+    expect(fn({ subagent_type: "explore" })).toBe(true);
+    expect(fn({ subagent_type: "plan" })).toBe(true);
+    expect(fn({ subagent_type: "general" })).toBe(false);
+    expect(fn({})).toBe(false);
   });
 
   test("rejects invalid subagent_type with structured error", async () => {
@@ -101,6 +113,47 @@ describe("Sub-agent isolation invariants", () => {
     parent.recordRead("/some/path", 1, 1);
     expect(parent.has("/some/path")).toBe(true);
     expect(child.has("/some/path")).toBe(false);
+  });
+});
+
+describe("Sub-agent tool registry scoping", () => {
+  test("parent-forwarded extra tools are registered for general only", () => {
+    const extraTool: ToolHandler = {
+      schema: {
+        name: "mcp__demo__write_record",
+        description: "write record",
+        input_schema: { type: "object", properties: {} },
+      },
+      async execute() {
+        return "ok";
+      },
+    };
+
+    const general = __buildToolRegistryForTest("general", "general-session", [extraTool]);
+    const explore = __buildToolRegistryForTest("explore", "explore-session", [extraTool]);
+    const plan = __buildToolRegistryForTest("plan", "plan-session", [extraTool]);
+
+    expect(general.has("mcp__demo__write_record")).toBe(true);
+    expect(explore.has("mcp__demo__write_record")).toBe(false);
+    expect(plan.has("mcp__demo__write_record")).toBe(false);
+  });
+
+  test("each kind's overlay prompt mentions every builtin tool its registry registers", () => {
+    // The overlay prompts hard-code their kind's tool list for the model
+    // (see buildToolRegistry's doc comment). This is the sync check: adding
+    // a tool to a kind's registry without updating the overlay fails here.
+    // The reverse direction (overlay claims a tool the registry lacks) is
+    // not asserted — overlays also name unavailable tools in "you do NOT
+    // have X" prose, so absence can't be checked by substring.
+    for (const kind of Object.keys(SUBAGENT_CAPABILITIES) as SubagentType[]) {
+      const overlay = readFileSync(join("src", "prompts", "sub-agents", `${kind}.md`), "utf8");
+      const registry = __buildToolRegistryForTest(kind, `${kind}-overlay-sync-session`);
+      for (const handler of registry.allHandlers()) {
+        expect(overlay, `${kind}.md does not mention \`${handler.schema.name}\``).toContain(
+          `\`${handler.schema.name}\``,
+        );
+      }
+    }
   });
 });
 

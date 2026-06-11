@@ -42,11 +42,11 @@ import {
   ensureCwdExists,
   extractChatPairs,
 } from "@/agents/rollout/shared";
+import { maestroMemoryStatePath } from "@/memory/state";
 import { DATA_DIR } from "@/platform/config";
 import { writeJsonlFile } from "@/platform/jsonl";
 import { logger } from "@/platform/logger";
 import { MAESTRO_SDK_VERSION } from "@/platform/version";
-import { maestroMemoryStatePath } from "@/memory/state";
 import type { ProviderContentBlock, ProviderMessage } from "@/providers/base";
 import { dropTaskStore } from "@/state/tasks";
 import type { ConversationEntry } from "@/storage/conversations";
