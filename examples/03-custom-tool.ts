@@ -3,12 +3,12 @@
  * `ToolHandler` shape — name, description, input schema, and an async
  * `execute(input)` that returns a string.
  *
- *   ANTHROPIC_API_KEY=... npx tsx examples/03-custom-tool.ts
+ *   DEEPSEEK_API_KEY=... npx tsx examples/03-custom-tool.ts
  */
 
 import {
   AIAgent,
-  AnthropicProvider,
+  DeepseekProvider,
   runConversation,
   type ToolHandler,
   ToolRegistry,
@@ -32,13 +32,13 @@ const weatherTool: ToolHandler = {
 };
 
 async function main() {
-  const provider = new AnthropicProvider({ apiKey: process.env.ANTHROPIC_API_KEY ?? "" });
+  const provider = DeepseekProvider.fromEnv();
 
   const tools = new ToolRegistry();
   tools.register(weatherTool);
 
   const agent = new AIAgent(provider, tools, {
-    model: "claude-sonnet-4-6",
+    model: "deepseek-v4-flash",
     systemPrompt: "Use tools when relevant.",
     maxIterations: 5,
     maxTokens: 1024,

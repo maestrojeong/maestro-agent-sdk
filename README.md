@@ -5,20 +5,20 @@
 [![license](https://img.shields.io/npm/l/maestro-agent-sdk.svg)](./LICENSE)
 
 **Embeddable agent SDK — skills, memory, MCP, and host-controlled guardrails out of the box.**
-Anthropic + DeepSeek today, BYO-provider in one file. No CLI, no gateway, no host lock-in.
+DeepSeek V4 provider support. No CLI, no gateway, no host lock-in.
 
 ![Multi-Agent SDK comparison](./assets/multi-agent-comparison.png)
 
-> The only slot that is both a **pure library** and **multi-vendor** — harness ships inside the SDK, you `import` it into any host and pick the provider per call. ([details](#positioning--a-building-block-not-a-product))
+> A pure-library agent runtime — the harness ships inside the SDK, so you `import` it into any host instead of shelling out to a CLI. ([details](#positioning--a-building-block-not-a-product))
 
 > **Status:** Early port (v0.1.x). Active development. API surface may change before 1.0.
 
-A generalizable agent runtime. Swap providers, inject your own logger/MCP resolver/hooks, and embed it in any host process — no framework, no lock-in.
+A DeepSeek-backed agent runtime. Inject your own logger/MCP resolver/hooks, and embed it in any host process — no framework, no lock-in.
 
 ## What's in the box
 
 - **Agent loop** — provider-driven tool-calling loop with iteration cap, abort signal, LLM pre/post guardrail hooks, and event stream.
-- **Pluggable providers** — first-class adapters for Anthropic (Claude) and DeepSeek V4; provider-neutral message schema so adding OpenAI / Gemini / Ollama is a thin file.
+- **DeepSeek provider** — first-class adapter for DeepSeek V4 with a provider-neutral message schema under the loop.
 - **Built-in tools** — `bash`, `Read`, `Write`, `Edit`, `MultiEdit`, `Glob`, `Grep`, `Agent` (sub-agent delegation), `TaskCreate`/`TaskUpdate`/`TaskList`/`TaskGet`, `WebFetch` (optional SSRF policy via `createWebFetchTool`), `skill_view`, `skill_write`, `View` (Gemini image QA — DeepSeek only, see [Image handling](#image-handling-deepseek)). Bring your own via `ToolRegistry`. Grep shells out to ripgrep (`rg`) so install it if you want the tool active; the SDK surfaces a structured error pointing to the install path when missing. Tool primitives are also importable from the `maestro-agent-sdk/tools` subpath when you don't need the rest of the runtime.
 - **MCP** — built-in client pool (stdio + SSE) so any MCP server (`@modelcontextprotocol/sdk`) shows up as tools.
 - **Skills** — per-workspace `.skills/<skillKey>/<name>/skill.md` packages with FTS-style indexing, on-demand body load (`skill_view`), and agent-autonomous authoring (`skill_write`).
@@ -38,43 +38,11 @@ Requires Node.js 20+.
 
 ## Quick start
 
-### Anthropic (Claude)
-
-```ts
-import {
-  AIAgent,
-  AnthropicProvider,
-  bashTool,
-  createReadTool,
-  createWriteTool,
-  ToolRegistry,
-  runConversation,
-} from "maestro-agent-sdk";
-
-const provider = new AnthropicProvider({ apiKey: process.env.ANTHROPIC_API_KEY! });
-
-const tools = new ToolRegistry();
-tools.register(bashTool);
-tools.register(createReadTool());
-tools.register(createWriteTool());
-
-const agent = new AIAgent(provider, tools, {
-  model: "claude-sonnet-4-6",
-  systemPrompt: "You are a helpful assistant.",
-  maxIterations: 30,
-  maxTokens: 4096,
-});
-
-for await (const event of runConversation(agent, "List files in /tmp.")) {
-  if (event.type === "text_delta") process.stdout.write(event.content);
-  if (event.type === "tool_use") console.error(`\n[tool] ${event.name}`);
-}
-```
-
 ### DeepSeek (V4)
 
-Identical loop — only swap the provider class and model id. The unified event
-stream, tool registry, and `runConversation()` driver are unchanged.
+The unified event stream, tool registry, and `runConversation()` driver are
+shared across direct `AIAgent` usage and the batteries-included
+`maestroProvider()` entry point.
 
 ```ts
 import {
@@ -85,7 +53,7 @@ import {
   runConversation,
 } from "maestro-agent-sdk";
 
-const provider = new DeepseekProvider({ apiKey: process.env.DEEPSEEK_API_KEY! });
+const provider = DeepseekProvider.fromEnv();
 
 const tools = new ToolRegistry();
 tools.register(bashTool);
@@ -113,14 +81,13 @@ a `View` tool backed by `gemini-2.5-flash`:
 ```ts
 // No extra setup needed — GEMINI_API_KEY in env is enough.
 // The View tool is registered automatically for deepseek-* models.
-const provider = new DeepseekProvider({ apiKey: process.env.DEEPSEEK_API_KEY! });
+const provider = DeepseekProvider.fromEnv();
 // Set GEMINI_API_KEY= in your environment.
 ```
 
 The model calls `View({ image_path: "/abs/path/to/file.png", question: "..." })`
 and receives a plain-text answer from Gemini. Supported formats: PNG, JPG, WebP,
-GIF (≤ 10 MB). For Anthropic models the `View` tool is never registered — they
-handle images natively.
+GIF (≤ 10 MB).
 
 You can also register the tool manually:
 
@@ -137,22 +104,20 @@ tools.register(createGeminiImageQATool({ apiKey: process.env.GEMINI_API_KEY }));
 > aborts. The model still sees its remaining-iteration count in a
 > `<system-reminder>` block every turn so it can self-pace. What `effort` drives:
 >
-> | effort   | persona (`## Working mode`) | thinking budget (Anthropic) | `reasoning_effort` (Codex / DeepSeek) |
-> |----------|-----------------------------|----------------------------:|---------------------------------------|
-> | `low`    | answer fast — one file, no cross-check  | — (off)  | `low`    |
-> | `medium` | focused work — one area, in-file check  | — (off)  | `medium` |
-> | `high`   | careful work — multi-file + verify      |   4 096  | `high`   |
-> | `xhigh`  | thorough — survey then drill down       |  10 000  | `xhigh`  |
-> | `max`    | exhaustive — all files, all edge cases  |  31 999  | `max`    |
+> | effort   | persona (`## Working mode`) | DeepSeek `reasoning_effort` |
+> |----------|-----------------------------|-----------------------------|
+> | `low`    | answer fast — one file, no cross-check  | `low`    |
+> | `medium` | focused work — one area, in-file check  | `medium` |
+> | `high`   | careful work — multi-file + verify      | `high`   |
+> | `xhigh`  | thorough — survey then drill down       | `high`   |
+> | `max`    | exhaustive — all files, all edge cases  | `max`    |
 >
-> `effort` resolves to `medium` when omitted. The Anthropic thinking budget is
-> combined (max) with any prompt keyword budget (`detectThinkingKeyword`:
-> "think harder" / "끝까지 생각" → 31 999, etc.) so end-users can opt into
-> thinking without an effort flag. `effort` also propagates to spawned
-> sub-agents as `parentEffort`.
+> `effort` resolves to `medium` when omitted. `xhigh` intentionally maps to
+> DeepSeek `high`; `max` is reserved for the deepest DeepSeek reasoning tier.
+> `effort` also propagates to spawned sub-agents as `parentEffort`.
 
-More runnable scripts live under [`examples/`](./examples) — Anthropic, DeepSeek,
-a custom-tool walkthrough, and a `skill_write` demo.
+More runnable scripts live under [`examples/`](./examples) — DeepSeek, a
+custom-tool walkthrough, and a `skill_write` demo.
 
 ## Configuration
 
@@ -265,7 +230,7 @@ import {
   resolveAuxModel,
 } from "maestro-agent-sdk";
 
-const model = "gpt-5.4-mini";
+const model = "deepseek-v4-pro";
 const result = await compactMaestroSession({
   sessionId,
   auxProvider: providerForModel(model),
@@ -283,18 +248,18 @@ and persist `result.canonicalMessages` when `result.didCompact` is true.
 
 ## Positioning — a building block, not a product
 
-maestro-agent-sdk is an agent *runtime*, not an agent *product*. You pick the UI, the provider mix, the guardrail rules, the storage layer.
+maestro-agent-sdk is an agent *runtime*, not an agent *product*. You pick the UI, the guardrail rules, and the storage layer.
 
 ### Where it sits in the stack
 
-Refer to the architecture chart at the top of this README. Top → bottom is caller → callee. Anthropic and OpenAI ship an SDK that spawns their own CLI as a subprocess — you inherit the harness, but you also inherit the binary and the single-vendor model API. Indie coding agents (OpenClaude, OpenClaw, Hermes, Nanoclaw) keep the harness but bolt on a multi-vendor API slot. **Maestro is the only slot that is both a pure library *and* multi-vendor** — the harness lives inside the SDK, so you `import` it into any host and pick the provider per call.
+Refer to the architecture chart at the top of this README. Top → bottom is caller → callee. Anthropic and OpenAI ship SDKs that spawn their own CLIs as subprocesses — you inherit the harness, but also inherit the binary and product shape. Indie coding agents (OpenClaude, OpenClaw, Hermes, Nanoclaw) keep the harness but ship as full products or CLI-first tools. **Maestro is a pure library runtime** — the harness lives inside the SDK, so you `import` it into any host process.
 
 | Capability                                       | Anthropic         | OpenAI            | Indie         | Maestro         |
 | ------------------------------------------------ | ----------------- | ----------------- | ------------- | --------------- |
 | **Built-in harness** (tool loop · context · agent loop) | ✓ Claude Code     | ✓ Codex CLI       | ✓             | ✓               |
 | **Pure library distribution** (npm/pip import only)     | ✗ needs `claude`  | ✗ needs `codex`   | ✗ CLI only    | ✓               |
-| **Multi-vendor API** (multiple model endpoints)         | ✗ Claude only     | ✗ OpenAI only     | ✓             | ✓               |
-| **Library + Multi-vendor** (embed anywhere · call any vendor) | ✗            | ✗                 | ✗             | ✓               |
+| **Maintained provider surface**                         | Claude            | OpenAI            | varies        | DeepSeek V4     |
+| **Library runtime** (embed anywhere)                    | ✗                 | ✗                 | ✗             | ✓               |
 | **Ships standalone CLI** (runs as its own product)      | ✓ Claude Code     | ✓ Codex CLI       | ✓             | ✗ embedded-only |
 
 The trade-off Maestro accepts: **no standalone CLI**. You don't get a `maestro` binary to drop on a server — you get an SDK to embed inside your own host.
@@ -366,10 +331,11 @@ for await (const event of maestroProvider({
 Fires right before every provider call. The host can pass through, replace the user-visible content, or tripwire the entire run. Receives the full message array (system + history + current turn).
 
 ```ts
-import { AIAgent, AnthropicProvider, ToolRegistry } from "maestro-agent-sdk";
+import { AIAgent, DeepseekProvider, ToolRegistry } from "maestro-agent-sdk";
 
+const provider = DeepseekProvider.fromEnv();
 const agent = new AIAgent(provider, tools, {
-  model: "claude-sonnet-4-6",
+  model: "deepseek-v4-flash",
   systemPrompt: "...",
   llmPreHook: async (messages, { abortSignal }) => {
     const lastUser = messages.filter((m) => m.role === "user").at(-1);

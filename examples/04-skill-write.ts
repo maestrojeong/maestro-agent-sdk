@@ -6,7 +6,7 @@
  * `<cwd>/.skills/<skillKey>/<name>/` in a single transactional call, and
  * the next turn picks it up via `skill_view`.
  *
- *   ANTHROPIC_API_KEY=... npx tsx examples/04-skill-write.ts
+ *   DEEPSEEK_API_KEY=... npx tsx examples/04-skill-write.ts
  *
  * Layout produced after a successful agent run:
  *
@@ -20,7 +20,7 @@ import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   AIAgent,
-  AnthropicProvider,
+  DeepseekProvider,
   bashTool,
   createReadTool,
   createSkillViewTool,
@@ -57,10 +57,10 @@ async function main() {
   tools.register(createSkillViewTool({ skills }));
   tools.register(createSkillWriteTool({ skillsDir }));
 
-  const provider = new AnthropicProvider({ apiKey: process.env.ANTHROPIC_API_KEY ?? "" });
+  const provider = DeepseekProvider.fromEnv();
 
   const agent = new AIAgent(provider, tools, {
-    model: "claude-sonnet-4-6",
+    model: "deepseek-v4-pro",
     systemPrompt:
       "You are a skill author. When the user asks you to persist a workflow as a skill, " +
       "use the `skill_write` tool. Follow the clawgram convention: " +

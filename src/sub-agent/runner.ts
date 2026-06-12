@@ -8,7 +8,6 @@ import { runConversation } from "@/core/loop";
 import { buildSystemReminder } from "@/memory/reminder";
 import { logger } from "@/platform/logger";
 import { providerForModel } from "@/provider";
-import { effortToThinkingBudget } from "@/providers/anthropic";
 import type { Provider, ProviderContentBlock, ProviderMessage } from "@/providers/base";
 import { getNativeMaxOutputTokens } from "@/registry";
 import { deleteMaestroSession } from "@/session-store";
@@ -263,8 +262,6 @@ export async function runSubAgent(opts: RunSubAgentOptions): Promise<RunSubAgent
   const overlay = loadOverlay(opts.subagentType);
   const systemPrompt = `${opts.parentSystemPrompt}\n\n${overlay}`;
   const maxTokens = resolveMaxTokens(opts.parentModel);
-  const thinkingBudget = opts.parentEffort ? effortToThinkingBudget(opts.parentEffort) : undefined;
-
   // Sub-agent's user message follows the parent contract: prompt + own
   // system reminder. The reminder reflects the SUB-SESSION's state
   // (its own session id), not the parent's.
@@ -279,7 +276,6 @@ export async function runSubAgent(opts: RunSubAgentOptions): Promise<RunSubAgent
     model: opts.parentModel,
     systemPrompt,
     maxTokens,
-    ...(thinkingBudget ? { thinkingBudget } : {}),
     ...(opts.parentEffort ? { effort: opts.parentEffort } : {}),
     ...(opts.parentAbortSignal ? { abortSignal: opts.parentAbortSignal } : {}),
   });
