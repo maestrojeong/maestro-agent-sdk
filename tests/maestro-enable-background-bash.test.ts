@@ -20,64 +20,62 @@ vi.mock("@/providers/node-fetch", async (importOriginal) => {
  *   1. The default `bashTool` is swapped for `createBashTool({background})`.
  *   2. `BashOutput` is registered.
  *   3. `KillBash` is registered.
- *
- * These tests don't drive a real agent loop — they inspect the model-
- * facing tool schema emitted on the very first turn by hooking into the
- * provider via a stub. That's enough to verify (a) the tools show up
- * when the flag is on, (b) they DON'T show up when the flag is off, and
- * (c) the Bash schema gains the `run_in_background` input field.
  */
+
+// DeepSeek uses OpenAI chat completions format.
+const DEEPSEEK_END_TURN_RESPONSE = JSON.stringify({
+  id: "chatcmpl-x",
+  object: "chat.completion",
+  choices: [
+    {
+      index: 0,
+      message: { role: "assistant", content: "done." },
+      finish_reason: "stop",
+    },
+  ],
+  usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+});
 
 /** Capture the `tools` array the provider sends to the first API call. */
 async function captureFirstTurnTools(opts: Partial<AgentQueryOptions>): Promise<string[]> {
-  // Stub the Anthropic + DeepSeek fetch surface — return a minimal
-  // ProviderResponse so the loop exits cleanly after one turn.
   const originalFetch = globalThis.fetch;
   const seenToolNames: string[] = [];
   globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
     const body = JSON.parse(String(init?.body ?? "{}")) as {
-      tools?: Array<{ name: string }>;
+      tools?: Array<{ function?: { name: string }; name?: string }>;
     };
     if (body.tools) {
-      for (const t of body.tools) seenToolNames.push(t.name);
+      for (const t of body.tools) {
+        const name = t.function?.name ?? t.name;
+        if (name) seenToolNames.push(name);
+      }
     }
-    // Empty assistant turn → loop emits result + exits.
-    return new Response(
-      JSON.stringify({
-        id: "msg_x",
-        type: "message",
-        role: "assistant",
-        content: [{ type: "text", text: "done." }],
-        model: "claude-sonnet-4-6",
-        stop_reason: "end_turn",
-        usage: { input_tokens: 1, output_tokens: 1 },
-      }),
-      { status: 200, headers: { "content-type": "application/json" } },
-    );
+    return new Response(DEEPSEEK_END_TURN_RESPONSE, {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
   }) as typeof fetch;
 
-  // Pin a fake api key so the provider's fromEnv() check passes.
-  const oldKey = process.env.ANTHROPIC_API_KEY;
-  process.env.ANTHROPIC_API_KEY = "sk-ant-test";
+  const oldKey = process.env.DEEPSEEK_API_KEY;
+  process.env.DEEPSEEK_API_KEY = "sk-test";
   try {
     const gen = maestroProvider({
       agent: "maestro",
       prompt: "noop",
       cwd: "/tmp",
       systemPrompt: "",
-      model: "claude-sonnet-4-6",
+      model: "deepseek-pro",
       maxIterations: 1,
       ...opts,
     } as AgentQueryOptions);
-    // Drain — the first provider.complete() call captures the tools list.
     const collected: UnifiedEvent[] = [];
     for await (const ev of gen) collected.push(ev);
   } finally {
     globalThis.fetch = originalFetch;
     if (oldKey === undefined) {
-      delete process.env.ANTHROPIC_API_KEY;
+      delete process.env.DEEPSEEK_API_KEY;
     } else {
-      process.env.ANTHROPIC_API_KEY = oldKey;
+      process.env.DEEPSEEK_API_KEY = oldKey;
     }
   }
   return seenToolNames;
@@ -99,38 +97,31 @@ describe("AgentQueryOptions.enableBackgroundBash", () => {
   });
 
   test("flag on: Bash schema includes run_in_background input field", async () => {
-    // Reach into the provider's tools array on the API call body to
-    // assert the Bash schema includes the new field.
     const originalFetch = globalThis.fetch;
-    let capturedBashSchema: { input_schema?: { properties?: Record<string, unknown> } } | null =
-      null;
+    let capturedBashSchema: {
+      function?: { parameters?: { properties?: Record<string, unknown> } };
+    } | null = null;
     globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body ?? "{}")) as {
-        tools?: Array<{ name: string; input_schema?: { properties?: Record<string, unknown> } }>;
+        tools?: Array<{
+          function?: { name: string; parameters?: { properties?: Record<string, unknown> } };
+        }>;
       };
-      capturedBashSchema = body.tools?.find((t) => t.name === "Bash") ?? null;
-      return new Response(
-        JSON.stringify({
-          id: "msg_x",
-          type: "message",
-          role: "assistant",
-          content: [{ type: "text", text: "ok" }],
-          model: "claude-sonnet-4-6",
-          stop_reason: "end_turn",
-          usage: { input_tokens: 1, output_tokens: 1 },
-        }),
-        { status: 200, headers: { "content-type": "application/json" } },
-      );
+      capturedBashSchema = body.tools?.find((t) => t.function?.name === "Bash") ?? null;
+      return new Response(DEEPSEEK_END_TURN_RESPONSE, {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
     }) as typeof fetch;
-    const oldKey = process.env.ANTHROPIC_API_KEY;
-    process.env.ANTHROPIC_API_KEY = "sk-ant-test";
+    const oldKey = process.env.DEEPSEEK_API_KEY;
+    process.env.DEEPSEEK_API_KEY = "sk-test";
     try {
       const gen = maestroProvider({
         agent: "maestro",
         prompt: "noop",
         cwd: "/tmp",
         systemPrompt: "",
-        model: "claude-sonnet-4-6",
+        model: "deepseek-pro",
         maxIterations: 1,
         enableBackgroundBash: true,
       });
@@ -140,12 +131,14 @@ describe("AgentQueryOptions.enableBackgroundBash", () => {
     } finally {
       globalThis.fetch = originalFetch;
       if (oldKey === undefined) {
-        delete process.env.ANTHROPIC_API_KEY;
+        delete process.env.DEEPSEEK_API_KEY;
       } else {
-        process.env.ANTHROPIC_API_KEY = oldKey;
+        process.env.DEEPSEEK_API_KEY = oldKey;
       }
     }
     expect(capturedBashSchema).not.toBeNull();
-    expect(capturedBashSchema?.input_schema?.properties).toHaveProperty("run_in_background");
+    expect(capturedBashSchema?.function?.parameters?.properties).toHaveProperty(
+      "run_in_background",
+    );
   });
 });

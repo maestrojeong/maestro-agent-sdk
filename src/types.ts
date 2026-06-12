@@ -94,9 +94,9 @@ export type EffortLevel = "minimal" | "low" | "medium" | "high" | "xhigh" | "max
  * Identifier returned by the SDK's session-store. Hosts may map their own
  * notion of "session" (e.g. a topic, a thread, a user) onto this.
  */
-export type AgentKind = "claude" | "codex" | "maestro";
-export const SUPPORTED_AGENTS: readonly AgentKind[] = ["claude", "codex", "maestro"] as const;
-export const FALLBACK_AGENT: AgentKind = "claude";
+export type AgentKind = "maestro";
+export const SUPPORTED_AGENTS: readonly AgentKind[] = ["maestro"] as const;
+export const FALLBACK_AGENT: AgentKind = "maestro";
 
 export function isAgentKind(value: unknown): value is AgentKind {
   return typeof value === "string" && (SUPPORTED_AGENTS as readonly string[]).includes(value);

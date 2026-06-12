@@ -11,7 +11,6 @@ import {
   saveMaestroMemoryState,
 } from "@/memory/state";
 import { logger } from "@/platform/logger";
-import { isWrapUpZone, thinkingBudgetForTurn } from "@/providers/anthropic";
 import type {
   MaestroToolResultBlock,
   ProviderContentBlock,
@@ -190,8 +189,7 @@ export async function* runConversation(
     // The user's abort signal only takes effect on the subsequent
     // `provider.complete` call below — which is what "abort this turn"
     // actually means. The provider's own node:http idle/total timeout (set
-    // per-provider in providers/codex.ts + deepseek.ts — e.g. codex defaults
-    // 30min idle / 90min total; node-fetch.ts honors them) is the safety net
+    // per-provider in providers/deepseek.ts; node-fetch.ts honors them) is the safety net
     // for a genuinely hung aux LLM; we don't need a second one here. NB: aux runs on `agent.provider` itself, so it inherits the
     // same node:http transport — Bun's global-fetch ~300s wall (the old
     // failure mode that timed out every aux call) no longer applies.
@@ -208,10 +206,7 @@ export async function* runConversation(
     // possible with the current `await` pattern — the generator is paused.
     // The `onCompactionStart` hook exists in CompressOptions for future
     // non-blocking compaction architectures; it is not wired here today.
-    // Guided (focus-steered) compaction is opt-in per provider — only Codex
-    // sets `guidedCompaction` today (stateless, benefits most). Cache-friendly
-    // providers (Anthropic/DeepSeek) keep the generic summary unchanged, and
-    // we skip the derivation entirely for them (no wasted scan).
+    // Guided (focus-steered) compaction is opt-in per provider via `guidedCompaction`.
     const focusTopic = agent.provider.guidedCompaction ? deriveFocusTopic(messages) : undefined;
     const wireMessages = await compressIfNeeded(messages, {
       auxProvider: agent.provider,
@@ -219,15 +214,11 @@ export async function* runConversation(
       // Steer the summarizer to preserve the live work thread (latest user
       // request) in full and shed tangents. Undefined → generic summary.
       ...(focusTopic ? { focusTopic } : {}),
-      // Stateless providers (Codex /responses, store:false, no caching) declare
-      // a lower ratio so they compact earlier — every tool iteration re-uploads
-      // the full conversation, so smaller context = cheaper turns. Undefined →
-      // compressor default (0.6). See `Provider.compactionTriggerRatio`.
+      // Provider-specific trigger ratio; undefined → compressor default (0.6).
       ...(agent.provider.compactionTriggerRatio !== undefined
         ? { triggerRatio: agent.provider.compactionTriggerRatio }
         : {}),
-      // Codex keeps a shorter verbatim tail so each compaction folds more of
-      // the middle (Hermes-style harder squeeze). Undefined → default (6).
+      // Provider-specific tail protect; undefined → default (6).
       ...(agent.provider.compactionTailProtect !== undefined
         ? { tailProtect: agent.provider.compactionTailProtect }
         : {}),
@@ -264,42 +255,13 @@ export async function* runConversation(
     // progressive typing UX. complete() stays as the fallback for providers
     // that haven't implemented stream() yet (e.g. an early Phase 5 OpenAI
     // adapter could ship stream() in a follow-up).
-    // v0.1.16: thinking budget is turn-adaptive. The base budget on
-    // `agent.config.thinkingBudget` reflects the caller's effort; for the
-    // wire call we resolve it through `thinkingBudgetForTurn` so the
-    // wrap-up zone (last 3 turns) trims down to 1/4 base. First + middle
-    // turns get the full base. See `thinkingBudgetForTurn` for the
-    // rationale; the helper handles the undefined / zero base no-op and
-    // the Anthropic >= 1024 minimum internally.
-    const turnBudget = thinkingBudgetForTurn(agent.config.thinkingBudget, iterations, maxIter);
-    // v0.1.17: hard enforcement in the wrap-up zone. The text-only signal
-    // ("[wrap-up zone] stop new tool calls" in the system-reminder) was
-    // ignorable — the model could still emit `tool_use` blocks if it
-    // judged a tool worthwhile. Sending an empty tools array removes that
-    // option entirely: Anthropic's API won't let the model surface a
-    // tool_use block when no tools are declared, so the next assistant
-    // turn is forced to be pure text and the loop's natural-termination
-    // branch (`toolUses.length === 0`) fires deterministically.
-    //
-    // Threshold matches `thinkingBudgetForTurn` exactly via the shared
-    // `isWrapUpZone` helper so the three wrap-up layers (thinking trim,
-    // tool disable, reminder overlay) all light up on the same turn —
-    // no off-by-one between them.
-    //
-    // Prefix-cache impact: yes, removing tools breaks the prefix-cache hit
-    // at the wrap-up boundary. But this only happens in the final 3 turns
-    // of a session, which is the tail of the conversation — the bulk of
-    // the prefix cache (system prompt + early turns) stays intact, and
-    // these are the turns where the model is supposed to slow down and
-    // finalize anyway. The trade is worth it for deterministic shutdown.
-    const inWrapUp = isWrapUpZone(iterations, maxIter);
+    const inWrapUp = Number.isFinite(maxIter) && maxIter > 3 && (maxIter - iterations) <= 3;
     const callOpts = {
       model: agent.config.model,
       messages: wireMessages,
       system: agent.config.systemPrompt,
       tools: inWrapUp ? [] : agent.tools.schemas(),
       maxTokens: agent.config.maxTokens,
-      ...(turnBudget ? { thinkingBudget: turnBudget } : {}),
       ...(agent.config.effort ? { effort: agent.config.effort } : {}),
       ...(agent.config.abortSignal ? { abortSignal: agent.config.abortSignal } : {}),
     };

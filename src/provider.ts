@@ -17,16 +17,8 @@ import { getMcpServersForQuery } from "@/platform/mcp-config";
 bootstrapHostPath();
 
 import { MODEL_DEEPSEEK_V4_PRO } from "@/platform/config";
-import {
-  AnthropicProvider,
-  detectThinkingKeyword,
-  effortToPersonaPrompt,
-  effortToThinkingBudget,
-} from "@/providers/anthropic";
 import type { Provider, ProviderContentBlock, ProviderMessage } from "@/providers/base";
-import { CodexResponsesProvider } from "@/providers/codex";
 import { DeepseekProvider } from "@/providers/deepseek";
-import { FallbackProvider } from "@/providers/fallback";
 import { maestroRegistry } from "@/registry";
 import {
   isWellFormedMessage,
@@ -70,9 +62,7 @@ import type { AgentQueryOptions, TokenUsage, UnifiedEvent } from "@/types";
  * Multi-turn resume: when `opts.sessionId` is set we hydrate prior messages
  * from `~/.maestro/sessions/<id>.jsonl` (written by the previous turn's
  * persistence path or by a cross-agent rollout). Otherwise we mint a fresh
- * UUIDv4 — matching the contract claude/codex providers expose, so the
- * router stays agent-agnostic and `{type:"session", sessionId}` always comes
- * back on the first iteration.
+ * UUIDv4 and start with empty history.
  *
  * After the loop drains we write the updated history back to disk so a
  * subsequent call resumes correctly. Failures here are logged but never
@@ -81,17 +71,10 @@ import type { AgentQueryOptions, TokenUsage, UnifiedEvent } from "@/types";
  *
  * MCP integration: every server in `getMcpServersForQuery(opts)` is leased
  * from the process-wide cache (`mcp/pool-cache.ts`) and its tools are
- * registered under `mcp__<server>__<tool>` — the same name convention Claude
- * SDK uses, so the model sees consistent tool names across providers in the
- * same topic. Unlike claudeProvider / codexProvider — which hand `mcpServers`
- * to a vendor SDK that owns MCP lifecycle internally — Maestro hits Anthropic's
- * Messages API via raw fetch, so we own startup + dispatch + cleanup here.
- * Cache key includes (userId, session, groupId) so two users never share an
- * MCP client; the cache evicts idle clients via TTL + LRU cap so stale slots
- * don't accumulate.
- *
- * Snapshot pinned to upstream Maestro v0.13.0 (MIT, Nous Research). See
- * docs/maestro-integration.md for the porting roadmap.
+ * registered under `mcp__<server>__<tool>`. Maestro owns MCP startup +
+ * dispatch + cleanup directly. Cache key includes (userId, session, groupId)
+ * so two users never share an MCP client; the cache evicts idle clients via
+ * TTL + LRU cap so stale slots don't accumulate.
  */
 
 /**
@@ -116,11 +99,65 @@ import type { AgentQueryOptions, TokenUsage, UnifiedEvent } from "@/types";
  */
 export const DEFAULT_MAX_ITERATIONS = Number.POSITIVE_INFINITY;
 
+function effortToPersonaPrompt(e: string | undefined): string | undefined {
+  let header: string;
+  let bullets: string[];
+  switch (e) {
+    case "low":
+      header = "You are in **low** effort mode — answer fast.";
+      bullets = [
+        "Read at most one file. Skip exhaustive search.",
+        "No cross-verification unless the user explicitly asked.",
+        "Wrap up immediately after the first sufficient answer.",
+        "If the question is ambiguous, ask one clarifying question rather than exploring.",
+      ];
+      break;
+    case "medium":
+      header = "You are in **medium** effort mode — focused work.";
+      bullets = [
+        "Explore one area thoroughly; do not branch into adjacent files unless directly relevant.",
+        "Cross-check only within the same file or function.",
+        "If a tool result is ambiguous, do one follow-up read; do not start a new chain.",
+        "Answer when the primary question is resolved — do not preemptively extend scope.",
+      ];
+      break;
+    case "high":
+      header = "You are in **high** effort mode — careful work.";
+      bullets = [
+        "Multi-file exploration is expected when the question spans modules.",
+        "Verify assumptions with a second tool call (grep + read) before asserting.",
+        "Surface uncertainties explicitly rather than papering over them.",
+        "Still bias toward shipping an answer; do not spelunk indefinitely.",
+      ];
+      break;
+    case "xhigh":
+      header = "You are in **xhigh** effort mode — thorough investigation.";
+      bullets = [
+        "Survey the relevant surface broadly before drilling down.",
+        "Hold multiple hypotheses; rank them by evidence before committing.",
+        "Name edge cases and failure modes even if the happy path is clear.",
+        "Justify final claims with concrete code references (file + line).",
+      ];
+      break;
+    case "max":
+      header = "You are in **max** effort mode — exhaustive analysis.";
+      bullets = [
+        "Read every related file; do not stop at the first plausible answer.",
+        "Enumerate all failure modes you can construct; analyze each.",
+        "Cross-verify with independent paths (grep + read + run, if applicable).",
+        "Consider writing or updating tests when behavior is non-trivial.",
+      ];
+      break;
+    default:
+      return undefined;
+  }
+  return ["## Working mode", header, ...bullets.map((b) => `- ${b}`)].join("\n");
+}
+
 export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<UnifiedEvent> {
-  // Provider instantiation is deferred until after model resolution so the
-  // right adapter (Anthropic / DeepSeek) is chosen based on the resolved
-  // model id. The env-var check happens at fromEnv() time inside each
-  // adapter — we surface its error as a normal `error` UnifiedEvent so the
+  // Provider instantiation is deferred until after model resolution.
+  // The env-var check happens at fromEnv() time inside the adapter —
+  // we surface its error as a normal `error` UnifiedEvent so the
   // dispatcher doesn't see a synthetic crash.
 
   // Resolve sessionId up-front so per-session resources (file-state tracker,
@@ -269,10 +306,8 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
     "maestroProvider: effort + maxIter resolution",
   );
 
-  // Pick provider by resolved model id prefix. DeepSeek models (`deepseek-*`)
-  // route to DeepseekProvider; anything else falls through to Anthropic. If
-  // the chosen adapter's env var is missing, close the MCP pool we already
-  // started before bailing so we don't leak subprocesses.
+  // Instantiate DeepseekProvider. If DEEPSEEK_API_KEY is missing, close
+  // the MCP pool before bailing so we don't leak subprocesses.
   let provider: Provider;
   try {
     provider = providerForModel(resolvedModel);
@@ -336,9 +371,8 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
   //      rides along automatically. Historical turns keep the reminder
   //      that was true at THAT turn — drift across env-var changes is
   //      feature, not bug.
-  // Claude Code places `<system-reminder>` at the tail of user content; we
-  // match that order so the model's pretrained intuition treats the
-  // reminder as meta annotation, not as user intent.
+  // `<system-reminder>` is placed at the tail of user content so the
+  // model treats it as meta annotation, not as user intent.
   // The reminder carries the iteration budget so the model can self-pace
   // ("8 left → wrap up", "90 left → take your time"). Closure shared with
   // the per-iteration builder below so first-turn and subsequent-turn
@@ -346,9 +380,7 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
   // in the same order, only the counts change.
   const buildIterReminder = (iterationsRemaining: number): string => {
     // The iter-line carries the count + tone; the wrap-up overlay (v0.1.16+)
-    // adds an explicit behavior cue for the last 3 turns, synchronized with
-    // `thinkingBudgetForTurn`'s budget trim so the model sees thinking AND
-    // behavior shrink together instead of one without the other.
+    // adds an explicit behavior cue for the last 3 turns.
     //
     // Skip both when `maxIter` is unbounded (the v0.1.26 default): the tone
     // selector in `iterationBudgetLine` divides by `max`, so an `Infinity`
@@ -435,34 +467,6 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
       },
     }),
   );
-  // v0.1.19+: Claude Code-style thinking gating with effort-tier fallback.
-  // Two routes activate thinking; both land on the same {4096, 10000, 31999}
-  // tier ladder so behavior is predictable regardless of how the model got
-  // there:
-  //
-  //   1. Prompt keyword — end-user types "think harder" / "끝까지 생각" /
-  //      etc. (see `detectThinkingKeyword`). Conversational surfaces
-  //      (Telegram, chat UI) where the user can't reach an effort flag.
-  //   2. Effort escalation — caller pins `effort: "high" | "xhigh" | "max"`
-  //      via `AgentQueryOptions`. SDK consumers that want a working mode
-  //      with thinking on by default. `low` and `medium` map to undefined,
-  //      matching Claude Code's "off unless asked" defaults for the
-  //      conversational tiers.
-  //
-  // Resolution: keyword wins when both fire AND keyword's tier is higher.
-  // Otherwise the effort tier is used. This way an `effort: "high"` call
-  // whose prompt happens to contain "ultrathink" gets T3 (31999), not T1
-  // (4096) — the explicit keyword in the user's message reads as an
-  // intentional escalation past the caller's static config.
-  //
-  // Symmetry note: `effortToThinkingBudget` mirrors the keyword tiers
-  // exactly (high=T1, xhigh=T2, max=T3), so the maximum of the two values
-  // is always one of the three documented budgets — no fourth point on
-  // the ladder.
-  const keywordBudget = detectThinkingKeyword(opts.prompt);
-  const effortBudget = effortToThinkingBudget(resolvedEffort);
-  const thinkingBudget = pickHigherBudget(keywordBudget, effortBudget);
-
   const agent = new AIAgent(provider, tools, {
     model: resolvedModel,
     sessionId,
@@ -484,7 +488,6 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
     // failed to parse. See the v0.1.21 changelog entry for the full
     // bug write-up.
     ...(opts.maxTokens !== undefined ? { maxTokens: opts.maxTokens } : {}),
-    ...(thinkingBudget ? { thinkingBudget } : {}),
     ...(resolvedEffort ? { effort: resolvedEffort } : {}),
     ...(opts.abortController?.signal ? { abortSignal: opts.abortController.signal } : {}),
     // v0.1.28+: forward the caller's aux-model override into AIAgent so the
@@ -516,7 +519,6 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
       model: resolvedModel,
       effort: resolvedEffort,
       maxIter,
-      thinkingBudget: thinkingBudget ?? null,
       sessionId,
       session: opts.session ?? null,
       resumed: priorMessages.length > 0,
@@ -537,23 +539,12 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
     }
     drained = true;
   } catch (e) {
-    // Abort is a user-initiated signal, not a provider failure. claude/codex
-    // both silently return on AbortError (claude-provider relies on the SDK
-    // closing the stream, codex-provider catches `err.name === "AbortError"`
-    // and returns without yielding). Match that so the dispatcher doesn't
-    // see a synthetic "maestroProvider crashed: The operation was aborted"
-    // error event after the user simply moved on to a new prompt.
+    // Abort is a user-initiated signal, not a provider failure.
     if (isAbortError(e) || abortSignal?.aborted) {
       aborted = true;
     } else {
-      // v0.1.28: dump the full error shape (name/code/cause/stack) so we can
-      // tell the difference between a codex OAuth refresh timeout, the
-      // `/responses` HTTP fetch timing out mid-roundtrip, an SSE stream
-      // abort during chunk parse, and a plain Anthropic/Deepseek crash —
-      // all of which previously surfaced as the same opaque "maestroProvider
-      // crashed: <message>" event. The lower-level codex hops also log on
-      // throw (see `codex.ts`/`codex-auth.ts` v0.1.28 instrumentation), so
-      // the combined log trail tells us which leg actually died.
+      // Dump full error shape (name/code/cause/stack) so we can distinguish
+      // an HTTP fetch timeout from an SSE stream abort or a DeepSeek crash.
       const errIsTimeout = isTimeoutError(e);
       logger.error(
         {
@@ -742,45 +733,8 @@ export function wrapUpOverlayLine(remaining: number, max: number): string | null
   return "[wrap-up zone] Tools are now disabled and the thinking budget is trimmed. No further tool calls are possible — synthesize the final answer from existing context.";
 }
 
-/**
- * Pick the right provider adapter for a resolved model id.
- *
- * Dispatch table:
- *   - `gpt-5.*` / `gpt-4.*` / `o3` / `o4`  → CodexResponsesProvider
- *     (ChatGPT-OAuth-backed Responses API at
- *     chatgpt.com/backend-api/codex; reads ~/.codex/auth.json).
- *     When `DEEPSEEK_API_KEY` is present, the codex provider is wrapped in a
- *     `FallbackProvider` that retries against DeepSeek (`deepseek-v4-pro`) if
- *     codex fails before producing any output (OAuth dead, HTTP 4xx/5xx,
- *     connect/TTFB timeout). Auto-on — no flag — because the only cost when
- *     codex is healthy is one cheap wrapper object; the fallback provider is
- *     lazily constructed and never touched unless codex actually fails.
- *   - `deepseek-*`                          → DeepseekProvider
- *     (DEEPSEEK_API_KEY env).
- *   - everything else (claude-*, custom full ids)
- *                                           → AnthropicProvider
- *     (ANTHROPIC_API_KEY env).
- *
- * Exported so tests / hosts can lock the dispatch shape independently of
- * `maestroProvider`'s I/O. The codex match is prefix-based so hosts can ship
- * new codex slugs (gpt-5.6, future tiers) without a dispatcher change — only
- * the registry alias map needs updating.
- */
-export function providerForModel(resolvedModel: string): Provider {
-  if (isCodexModel(resolvedModel)) {
-    const codex = CodexResponsesProvider.fromEnv();
-    // Auto-on DeepSeek fallback when an API key is configured. The fallback
-    // provider is constructed lazily (only if codex actually fails), so a
-    // healthy-codex turn pays nothing beyond the wrapper allocation.
-    if (process.env.DEEPSEEK_API_KEY) {
-      return new FallbackProvider(codex, () => DeepseekProvider.fromEnv(), MODEL_DEEPSEEK_V4_PRO);
-    }
-    return codex;
-  }
-  if (resolvedModel.startsWith("deepseek-")) {
-    return DeepseekProvider.fromEnv();
-  }
-  return AnthropicProvider.fromEnv();
+export function providerForModel(_resolvedModel: string): Provider {
+  return DeepseekProvider.fromEnv();
 }
 
 /**
@@ -811,51 +765,6 @@ export function deepseekImageHandlingPrompt(
     fallback,
     "Do not claim you inspected an image unless a vision/OCR tool returned evidence.",
   ].join("\n");
-}
-
-/**
- * Heuristic: does this resolved model id belong on the Codex backend?
- *
- * The codex `/codex/models` endpoint enforces an exact whitelist of slugs
- * (`gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex`, `gpt-5.2`, ...),
- * but we accept any `gpt-5.*` / `gpt-4.*` / `o3` / `o4` here so the dispatcher
- * routes correctly even before a new slug lands in the registry. The backend
- * itself will 400 on unsupported slugs with an informative `detail` — better
- * to surface that than to silently fall through to Anthropic (which would
- * also 400, but with a less useful "model not found" message).
- */
-function isCodexModel(model: string): boolean {
-  return (
-    model.startsWith("gpt-5") ||
-    model.startsWith("gpt-4") ||
-    model === "o3" ||
-    model === "o4" ||
-    model.startsWith("o3-") ||
-    model.startsWith("o4-")
-  );
-}
-
-/**
- * Combine two optional thinking budgets — keyword-derived and effort-derived
- * — by picking the higher non-undefined value. Used by `maestroProvider` so
- * an explicit keyword in the prompt can escalate past the caller's static
- * effort config, but neither path silently downgrades the other.
- *
- * Truth table:
- *   keyword=undef, effort=undef  → undef        (no thinking)
- *   keyword=4096,  effort=undef  → 4096         (keyword only)
- *   keyword=undef, effort=10000  → 10000        (effort only)
- *   keyword=4096,  effort=10000  → 10000        (effort higher)
- *   keyword=31999, effort=4096   → 31999        (keyword higher — user
- *                                                 intent in prompt wins)
- *
- * Kept as a tiny helper rather than inlining so tests can exercise the
- * priority rule without spinning up the full maestroProvider pipeline.
- */
-export function pickHigherBudget(a: number | undefined, b: number | undefined): number | undefined {
-  if (a === undefined) return b;
-  if (b === undefined) return a;
-  return Math.max(a, b);
 }
 
 /**

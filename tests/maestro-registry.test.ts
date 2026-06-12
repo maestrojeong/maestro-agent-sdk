@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeAll, describe, expect, test } from "vitest";
-import { MODEL_DEEPSEEK_V4_FLASH, MODEL_DEEPSEEK_V4_PRO, MODEL_SONNET } from "@/platform/config";
+import { MODEL_DEEPSEEK_V4_FLASH, MODEL_DEEPSEEK_V4_PRO } from "@/platform/config";
 import { maestroRegistry } from "@/registry";
 import { loadMaestroSession, maestroSessionPath, writeMaestroRollout } from "@/session-store";
 import { appendConversationEvent, getConversationPath } from "@/storage/conversations";
@@ -25,15 +25,13 @@ afterEach(() => {
 });
 
 describe("maestroRegistry alias map", () => {
-  test("expands sonnet + deepseek aliases", () => {
-    expect(maestroRegistry.expandModelAlias("sonnet")).toBe(MODEL_SONNET);
+  test("expands deepseek aliases", () => {
     expect(maestroRegistry.expandModelAlias("deepseek")).toBe(MODEL_DEEPSEEK_V4_FLASH);
     expect(maestroRegistry.expandModelAlias("deepseek-flash")).toBe(MODEL_DEEPSEEK_V4_FLASH);
     expect(maestroRegistry.expandModelAlias("deepseek-pro")).toBe(MODEL_DEEPSEEK_V4_PRO);
   });
 
   test("validateModel accepts aliases and resolved IDs", () => {
-    expect(maestroRegistry.validateModel("sonnet")).toBe(true);
     expect(maestroRegistry.validateModel("deepseek")).toBe(true);
     expect(maestroRegistry.validateModel(MODEL_DEEPSEEK_V4_PRO)).toBe(true);
     expect(maestroRegistry.validateModel(MODEL_DEEPSEEK_V4_FLASH)).toBe(true);
@@ -54,11 +52,11 @@ describe("maestroRegistry.writeRollout", () => {
 
     const userId = "777771";
     const topicName = "maestro-reg-test";
-    appendConversationEvent(userId, topicName, "claude", {
+    appendConversationEvent(userId, topicName, "maestro", {
       type: "user_message",
       content: "q1",
     });
-    appendConversationEvent(userId, topicName, "claude", {
+    appendConversationEvent(userId, topicName, "maestro", {
       type: "result",
       content: "a1",
       stopReason: "end_turn",
@@ -67,12 +65,12 @@ describe("maestroRegistry.writeRollout", () => {
     const entries = [
       {
         ts: "2026-01-01T00:00:00Z",
-        agent: "claude" as const,
+        agent: "maestro" as const,
         event: { type: "user_message" as const, content: "q1" },
       },
       {
         ts: "2026-01-01T00:00:01Z",
-        agent: "claude" as const,
+        agent: "maestro" as const,
         event: { type: "result" as const, content: "a1", stopReason: "end_turn" },
       },
     ];

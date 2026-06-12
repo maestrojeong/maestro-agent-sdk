@@ -1,7 +1,7 @@
 {
   "name": "maestro-agent-sdk",
-  "version": "0.1.38",
-  "description": "Embeddable, provider-agnostic TypeScript agent SDK — pluggable providers, built-in tools, skills, memory, and MCP.",
+  "version": "0.1.39",
+  "description": "Embeddable TypeScript agent SDK for DeepSeek — built-in tools, skills, memory, and MCP.",
   "license": "MIT",
   "author": "Yeonwoo Jeong <aadd4020@gmail.com>",
   "repository": {
@@ -16,29 +16,9 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
-    "./providers/anthropic": {
-      "types": "./dist/providers/anthropic.d.ts",
-      "import": "./dist/providers/anthropic.js"
-    },
     "./providers/deepseek": {
       "types": "./dist/providers/deepseek.d.ts",
       "import": "./dist/providers/deepseek.js"
-    },
-    "./providers/codex": {
-      "types": "./dist/providers/codex.d.ts",
-      "import": "./dist/providers/codex.js"
-    },
-    "./providers/codex-auth": {
-      "types": "./dist/providers/codex-auth.d.ts",
-      "import": "./dist/providers/codex-auth.js"
-    },
-    "./providers/codex-stream": {
-      "types": "./dist/providers/codex-stream.d.ts",
-      "import": "./dist/providers/codex-stream.js"
-    },
-    "./providers/codex-translators": {
-      "types": "./dist/providers/codex-translators.d.ts",
-      "import": "./dist/providers/codex-translators.js"
     },
     "./tools": {
       "types": "./dist/tools/index.d.ts",
@@ -66,8 +46,6 @@
     "agent",
     "ai-agent",
     "llm",
-    "anthropic",
-    "claude",
     "deepseek",
     "mcp",
     "tool-use",

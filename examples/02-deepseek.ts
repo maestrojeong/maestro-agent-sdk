@@ -1,5 +1,5 @@
 /**
- * Same minimal loop, but powered by DeepSeek V4.
+ * Minimal loop powered by DeepSeek V4.
  *
  *   DEEPSEEK_API_KEY=... npx tsx examples/02-deepseek.ts "hello"
  */
@@ -15,7 +15,7 @@ async function main() {
 
   const userPrompt = process.argv.slice(2).join(" ") || "Say hello in three languages.";
 
-  const provider = new DeepseekProvider({ apiKey });
+  const provider = new DeepseekProvider(apiKey);
 
   const tools = new ToolRegistry();
   tools.register(bashTool);
