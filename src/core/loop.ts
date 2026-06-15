@@ -46,6 +46,21 @@ const TOOL_RESULT_PREVIEW_MAX = 200;
 const FOCUS_TOPIC_MAX_CHARS = 400;
 
 /**
+ * Exact names of the six built-in task tools. A turn that ran any of these
+ * triggers a `tasks` snapshot emit. We match by exact membership rather than a
+ * `startsWith("Task")` prefix so a host- or MCP-registered tool that merely
+ * begins with "Task" can't spuriously trigger a snapshot.
+ */
+const TASK_TOOL_NAMES = new Set([
+  "TaskCreate",
+  "TaskUpdate",
+  "TaskList",
+  "TaskGet",
+  "TaskOutput",
+  "TaskStop",
+]);
+
+/**
  * Derive a guided-compaction focus from the latest *plain* user request (the
  * active task). Tool-result-bearing user turns and compaction markers are
  * skipped so the focus is the human's actual ask, not machine plumbing.
@@ -255,7 +270,7 @@ export async function* runConversation(
     // progressive typing UX. complete() stays as the fallback for providers
     // that haven't implemented stream() yet (e.g. an early Phase 5 OpenAI
     // adapter could ship stream() in a follow-up).
-    const inWrapUp = Number.isFinite(maxIter) && maxIter > 3 && (maxIter - iterations) <= 3;
+    const inWrapUp = Number.isFinite(maxIter) && maxIter > 3 && maxIter - iterations <= 3;
     const callOpts = {
       model: agent.config.model,
       messages: wireMessages,
@@ -630,6 +645,16 @@ export async function* runConversation(
         tool_use_id: tu.id,
         content: modelContent,
       });
+    }
+
+    // Emit a full task-list snapshot whenever this turn ran a built-in task
+    // tool (TaskCreate/Update/Output/Stop mutate; List/Get don't, but emitting
+    // on a read is cheap and keeps a host panel fresh). One event per turn —
+    // the snapshot already reflects every mutation in the batch — so the cost
+    // is bounded regardless of how many task tools fired. Skipped entirely when
+    // the host didn't wire `snapshotTasks`, so non-consumers pay nothing.
+    if (agent.config.snapshotTasks && toolUses.some((tu) => TASK_TOOL_NAMES.has(tu.name))) {
+      yield { type: "tasks", tasks: agent.config.snapshotTasks() };
     }
 
     // Append a fresh `<system-reminder>` text block AFTER the tool_result

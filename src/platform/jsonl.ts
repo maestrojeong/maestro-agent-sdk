@@ -3,7 +3,6 @@ import {
   fsyncSync,
   mkdirSync,
   openSync,
-  readFileSync,
   renameSync,
   unlinkSync,
   writeFileSync,
@@ -19,26 +18,6 @@ import { dirname } from "node:path";
  * layer on top is intentionally absent (also keeps the SDK free of any
  * Bun-specific APIs).
  */
-
-export function readJsonlLines(filePath: string): string[] {
-  return readFileSync(filePath, "utf-8").trim().split("\n").filter(Boolean);
-}
-
-export function parseJsonlText<T = unknown>(raw: string): T[] {
-  return raw
-    .trim()
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => JSON.parse(line) as T);
-}
-
-export function readJsonFile<T = unknown>(filePath: string): T | null {
-  try {
-    return JSON.parse(readFileSync(filePath, "utf-8")) as T;
-  } catch {
-    return null;
-  }
-}
 
 /** Overwrite a JSONL file atomically (write to temp, fsync, rename). */
 export function writeJsonlFile(filePath: string, entries: readonly unknown[]): void {

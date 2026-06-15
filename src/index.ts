@@ -145,6 +145,7 @@ export type {
   GuardrailResult,
   LlmPostHook,
   LlmPreHook,
+  TaskSnapshot,
   TokenUsage,
   UnifiedEvent,
 } from "@/types";

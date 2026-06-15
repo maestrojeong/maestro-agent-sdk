@@ -6,13 +6,7 @@
  *   DEEPSEEK_API_KEY=... npx tsx examples/03-custom-tool.ts
  */
 
-import {
-  AIAgent,
-  DeepseekProvider,
-  runConversation,
-  type ToolHandler,
-  ToolRegistry,
-} from "../src";
+import { AIAgent, DeepseekProvider, runConversation, type ToolHandler, ToolRegistry } from "../src";
 
 const weatherTool: ToolHandler = {
   name: "get_weather",
