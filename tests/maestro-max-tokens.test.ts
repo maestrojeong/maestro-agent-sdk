@@ -1,9 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { AIAgent } from "@/core/agent";
-import {
-  MODEL_DEEPSEEK_V4_FLASH,
-  MODEL_DEEPSEEK_V4_PRO,
-} from "@/platform/config";
+import { MODEL_DEEPSEEK_V4_FLASH, MODEL_DEEPSEEK_V4_PRO } from "@/platform/config";
 import type { Provider } from "@/providers/base";
 import {
   DEFAULT_MAX_OUTPUT_TOKENS,

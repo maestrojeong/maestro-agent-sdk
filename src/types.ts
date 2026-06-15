@@ -103,6 +103,26 @@ export function isAgentKind(value: unknown): value is AgentKind {
 }
 
 /**
+ * Wire-safe projection of a single task, emitted in the `tasks` UnifiedEvent.
+ *
+ * A compact subset of the internal `TaskEntry` (state/tasks.ts) — enough for a
+ * host to render a live task panel without learning the on-disk schema. Status
+ * is narrowed to the three non-terminal states because the snapshot is built
+ * from `TaskStore.list()`, which already filters out `deleted` entries.
+ */
+export interface TaskSnapshot {
+  id: string;
+  subject: string;
+  status: "pending" | "in_progress" | "completed";
+  /** Task ids this one is blocked by; omitted when empty. */
+  blockedBy?: string[];
+  /** Present-continuous label for spinners, when set. */
+  activeForm?: string;
+  /** Owner / agent name for multi-agent runs, when set. */
+  owner?: string;
+}
+
+/**
  * Normalized event stream emitted by the agent loop. Hosts iterate this
  * async generator and render / persist whichever variants they care about.
  */
@@ -112,6 +132,13 @@ export type UnifiedEvent =
   | { type: "tool_use"; name: string; input: Record<string, unknown> }
   | { type: "tool_progress"; toolName: string; elapsed: number }
   | { type: "tool_use_summary"; summary: string }
+  // Full task-list snapshot, emitted after any turn that ran a built-in task
+  // tool. Carries the complete list (not a delta) so hosts render by replace.
+  // EPHEMERAL: a live-UI signal only — it carries no conversation content and
+  // is fully reconstructable from the task store, so hosts should render it but
+  // NOT persist it in the rollout/conversation log (the rollout digest drops
+  // it for the same reason).
+  | { type: "tasks"; tasks: TaskSnapshot[] }
   | {
       type: "tool_result";
       toolUseId: string;

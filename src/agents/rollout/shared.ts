@@ -12,10 +12,6 @@ import { mkdirSync } from "node:fs";
 import { logger } from "@/platform/logger";
 import type { ConversationEntry } from "@/storage/conversations";
 
-export function clone<T>(obj: T): T {
-  return structuredClone(obj);
-}
-
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function assertUuidLike(label: string, value: string): void {
@@ -114,6 +110,11 @@ export function extractChatPairs(
       case "tool_progress":
       case "tool_use_summary":
       case "file":
+        break;
+      // Ephemeral live-UI event: a full task-list snapshot for host task
+      // panels. It carries no conversation content, so the rollout digest
+      // deliberately drops it (and hosts should not persist it).
+      case "tasks":
         break;
     }
   }

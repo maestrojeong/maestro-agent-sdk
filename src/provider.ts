@@ -16,7 +16,6 @@ import { getMcpServersForQuery } from "@/platform/mcp-config";
 // `platform/env-bootstrap.ts` for the full rationale and safety notes.
 bootstrapHostPath();
 
-import { MODEL_DEEPSEEK_V4_PRO } from "@/platform/config";
 import type { Provider, ProviderContentBlock, ProviderMessage } from "@/providers/base";
 import { DeepseekProvider } from "@/providers/deepseek";
 import { maestroRegistry } from "@/registry";
@@ -477,6 +476,22 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
     // gives it room to dig.
     maxIterations: maxIter,
     buildIterReminder,
+    // Project the per-session task store into wire-safe snapshots so the loop
+    // can emit a `tasks` UnifiedEvent after any Task* tool turn. `list()`
+    // already excludes deleted entries; the extra filter keeps the status
+    // type narrow even if that contract ever loosens.
+    snapshotTasks: () =>
+      taskStore
+        .list()
+        .filter((t) => t.status !== "deleted")
+        .map((t) => ({
+          id: t.id,
+          subject: t.subject,
+          status: t.status as "pending" | "in_progress" | "completed",
+          ...(t.blockedBy.length > 0 ? { blockedBy: [...t.blockedBy] } : {}),
+          ...(t.activeForm ? { activeForm: t.activeForm } : {}),
+          ...(t.owner ? { owner: t.owner } : {}),
+        })),
     // v0.1.21+: caller-supplied per-call `maxTokens` rides through to the
     // provider request body. Omitting it lets `AIAgent` fall back to the
     // model-catalog default (`getNativeMaxOutputTokens(resolvedModel)`):

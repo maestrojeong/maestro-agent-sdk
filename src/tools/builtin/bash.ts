@@ -273,10 +273,6 @@ const BASH_MAX_OUTPUT_HARD = 100_000;
  */
 export const bashTool: ToolHandler = createBashTool();
 
-/** Named schema export so the provider can reference it
- *  without instantiating a full tool registry. */
-export const bashToolSchema = bashSchema;
-
 /**
  * Two-ended output buffer that keeps the first `headCap` bytes and the last
  * `tailCap` bytes of an unbounded stream. Bytes between those two windows

@@ -20,14 +20,6 @@ vi.mock("@/providers/node-fetch", async (importOriginal) => {
   };
 });
 
-/** Helper — extracts a content part array from an OpenAI chat message. */
-function partsOf(
-  msg: ReturnType<typeof translateMessagesToOpenAI>[number],
-): Array<{ type: string; text?: string; image_url?: { url: string } }> {
-  if (!msg || typeof msg.content === "string") return [];
-  return msg.content as Array<{ type: string; text?: string; image_url?: { url: string } }>;
-}
-
 const ORIGINAL_FETCH = globalThis.fetch;
 const ORIGINAL_KEY = process.env.DEEPSEEK_API_KEY;
 

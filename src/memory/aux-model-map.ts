@@ -1,7 +1,4 @@
-import {
-  MODEL_DEEPSEEK_V4_FLASH,
-  MODEL_DEEPSEEK_V4_PRO,
-} from "@/platform/config";
+import { MODEL_DEEPSEEK_V4_FLASH, MODEL_DEEPSEEK_V4_PRO } from "@/platform/config";
 
 const AUX_MODEL_BY_MAIN: Record<string, string> = {
   [MODEL_DEEPSEEK_V4_PRO]: MODEL_DEEPSEEK_V4_FLASH,

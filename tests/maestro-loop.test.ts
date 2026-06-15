@@ -1192,3 +1192,163 @@ describe("runConversation (streaming path)", () => {
     expect(trBlock.content[1].type).toBe("image");
   });
 });
+
+describe("runConversation (tasks snapshot)", () => {
+  // A turn that runs a built-in task tool emits a single `tasks` UnifiedEvent
+  // carrying the full task-list snapshot, so a host can render a live task
+  // panel by replace. The emit is gated on the host wiring `snapshotTasks`
+  // and on the turn actually running a Task* tool — non-consumers and
+  // non-task turns pay nothing.
+
+  const SNAPSHOT = [
+    { id: "1", subject: "do the thing", status: "in_progress" as const },
+    { id: "2", subject: "later", status: "pending" as const },
+  ];
+
+  function taskTool(name: string): ToolHandler {
+    return {
+      schema: { name, description: "", input_schema: { type: "object", properties: {} } },
+      async execute() {
+        return "{}";
+      },
+    };
+  }
+
+  test("emits a single tasks snapshot after a Task* tool, right after tool_result", async () => {
+    const { provider } = makeProvider([
+      {
+        content: [{ type: "tool_use", id: "t1", name: "TaskCreate", input: {} }],
+        stopReason: "tool_use",
+        usage: { inputTokens: 1, outputTokens: 1 },
+      },
+      {
+        content: [{ type: "text", text: "queued" }],
+        stopReason: "end_turn",
+        usage: { inputTokens: 1, outputTokens: 1 },
+      },
+    ]);
+    const tools = new ToolRegistry();
+    tools.register(taskTool("TaskCreate"));
+    const agent = new AIAgent(provider, tools, {
+      model: "x",
+      systemPrompt: "",
+      snapshotTasks: () => SNAPSHOT,
+    });
+    const events = await collect(runConversation(agent, initialMessages("add a task")));
+
+    // Ordering: the snapshot rides out immediately after the tool_result.
+    expect(events.map((e) => e.type)).toEqual([
+      "tool_use",
+      "tool_result",
+      "tasks",
+      "text",
+      "result",
+    ]);
+    const snap = events.find((e) => e.type === "tasks");
+    expect(snap?.type === "tasks" && snap.tasks).toEqual(SNAPSHOT);
+  });
+
+  test("a turn running several task tools still emits exactly one snapshot", async () => {
+    const { provider } = makeProvider([
+      {
+        content: [
+          { type: "tool_use", id: "a", name: "TaskUpdate", input: {} },
+          { type: "tool_use", id: "b", name: "TaskList", input: {} },
+        ],
+        stopReason: "tool_use",
+        usage: { inputTokens: 1, outputTokens: 1 },
+      },
+      {
+        content: [{ type: "text", text: "done" }],
+        stopReason: "end_turn",
+        usage: { inputTokens: 1, outputTokens: 1 },
+      },
+    ]);
+    const tools = new ToolRegistry();
+    tools.register(taskTool("TaskUpdate"));
+    tools.register(taskTool("TaskList"));
+    const agent = new AIAgent(provider, tools, {
+      model: "x",
+      systemPrompt: "",
+      snapshotTasks: () => SNAPSHOT,
+    });
+    const events = await collect(runConversation(agent, initialMessages("update + list")));
+    expect(events.filter((e) => e.type === "tasks")).toHaveLength(1);
+  });
+
+  test("no snapshot when the turn ran no task tool (even if snapshotTasks is wired)", async () => {
+    const { provider } = makeProvider([
+      {
+        content: [{ type: "tool_use", id: "t1", name: "echo", input: {} }],
+        stopReason: "tool_use",
+        usage: { inputTokens: 1, outputTokens: 1 },
+      },
+      {
+        content: [{ type: "text", text: "ok" }],
+        stopReason: "end_turn",
+        usage: { inputTokens: 1, outputTokens: 1 },
+      },
+    ]);
+    const tools = new ToolRegistry();
+    tools.register(taskTool("echo"));
+    let snapshotCalls = 0;
+    const agent = new AIAgent(provider, tools, {
+      model: "x",
+      systemPrompt: "",
+      snapshotTasks: () => {
+        snapshotCalls++;
+        return SNAPSHOT;
+      },
+    });
+    const events = await collect(runConversation(agent, initialMessages("echo")));
+    expect(events.some((e) => e.type === "tasks")).toBe(false);
+    // Gated before the provider is even called — snapshotTasks never runs.
+    expect(snapshotCalls).toBe(0);
+  });
+
+  test("a tool whose name merely starts with 'Task' does NOT trigger a snapshot", async () => {
+    // Regression guard for the exact-membership check: a host/MCP tool like
+    // "TaskboardSync" must not be mistaken for a built-in task tool.
+    const { provider } = makeProvider([
+      {
+        content: [{ type: "tool_use", id: "t1", name: "TaskboardSync", input: {} }],
+        stopReason: "tool_use",
+        usage: { inputTokens: 1, outputTokens: 1 },
+      },
+      {
+        content: [{ type: "text", text: "synced" }],
+        stopReason: "end_turn",
+        usage: { inputTokens: 1, outputTokens: 1 },
+      },
+    ]);
+    const tools = new ToolRegistry();
+    tools.register(taskTool("TaskboardSync"));
+    const agent = new AIAgent(provider, tools, {
+      model: "x",
+      systemPrompt: "",
+      snapshotTasks: () => SNAPSHOT,
+    });
+    const events = await collect(runConversation(agent, initialMessages("sync")));
+    expect(events.some((e) => e.type === "tasks")).toBe(false);
+  });
+
+  test("no snapshot when the host did not wire snapshotTasks", async () => {
+    const { provider } = makeProvider([
+      {
+        content: [{ type: "tool_use", id: "t1", name: "TaskCreate", input: {} }],
+        stopReason: "tool_use",
+        usage: { inputTokens: 1, outputTokens: 1 },
+      },
+      {
+        content: [{ type: "text", text: "queued" }],
+        stopReason: "end_turn",
+        usage: { inputTokens: 1, outputTokens: 1 },
+      },
+    ]);
+    const tools = new ToolRegistry();
+    tools.register(taskTool("TaskCreate"));
+    const agent = new AIAgent(provider, tools, { model: "x", systemPrompt: "" });
+    const events = await collect(runConversation(agent, initialMessages("add a task")));
+    expect(events.some((e) => e.type === "tasks")).toBe(false);
+  });
+});

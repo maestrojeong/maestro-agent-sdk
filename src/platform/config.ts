@@ -40,11 +40,3 @@ try {
 } catch {
   // ignore — host may have pre-created with stricter perms
 }
-
-/** Returns `process.env` without `CLAUDECODE` so spawned subprocesses don't
- *  inherit a nested-claude-code detection flag from a parent harness. */
-export function getCleanEnv(): NodeJS.ProcessEnv {
-  const env = { ...process.env };
-  delete env.CLAUDECODE;
-  return env;
-}

@@ -1,9 +1,6 @@
 import { unlinkSync } from "node:fs";
 import type { AgentRegistry } from "@/agents/contracts";
-import {
-  MODEL_DEEPSEEK_V4_FLASH,
-  MODEL_DEEPSEEK_V4_PRO,
-} from "@/platform/config";
+import { MODEL_DEEPSEEK_V4_FLASH, MODEL_DEEPSEEK_V4_PRO } from "@/platform/config";
 import { logger } from "@/platform/logger";
 import { maestroSessionPath, writeMaestroRollout } from "@/session-store";
 import { readConversation } from "@/storage/conversations";
