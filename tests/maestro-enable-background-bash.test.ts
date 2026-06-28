@@ -142,3 +142,15 @@ describe("AgentQueryOptions.enableBackgroundBash", () => {
     );
   });
 });
+
+describe("AgentQueryOptions.disallowedTools", () => {
+  test("hides matching built-in tools from the first provider request", async () => {
+    const names = await captureFirstTurnTools({
+      disallowedTools: ["AskUserQuestion", "Bash"],
+    });
+
+    expect(names).not.toContain("AskUserQuestion");
+    expect(names).not.toContain("Bash");
+    expect(names).toContain("Read");
+  });
+});

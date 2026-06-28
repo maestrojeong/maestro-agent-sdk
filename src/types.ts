@@ -365,6 +365,19 @@ export interface AgentQueryOptions {
    */
   enableToolSearch?: boolean;
   /**
+   * Claude-Code-compatible tool denylist. Matching is exact by tool name
+   * (for example `["AskUserQuestion", "Bash", "mcp__server__tool"]`).
+   *
+   * Disallowed tools are hidden from the provider `tools` schema, omitted
+   * from the deferred ToolSearch catalog, and blocked at dispatch time if a
+   * provider still emits a stale or hallucinated tool call.
+   *
+   * Use `toolHooks` for finer-grained runtime policy such as path allowlists
+   * or command inspection. Use `disallowedTools` when the host wants a tool
+   * to be unavailable for the entire call.
+   */
+  disallowedTools?: readonly string[];
+  /**
    * Tool result truncation — when enabled, string tool outputs that exceed
    * `maxBytes` are truncated to head+tail before being fed back into the model
    * context. The full output is optionally persisted to disk. Disabled by

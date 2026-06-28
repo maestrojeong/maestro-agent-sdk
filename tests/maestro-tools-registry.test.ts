@@ -79,4 +79,50 @@ describe("ToolRegistry", () => {
     });
     expect(reg.has("echo")).toBe(true);
   });
+
+  test("disallowed tools are hidden from schemas and blocked before execute/hooks", async () => {
+    const reg = new ToolRegistry({ disallowedTools: ["echo"] });
+    let executed = false;
+    let preFired = false;
+    reg.use({
+      pre() {
+        preFired = true;
+        return { decision: "allow" };
+      },
+    });
+    reg.register({
+      schema: echoSchema,
+      async execute() {
+        executed = true;
+        return "";
+      },
+    });
+
+    expect(reg.has("echo")).toBe(true);
+    expect(reg.isDisallowed("echo")).toBe(true);
+    expect(reg.schemas()).toEqual([]);
+
+    const result = await reg.dispatch("echo", { msg: "hi" });
+    expect(JSON.parse(result)).toEqual({ error: "disallowed tool: echo" });
+    expect(executed).toBe(false);
+    expect(preFired).toBe(false);
+  });
+
+  test("allHandlers omits disallowed tools", () => {
+    const reg = new ToolRegistry({ disallowedTools: ["blocked"] });
+    reg.register({
+      schema: echoSchema,
+      async execute() {
+        return "";
+      },
+    });
+    reg.register({
+      schema: { ...echoSchema, name: "blocked" },
+      async execute() {
+        return "";
+      },
+    });
+
+    expect(reg.allHandlers().map((h) => h.schema.name)).toEqual(["echo"]);
+  });
 });

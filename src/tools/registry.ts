@@ -150,9 +150,20 @@ export interface RegisterOptions {
   deferred?: boolean;
 }
 
+export interface ToolRegistryOptions {
+  /**
+   * Claude-Code-compatible hard denylist. Disallowed tools remain registered
+   * internally so callers can share one registration path, but they are
+   * hidden from schemas/catalog/search and dispatch returns a policy error
+   * before hooks or handlers run.
+   */
+  disallowedTools?: readonly string[];
+}
+
 export class ToolRegistry {
   private readonly tools = new Map<string, ToolHandler>();
   private readonly hooks: HookRegistration[] = [];
+  private readonly disallowedNames: Set<string>;
   /**
    * v0.1.22+: names of tools registered with `{deferred:true}`. Membership in
    * this set means the schema is hidden from `schemas()` until either:
@@ -173,6 +184,12 @@ export class ToolRegistry {
    * subset on the wire.
    */
   private readonly activeDeferred = new Set<string>();
+
+  constructor(options?: ToolRegistryOptions) {
+    this.disallowedNames = new Set(
+      (options?.disallowedTools ?? []).filter((name) => name.length > 0),
+    );
+  }
 
   register(handler: ToolHandler, options?: RegisterOptions): void {
     const name = handler.schema.name;
@@ -205,6 +222,10 @@ export class ToolRegistry {
     return this.tools.has(name);
   }
 
+  isDisallowed(name: string): boolean {
+    return this.disallowedNames.has(name);
+  }
+
   /**
    * Tool schemas the loop should send on this turn's wire body. v0.1.22+:
    * deferred tools are excluded unless `markActive(name)` (or
@@ -219,6 +240,7 @@ export class ToolRegistry {
   schemas(): ProviderToolSchema[] {
     const out: ProviderToolSchema[] = [];
     for (const [name, h] of this.tools) {
+      if (this.disallowedNames.has(name)) continue;
       if (this.deferredNames.has(name) && !this.activeDeferred.has(name)) continue;
       out.push(h.schema);
     }
@@ -233,6 +255,7 @@ export class ToolRegistry {
    * effect vs were already active / unknown.
    */
   markActive(name: string): boolean {
+    if (this.disallowedNames.has(name)) return false;
     if (!this.deferredNames.has(name)) return false;
     if (this.activeDeferred.has(name)) return false;
     this.activeDeferred.add(name);
@@ -250,6 +273,7 @@ export class ToolRegistry {
   deferredCatalog(): Array<{ name: string; summary: string }> {
     const out: Array<{ name: string; summary: string }> = [];
     for (const name of this.deferredNames) {
+      if (this.disallowedNames.has(name)) continue;
       if (this.activeDeferred.has(name)) continue;
       const handler = this.tools.get(name);
       if (!handler) continue;
@@ -268,13 +292,16 @@ export class ToolRegistry {
    * line per requested name instead of throwing.
    */
   schemaFor(name: string): ProviderToolSchema | null {
+    if (this.disallowedNames.has(name)) return null;
     return this.tools.get(name)?.schema ?? null;
   }
 
   /** Snapshot of currently-active deferred-tool names (for session-store
    *  persistence). Stable iteration order so JSONL diffs stay clean. */
   serializeActive(): string[] {
-    return Array.from(this.activeDeferred).sort();
+    return Array.from(this.activeDeferred)
+      .filter((name) => !this.disallowedNames.has(name))
+      .sort();
   }
 
   /**
@@ -286,6 +313,7 @@ export class ToolRegistry {
    */
   restoreActive(names: readonly string[]): void {
     for (const name of names) {
+      if (this.disallowedNames.has(name)) continue;
       if (this.deferredNames.has(name)) this.activeDeferred.add(name);
     }
   }
@@ -293,6 +321,7 @@ export class ToolRegistry {
   /** True when the tool is registered AND currently deferred (not yet
    *  activated). Exported so tests and ToolSearch can branch cleanly. */
   isDeferred(name: string): boolean {
+    if (this.disallowedNames.has(name)) return false;
     return this.deferredNames.has(name) && !this.activeDeferred.has(name);
   }
 
@@ -400,6 +429,15 @@ export class ToolRegistry {
         result: JSON.stringify({ error: `unknown tool: ${name}` }),
       };
     }
+    if (this.disallowedNames.has(name)) {
+      return {
+        state: "done",
+        toolName: name,
+        input,
+        parallelSafe: false,
+        result: JSON.stringify({ error: `disallowed tool: ${name}` }),
+      };
+    }
 
     let currentInput = input;
     for (const hook of this.hooks) {
@@ -477,15 +515,19 @@ export class ToolRegistry {
   }
 
   /**
-   * Return every registered handler. Useful for forwarding a selected subset
+   * Return every callable handler. Useful for forwarding a selected subset
    * of the parent registry (e.g. MCP tools) to a `general` sub-agent via
    * `RunSubAgentOptions.extraTools`.
    *
-   * Ordering matches insertion order. Deferred / active state is NOT
-   * carried — the caller decides registration options for the sub-agent.
+   * Ordering matches insertion order. Disallowed tools are omitted so a
+   * parent-call denylist cannot leak into sub-agents. Deferred / active state
+   * is NOT carried — the caller decides registration options for the
+   * sub-agent.
    */
   allHandlers(): ToolHandler[] {
-    return Array.from(this.tools.values());
+    return Array.from(this.tools.entries())
+      .filter(([name]) => !this.disallowedNames.has(name))
+      .map(([, handler]) => handler);
   }
 }
 

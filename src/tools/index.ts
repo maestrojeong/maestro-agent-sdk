@@ -68,4 +68,5 @@ export {
   type PreToolUseHook,
   type ToolHandler,
   ToolRegistry,
+  type ToolRegistryOptions,
 } from "@/tools/registry";

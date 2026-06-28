@@ -124,6 +124,20 @@ describe("ToolRegistry: deferred + active set", () => {
     reg.restoreActive(["A", "Ghost"]);
     expect(reg.schemas().map((s) => s.name)).toEqual(["A"]);
   });
+
+  test("disallowed deferred tools stay hidden and cannot be restored or activated", () => {
+    const reg = new ToolRegistry({ disallowedTools: ["Blocked"] });
+    reg.register(stubTool("Allowed", "allowed deferred"), { deferred: true });
+    reg.register(stubTool("Blocked", "blocked deferred"), { deferred: true });
+
+    expect(reg.deferredCatalog().map((c) => c.name)).toEqual(["Allowed"]);
+    expect(reg.schemaFor("Blocked")).toBeNull();
+    expect(reg.markActive("Blocked")).toBe(false);
+
+    reg.restoreActive(["Allowed", "Blocked"]);
+    expect(reg.serializeActive()).toEqual(["Allowed"]);
+    expect(reg.schemas().map((s) => s.name)).toEqual(["Allowed"]);
+  });
 });
 
 describe("ToolSearch built-in", () => {
@@ -155,6 +169,29 @@ describe("ToolSearch built-in", () => {
     const result = (await tool.execute({ query: "select:Real,Ghost" })) as string;
     expect(result).toContain("Real: OK");
     expect(result).toContain("Ghost: NOT_FOUND");
+  });
+
+  test("'select:' on disallowed deferred name reports NOT_FOUND", async () => {
+    const reg = new ToolRegistry({ disallowedTools: ["SecretTool"] });
+    reg.register(stubTool("SecretTool", "registered but denied"), { deferred: true });
+    const tool = createToolSearchTool({ registry: reg });
+    reg.register(tool);
+
+    const result = (await tool.execute({ query: "select:SecretTool" })) as string;
+    expect(result).toContain("SecretTool: NOT_FOUND");
+    expect(result).not.toContain("<function>");
+  });
+
+  test("keyword search does not match disallowed deferred tools", async () => {
+    const reg = new ToolRegistry({ disallowedTools: ["SecretUpload"] });
+    reg.register(stubTool("PublicUpload", "upload a file"), { deferred: true });
+    reg.register(stubTool("SecretUpload", "upload a file"), { deferred: true });
+    const tool = createToolSearchTool({ registry: reg });
+    reg.register(tool);
+
+    const result = (await tool.execute({ query: "upload" })) as string;
+    expect(result).toContain("PublicUpload");
+    expect(result).not.toContain("SecretUpload");
   });
 
   test("'select:' on already-active tool reports ALREADY_ACTIVE", async () => {
