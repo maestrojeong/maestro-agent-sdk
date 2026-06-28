@@ -373,6 +373,30 @@ const agent = new AIAgent(provider, tools, {
 });
 ```
 
+### Disallowed tools — hide and hard-block
+
+`maestroProvider({ disallowedTools })` is the Claude Code-compatible coarse
+tool denylist. Matching is exact by tool name. Disallowed tools are omitted
+from the provider `tools` schema and from the ToolSearch deferred catalog; if
+a stale or hallucinated `tool_use` still arrives, dispatch returns an error
+without running hooks or the tool handler.
+
+```ts
+for await (const event of maestroProvider({
+  agent: "maestro",
+  cwd: "/workspace",
+  systemPrompt: "You are a coding agent.",
+  prompt: "Work without asking follow-up questions.",
+  disallowedTools: ["AskUserQuestion", "Bash"],
+})) {
+  // ...
+}
+```
+
+Use `disallowedTools` when a tool should be unavailable for the whole call.
+Use `toolHooks` for finer runtime policy, such as path allowlists or command
+inspection.
+
 ### Tool hooks — per-tool pre/post
 
 `ToolRegistry.use({ pre, post })` brackets every `dispatch()`. Pre can `allow` / `modify` / `block`; post sees the actual outcome via `status: "ok" | "blocked" | "error"` (since v0.1.14) so audit/telemetry hooks observe denied and failed calls too.

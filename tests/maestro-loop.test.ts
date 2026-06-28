@@ -131,6 +131,46 @@ describe("runConversation", () => {
     expect(messages[3].role).toBe("assistant");
   });
 
+  test("disallowed registered tool is hidden from schemas and blocked on stale tool_use", async () => {
+    const { provider, calls } = makeProvider([
+      {
+        content: [{ type: "tool_use", id: "t1", name: "echo", input: { msg: "ping" } }],
+        stopReason: "tool_use",
+        usage: { inputTokens: 10, outputTokens: 5 },
+      },
+      {
+        content: [{ type: "text", text: "blocked" }],
+        stopReason: "end_turn",
+        usage: { inputTokens: 8, outputTokens: 4 },
+      },
+    ]);
+    const tools = new ToolRegistry({ disallowedTools: ["echo"] });
+    let executed = false;
+    tools.register({
+      schema: {
+        name: "echo",
+        description: "echo",
+        input_schema: { type: "object", properties: {} },
+      },
+      async execute() {
+        executed = true;
+        return "should not run";
+      },
+    });
+    const agent = new AIAgent(provider, tools, {
+      model: "claude-sonnet-4-6",
+      systemPrompt: "use tools",
+    });
+
+    const events = await collect(runConversation(agent, initialMessages("echo ping")));
+    expect(calls[0].tools?.map((t) => t.name)).not.toContain("echo");
+    const tr = events.find((e) => e.type === "tool_result");
+    expect(tr?.type === "tool_result" && JSON.parse(tr.content)).toEqual({
+      error: "disallowed tool: echo",
+    });
+    expect(executed).toBe(false);
+  });
+
   test("preserves exact assistant block order across tool_use turns", async () => {
     const { provider, calls } = makeProvider([
       {

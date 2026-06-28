@@ -134,6 +134,7 @@ export {
   type ToolExecuteResult,
   type ToolHandler,
   ToolRegistry,
+  type ToolRegistryOptions,
 } from "@/tools/registry";
 // ─── Shared types ────────────────────────────────────────────────────────────
 export type {

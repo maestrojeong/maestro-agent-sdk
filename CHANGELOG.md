@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.1.42] - 2026-06-28
+
+### Added
+- Claude Code-compatible `disallowedTools` option for `maestroProvider`, hiding denied tools from schemas/ToolSearch and blocking stale tool calls before dispatch.
+
 ## [0.1.38] - 2026-06-11
 
 ### Added

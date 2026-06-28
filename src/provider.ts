@@ -179,7 +179,7 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
   const requestedModel = opts.model ?? maestroRegistry.defaultModel;
   const resolvedModel = maestroRegistry.expandModelAlias(requestedModel);
 
-  const tools = new ToolRegistry();
+  const tools = new ToolRegistry({ disallowedTools: opts.disallowedTools ?? [] });
 
   // Caller-supplied tool hooks (pre/post dispatch guardrails). Applied before
   // any tool registrations so every tool — builtins + MCP — is covered.
@@ -433,7 +433,10 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
   // The persona is a pure function of `resolvedEffort` so it stays
   // prefix-cache stable across every call at a given level.
   const personaBlock = effortToPersonaPrompt(resolvedEffort);
-  const imageHandlingBlock = deepseekImageHandlingPrompt(resolvedModel, tools.has("View"));
+  const imageHandlingBlock = deepseekImageHandlingPrompt(
+    resolvedModel,
+    tools.has("View") && !tools.isDisallowed("View"),
+  );
   const augmentedSystemPrompt = [opts.systemPrompt, personaBlock, imageHandlingBlock]
     .filter((s): s is string => typeof s === "string" && s.length > 0)
     .join("\n\n");
