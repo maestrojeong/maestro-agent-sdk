@@ -209,7 +209,14 @@ export function focusInstruction(focusTopic: string): string {
   ].join("\n");
 }
 
-function defaultContextWindow(): number {
+/**
+ * Context window the compaction stack assumes when the caller doesn't pass
+ * one: `MAESTRO_CONTEXT_WINDOW` env override, else 200K. Exported so the
+ * agent loop's hard-cap pass (memory/hard-cap.ts) derives its ceiling from
+ * the SAME number this compressor gates on — two passes disagreeing about
+ * the window size would either double-trim or leave a gap.
+ */
+export function defaultContextWindow(): number {
   const env = process.env.MAESTRO_CONTEXT_WINDOW;
   if (env) {
     const n = Number.parseInt(env, 10);
