@@ -39,6 +39,11 @@ export {
   compressIfNeeded,
   findLastCompactionSummary,
 } from "@/memory/compressor";
+export {
+  capOversizeToolResults,
+  type HardCapOptions,
+  type HardCapResult,
+} from "@/memory/hard-cap";
 export { hashToolContent } from "@/memory/hash";
 export {
   type CompactMaestroSessionOptions,

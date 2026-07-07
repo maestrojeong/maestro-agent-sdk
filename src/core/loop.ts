@@ -3,7 +3,12 @@ import type { ToolResultTruncationMetadata } from "@/core/tool-result-truncation
 import { maybeTruncateToolResultForModel } from "@/core/tool-result-truncation";
 import { extractFileEvents } from "@/media/file-events";
 import { resolveAuxModel } from "@/memory/aux-model-map";
-import { compressIfNeeded, findLastCompactionSummary } from "@/memory/compressor";
+import {
+  compressIfNeeded,
+  defaultContextWindow,
+  findLastCompactionSummary,
+} from "@/memory/compressor";
+import { capOversizeToolResults } from "@/memory/hard-cap";
 import { StreamingContextScrubber, scrubString } from "@/memory/scrubber";
 import {
   buildMaestroMemoryState,
@@ -223,7 +228,7 @@ export async function* runConversation(
     // non-blocking compaction architectures; it is not wired here today.
     // Guided (focus-steered) compaction is opt-in per provider via `guidedCompaction`.
     const focusTopic = agent.provider.guidedCompaction ? deriveFocusTopic(messages) : undefined;
-    const wireMessages = await compressIfNeeded(messages, {
+    let wireMessages = await compressIfNeeded(messages, {
       auxProvider: agent.provider,
       auxModel,
       // Steer the summarizer to preserve the live work thread (latest user
@@ -263,6 +268,40 @@ export async function* runConversation(
     }
     if (emergencyNotice !== undefined) {
       yield { type: "error", content: emergencyNotice };
+    }
+
+    // ─── Hard context cap — last defense before the wire ───
+    // Every path out of compressIfNeeded can still carry a giant RECENT
+    // tool_result verbatim: prune only strips the old end, aux compaction
+    // and emergencyTail both protect the tail, and the under-threshold
+    // fast-paths return the input as-is. If the estimated wire size still
+    // exceeds the window here, trim tool_result payloads largest-first
+    // (head+tail kept) until it fits — a degraded turn beats a provider
+    // 400 or a runaway re-send bill. Ceiling = 95% of the window minus the
+    // output budget (system prompt + tool schemas ride outside `messages`,
+    // hence the 5% slack), floored at half the window so a misconfigured
+    // maxTokens can't starve the history. Pure copy-on-write: canonical
+    // `messages` keeps the full payloads for persistence/resume.
+    const hardCapTokens = Math.max(
+      Math.floor(defaultContextWindow() * 0.95) - (agent.config.maxTokens ?? 0),
+      Math.floor(defaultContextWindow() / 2),
+    );
+    const hardCap = capOversizeToolResults(wireMessages, hardCapTokens);
+    if (hardCap.trimmed) {
+      wireMessages = hardCap.messages;
+      logger.warn(
+        {
+          beforeTokens: hardCap.beforeTokens,
+          afterTokens: hardCap.afterTokens,
+          trimmedBlocks: hardCap.trimmedBlocks,
+          hardCapTokens,
+        },
+        "loop: hard context cap trimmed oversize tool_result blocks before provider call",
+      );
+      yield {
+        type: "status",
+        content: `⚠️ 컨텍스트 한도 초과 방어: 대형 도구 출력 ${hardCap.trimmedBlocks}개를 잘라 전송합니다`,
+      };
     }
 
     // Drive the API call via stream() when available so we can emit
