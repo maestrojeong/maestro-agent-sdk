@@ -9,4 +9,4 @@
  *
  * Bump in lock-step with `package.json#version` on every release.
  */
-export const MAESTRO_SDK_VERSION = "0.1.41" as const;
+export const MAESTRO_SDK_VERSION = "0.1.43" as const;
