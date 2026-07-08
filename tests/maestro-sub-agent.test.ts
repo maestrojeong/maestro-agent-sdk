@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { maestroSessionPath } from "@/session-store";
@@ -192,6 +193,37 @@ describe("Sub-agent prompt overlay files exist", () => {
     expect(body).toMatch(/do NOT have/);
     expect(body).toMatch(/`bash`|`Write`|`Edit`/);
     expect(body.toLowerCase()).toContain("explore");
+  });
+});
+
+describe("Sub-agent prompt packaging", () => {
+  test("build script copies markdown prompts into dist", () => {
+    const pkg = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8")) as {
+      scripts?: { build?: string };
+    };
+    expect(pkg.scripts?.build).toContain("node scripts/copy-prompts.mjs");
+  });
+
+  test("copyPrompts mirrors src/prompts into dist/prompts", async () => {
+    const { copyPrompts } = (await import("../scripts/copy-prompts.mjs")) as {
+      copyPrompts: (opts: { root: string }) => void;
+    };
+    const root = join(tmpdir(), `maestro-prompts-${randomUUID()}`);
+    try {
+      const srcDir = join(root, "src", "prompts", "sub-agents");
+      const destDir = join(root, "dist", "prompts", "sub-agents");
+      mkdirSync(srcDir, { recursive: true });
+      mkdirSync(destDir, { recursive: true });
+      writeFileSync(join(srcDir, "explore.md"), "explore overlay\n");
+      writeFileSync(join(destDir, "stale.md"), "stale\n");
+
+      copyPrompts({ root });
+
+      expect(readFileSync(join(destDir, "explore.md"), "utf8")).toBe("explore overlay\n");
+      expect(existsSync(join(destDir, "stale.md"))).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

@@ -1,6 +1,6 @@
 {
   "name": "maestro-agent-sdk",
-  "version": "0.1.43",
+  "version": "0.1.44",
   "description": "Embeddable TypeScript agent SDK for DeepSeek — built-in tools, skills, memory, and MCP.",
   "license": "MIT",
   "author": "Yeonwoo Jeong <aadd4020@gmail.com>",
@@ -32,7 +32,7 @@
     "NOTICE"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && tsc-alias -p tsconfig.build.json --resolve-full-paths",
+    "build": "tsc -p tsconfig.build.json && tsc-alias -p tsconfig.build.json --resolve-full-paths && node scripts/copy-prompts.mjs",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",

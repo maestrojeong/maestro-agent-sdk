@@ -1,9 +1,12 @@
 # Changelog
 
-## [0.1.42] - 2026-06-28
+## [0.1.44] - 2026-07-08
 
 ### Added
 - Claude Code-compatible `disallowedTools` option for `maestroProvider`, hiding denied tools from schemas/ToolSearch and blocking stale tool calls before dispatch.
+
+### Fixed
+- Include sub-agent prompt overlays in published `dist/prompts/sub-agents/` artifacts so installed packages can load `explore.md`, `general.md`, and `plan.md` instead of falling back after `ENOENT`.
 
 ## [0.1.38] - 2026-06-11
 
