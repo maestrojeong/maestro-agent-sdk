@@ -75,10 +75,16 @@ import type { ProviderMessage } from "@/providers/base";
 import type { HookRegistration } from "@/tools/registry";
 
 export interface TokenUsage {
+  /** Input tokens for this scope; final run results aggregate every model call in the turn. */
   inputTokens: number;
+  /** Output tokens for this scope; final run results aggregate every model call in the turn. */
   outputTokens: number;
   cacheCreationInputTokens?: number;
   cacheReadInputTokens?: number;
+  /** Tokens occupied by the latest model call, not aggregate turn spend. */
+  contextTokens?: number;
+  /** Context window used for the latest model call. */
+  contextWindow?: number;
 }
 
 /**

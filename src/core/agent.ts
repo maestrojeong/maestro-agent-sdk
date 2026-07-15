@@ -28,8 +28,8 @@ export interface AIAgentConfig {
    * Per-API-call max output tokens.
    *
    * Omitted → resolved via `getNativeMaxOutputTokens(model)` against the
-   * registry catalog (sonnet → 64K, opus → 128K, deepseek-v4-pro → 32K,
-   * deepseek-v4-flash → 16K, unknown → 32K).
+   * registry catalog (deepseek-v4-pro → 64K, deepseek-v4-flash → 32K,
+   * unknown → 32K).
    *
    * v0.1.21+: prior versions defaulted to a flat 4096, which silently
    * truncated long-form outputs and broke tool-input JSON for Write/Edit

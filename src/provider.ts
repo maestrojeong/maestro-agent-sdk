@@ -498,7 +498,7 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
     // v0.1.21+: caller-supplied per-call `maxTokens` rides through to the
     // provider request body. Omitting it lets `AIAgent` fall back to the
     // model-catalog default (`getNativeMaxOutputTokens(resolvedModel)`):
-    // sonnet=64K, opus=128K, deepseek-pro=32K, deepseek-flash=16K.
+    // deepseek-pro=64K, deepseek-flash=32K.
     //
     // Prior versions silently capped every call at 4096 because this
     // field never traveled from `AgentQueryOptions` into `AIAgent` — long

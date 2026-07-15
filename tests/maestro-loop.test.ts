@@ -77,12 +77,22 @@ describe("runConversation", () => {
       {
         content: [{ type: "tool_use", id: "t1", name: "echo", input: { msg: "ping" } }],
         stopReason: "tool_use",
-        usage: { inputTokens: 10, outputTokens: 5 },
+        usage: {
+          inputTokens: 10,
+          outputTokens: 5,
+          contextTokens: 15,
+          contextWindow: 200_000,
+        },
       },
       {
         content: [{ type: "text", text: "got ping" }],
         stopReason: "end_turn",
-        usage: { inputTokens: 8, outputTokens: 4 },
+        usage: {
+          inputTokens: 8,
+          outputTokens: 4,
+          contextTokens: 12,
+          contextWindow: 200_000,
+        },
       },
     ]);
     const tools = new ToolRegistry();
@@ -122,6 +132,8 @@ describe("runConversation", () => {
     const last = events[3];
     expect(last.type === "result" && last.usage?.inputTokens).toBe(18);
     expect(last.type === "result" && last.usage?.outputTokens).toBe(9);
+    expect(last.type === "result" && last.usage?.contextTokens).toBe(12);
+    expect(last.type === "result" && last.usage?.contextWindow).toBe(200_000);
 
     // Final history: user / assistant (tool_use) / user (tool_result) / assistant (text)
     expect(messages).toHaveLength(4);

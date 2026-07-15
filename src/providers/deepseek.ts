@@ -13,6 +13,9 @@ import type { EffortLevel, TokenUsage } from "@/types";
 
 const DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions";
 
+/** Native context length shared by DeepSeek V4 Pro and Flash. */
+export const DEEPSEEK_V4_CONTEXT_WINDOW = 1_000_000;
+
 /**
  * DeepSeek V4 provider (deepseek-v4-pro / deepseek-v4-flash).
  *
@@ -85,6 +88,7 @@ interface OpenAITool {
 interface OpenAIUsage {
   prompt_tokens?: number;
   completion_tokens?: number;
+  total_tokens?: number;
   prompt_cache_hit_tokens?: number;
   prompt_cache_miss_tokens?: number;
 }
@@ -120,6 +124,7 @@ export class DeepseekProvider implements Provider {
     private readonly apiKey: string,
     private readonly idleTimeoutMs: number = 600_000,
     private readonly totalTimeoutMs: number = 1_800_000,
+    private readonly contextWindow: number = DEEPSEEK_V4_CONTEXT_WINDOW,
   ) {}
 
   static fromEnv(): DeepseekProvider {
@@ -154,7 +159,7 @@ export class DeepseekProvider implements Provider {
     return {
       content: openAiChoiceToBlocks(choice),
       stopReason: mapStopReason(choice.finish_reason),
-      usage: mapUsage(data.usage),
+      usage: mapUsage(data.usage, this.contextWindow),
     };
   }
 
@@ -200,7 +205,7 @@ export class DeepseekProvider implements Provider {
       if (!choice) {
         // Some chunks (e.g. final usage-only) may lack choices — capture
         // usage and move on.
-        if (event.usage) usage = mapUsage(event.usage);
+        if (event.usage) usage = mapUsage(event.usage, this.contextWindow);
         continue;
       }
       const delta = choice.delta ?? {};
@@ -246,7 +251,7 @@ export class DeepseekProvider implements Provider {
       if (choice.finish_reason) {
         stopReason = mapStopReason(choice.finish_reason);
       }
-      if (event.usage) usage = mapUsage(event.usage);
+      if (event.usage) usage = mapUsage(event.usage, this.contextWindow);
     }
 
     // Flush per-index tool buffers in the order their indexes appeared. If a
@@ -387,11 +392,15 @@ export function mapStopReason(reason: string | null | undefined): string {
   }
 }
 
-function mapUsage(u: OpenAIUsage | undefined): TokenUsage {
+function mapUsage(u: OpenAIUsage | undefined, contextWindow: number): TokenUsage {
   if (!u) return { inputTokens: 0, outputTokens: 0 };
+  const inputTokens = u.prompt_tokens ?? 0;
+  const outputTokens = u.completion_tokens ?? 0;
   const out: TokenUsage = {
-    inputTokens: u.prompt_tokens ?? 0,
-    outputTokens: u.completion_tokens ?? 0,
+    inputTokens,
+    outputTokens,
+    contextTokens: u.total_tokens ?? inputTokens + outputTokens,
+    contextWindow,
   };
   if (u.prompt_cache_hit_tokens !== undefined) {
     out.cacheReadInputTokens = u.prompt_cache_hit_tokens;

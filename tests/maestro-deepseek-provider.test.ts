@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { MaestroToolResultBlock, ProviderMessage } from "@/providers/base";
 import {
+  DEEPSEEK_V4_CONTEXT_WINDOW,
   DeepseekProvider,
   effortForDeepseek,
   mapStopReason,
@@ -22,6 +23,7 @@ vi.mock("@/providers/node-fetch", async (importOriginal) => {
 
 const ORIGINAL_FETCH = globalThis.fetch;
 const ORIGINAL_KEY = process.env.DEEPSEEK_API_KEY;
+const ORIGINAL_CONTEXT_WINDOW = process.env.MAESTRO_CONTEXT_WINDOW;
 
 afterEach(() => {
   globalThis.fetch = ORIGINAL_FETCH;
@@ -29,6 +31,11 @@ afterEach(() => {
     delete process.env.DEEPSEEK_API_KEY;
   } else {
     process.env.DEEPSEEK_API_KEY = ORIGINAL_KEY;
+  }
+  if (ORIGINAL_CONTEXT_WINDOW === undefined) {
+    delete process.env.MAESTRO_CONTEXT_WINDOW;
+  } else {
+    process.env.MAESTRO_CONTEXT_WINDOW = ORIGINAL_CONTEXT_WINDOW;
   }
 });
 
@@ -271,6 +278,9 @@ describe("translateMessagesToOpenAI", () => {
 describe("DeepseekProvider.complete (mocked)", () => {
   test("posts OpenAI-shaped body and parses response", async () => {
     process.env.DEEPSEEK_API_KEY = "sk-test-xxx";
+    // Compression may use a conservative ceiling, but provider metadata must
+    // still advertise the DeepSeek model's native context capacity.
+    process.env.MAESTRO_CONTEXT_WINDOW = "200000";
     const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
       expect(String(url)).toBe("https://api.deepseek.com/v1/chat/completions");
       const body = JSON.parse(String(init?.body));
@@ -308,6 +318,7 @@ describe("DeepseekProvider.complete (mocked)", () => {
           usage: {
             prompt_tokens: 10,
             completion_tokens: 5,
+            total_tokens: 18,
             prompt_cache_hit_tokens: 7,
             prompt_cache_miss_tokens: 3,
           },
@@ -341,6 +352,8 @@ describe("DeepseekProvider.complete (mocked)", () => {
       inputTokens: 10,
       outputTokens: 5,
       cacheReadInputTokens: 7,
+      contextTokens: 18,
+      contextWindow: DEEPSEEK_V4_CONTEXT_WINDOW,
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
@@ -421,7 +434,15 @@ describe("DeepseekProvider.stream (mocked SSE)", () => {
         }),
         frame({
           choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
-          usage: { prompt_tokens: 3, completion_tokens: 4, prompt_cache_hit_tokens: 1 },
+        }),
+        frame({
+          choices: [],
+          usage: {
+            prompt_tokens: 3,
+            completion_tokens: 4,
+            total_tokens: 9,
+            prompt_cache_hit_tokens: 1,
+          },
         }),
         "data: [DONE]\n\n",
       ]);
@@ -443,7 +464,13 @@ describe("DeepseekProvider.stream (mocked SSE)", () => {
       {
         type: "message_complete",
         stopReason: "end_turn",
-        usage: { inputTokens: 3, outputTokens: 4, cacheReadInputTokens: 1 },
+        usage: {
+          inputTokens: 3,
+          outputTokens: 4,
+          cacheReadInputTokens: 1,
+          contextTokens: 9,
+          contextWindow: DEEPSEEK_V4_CONTEXT_WINDOW,
+        },
       },
     ]);
   });
@@ -517,7 +544,12 @@ describe("DeepseekProvider.stream (mocked SSE)", () => {
       {
         type: "message_complete",
         stopReason: "tool_use",
-        usage: { inputTokens: 5, outputTokens: 6 },
+        usage: {
+          inputTokens: 5,
+          outputTokens: 6,
+          contextTokens: 11,
+          contextWindow: DEEPSEEK_V4_CONTEXT_WINDOW,
+        },
       },
     ]);
   });
@@ -590,7 +622,12 @@ describe("DeepseekProvider.stream (mocked SSE)", () => {
     expect(events.at(-1)).toEqual({
       type: "message_complete",
       stopReason: "tool_use",
-      usage: { inputTokens: 1, outputTokens: 1 },
+      usage: {
+        inputTokens: 1,
+        outputTokens: 1,
+        contextTokens: 2,
+        contextWindow: DEEPSEEK_V4_CONTEXT_WINDOW,
+      },
     });
   });
 });

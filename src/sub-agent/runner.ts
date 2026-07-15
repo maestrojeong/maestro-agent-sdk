@@ -111,8 +111,8 @@ export interface RunSubAgentResult {
  *      Parsed as a positive integer; non-numeric or non-positive values
  *      are ignored.
  *   2. `getNativeMaxOutputTokens(parentModel)` — the registry catalog
- *      default (sonnet=64K, opus=128K, deepseek-pro=32K, deepseek-flash=16K,
- *      unknown=32K). Matches the parent's default in `AIAgent`.
+ *      default (deepseek-pro=64K, deepseek-flash=32K, unknown=32K).
+ *      Matches the parent's default in `AIAgent`.
  *
  * The previous v0.1.20 implementation returned 4096 when the env var was
  * unset, which silently truncated long delegated reports the same way the
