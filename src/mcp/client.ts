@@ -3,6 +3,7 @@ import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { logger } from "@/platform/logger";
+import { MAESTRO_SDK_VERSION } from "@/platform/version";
 import type { ProviderToolSchema } from "@/providers/base";
 
 /**
@@ -56,7 +57,10 @@ export class MaestroMcpClient {
      */
     private readonly transportOverride?: Transport,
   ) {
-    this.client = new Client({ name: "maestro-agent-sdk", version: "0.1.0" }, { capabilities: {} });
+    this.client = new Client(
+      { name: "maestro-agent-sdk", version: MAESTRO_SDK_VERSION },
+      { capabilities: {} },
+    );
   }
 
   async start(): Promise<void> {
