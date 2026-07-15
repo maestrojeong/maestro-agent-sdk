@@ -1,12 +1,29 @@
 # Changelog
 
-## [0.1.44] - 2026-07-08
+## [0.1.45] - 2026-07-14
 
 ### Added
-- Claude Code-compatible `disallowedTools` option for `maestroProvider`, hiding denied tools from schemas/ToolSearch and blocking stale tool calls before dispatch.
+- Report the latest DeepSeek call's context occupancy through `TokenUsage.contextTokens` and the model's native 1M `TokenUsage.contextWindow`, while keeping `inputTokens` and `outputTokens` aggregated across the full agent turn.
+
+### Fixed
+- Send the actual `MAESTRO_SDK_VERSION` in MCP client initialization instead of the stale hard-coded `0.1.0` value.
+- Correct stale SDK documentation that listed the DeepSeek Pro/Flash output defaults at half of their configured 64K/32K values.
+- Restore the release history for 0.1.42 and 0.1.43, which had been accidentally folded into the 0.1.44 changelog entry.
+
+## [0.1.44] - 2026-07-08
 
 ### Fixed
 - Include sub-agent prompt overlays in published `dist/prompts/sub-agents/` artifacts so installed packages can load `explore.md`, `general.md`, and `plan.md` instead of falling back after `ENOENT`.
+
+## [0.1.43] - 2026-07-06
+
+### Added
+- Add a hard context cap before provider calls that trims oversized recent `tool_result` payloads on the wire while preserving the full canonical session history.
+
+## [0.1.42] - 2026-06-28
+
+### Added
+- Claude Code-compatible `disallowedTools` option for `maestroProvider`, hiding denied tools from schemas/ToolSearch and blocking stale tool calls before dispatch.
 
 ## [0.1.38] - 2026-06-11
 
