@@ -130,6 +130,7 @@ export async function* runConversation(
     cacheCreationInputTokens: 0,
     cacheReadInputTokens: 0,
   };
+  let lastContextUsage: Pick<TokenUsage, "contextTokens" | "contextWindow"> | undefined;
 
   while (iterations < maxIter) {
     if (agent.config.abortSignal?.aborted) {
@@ -482,6 +483,11 @@ export async function* runConversation(
     usageAcc.outputTokens += response.usage.outputTokens;
     usageAcc.cacheCreationInputTokens += response.usage.cacheCreationInputTokens ?? 0;
     usageAcc.cacheReadInputTokens += response.usage.cacheReadInputTokens ?? 0;
+    const { contextTokens, contextWindow } = response.usage;
+    lastContextUsage =
+      contextTokens !== undefined && contextWindow !== undefined
+        ? { contextTokens, contextWindow }
+        : undefined;
 
     if (assistantText.length > 0) {
       // Streaming emitted text_delta chunks during the run; this terminal
@@ -575,6 +581,7 @@ export async function* runConversation(
           ...(usageAcc.cacheReadInputTokens > 0 && {
             cacheReadInputTokens: usageAcc.cacheReadInputTokens,
           }),
+          ...(lastContextUsage ?? {}),
         },
       };
       // Final pass on the result text — matches claude-provider.ts:352 and
@@ -742,6 +749,7 @@ export async function* runConversation(
       ...(usageAcc.cacheReadInputTokens
         ? { cacheReadInputTokens: usageAcc.cacheReadInputTokens }
         : {}),
+      ...(lastContextUsage ?? {}),
     },
   };
 }
