@@ -2,7 +2,11 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { deepseekImageHandlingPrompt, shouldRegisterGeminiImageQATool } from "@/provider";
+import {
+  deepseekImageHandlingPrompt,
+  imageHandlingPrompt,
+  shouldRegisterGeminiImageQATool,
+} from "@/provider";
 import {
   __GEMINI_IMAGE_QA_DEFAULT_MODEL,
   createGeminiImageQATool,
@@ -181,5 +185,19 @@ describe("DeepSeek-only View registration policy", () => {
     expect(withoutGemini).not.toContain("call `View`");
 
     expect(deepseekImageHandlingPrompt("claude-sonnet-4-6", true)).toBeUndefined();
+  });
+});
+
+describe("Kimi vision-native registration policy", () => {
+  test("never registers the Gemini View fallback for Kimi models (native vision)", () => {
+    const env = { GEMINI_API_KEY: "gem-test" } as NodeJS.ProcessEnv;
+    expect(shouldRegisterGeminiImageQATool("kimi-k3", env)).toBe(false);
+    expect(shouldRegisterGeminiImageQATool("kimi-k2.6", env)).toBe(false);
+  });
+
+  test("adds a Kimi-specific image-handling prompt affirming native vision", () => {
+    const prompt = imageHandlingPrompt("kimi-k3", false) ?? "";
+    expect(prompt).toContain("supports vision natively");
+    expect(prompt).not.toContain("cannot inspect image pixels");
   });
 });

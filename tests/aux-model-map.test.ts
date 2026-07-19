@@ -20,4 +20,15 @@ describe("resolveAuxModel", () => {
     expect(resolveAuxModel("my-custom-llm")).toBe("my-custom-llm");
     expect(resolveAuxModel("")).toBe("");
   });
+
+  test("kimi-k3 / kimi-k2.7-code(-highspeed) → kimi-k2.6 (cheaper, thinking-optional tier)", () => {
+    expect(resolveAuxModel("kimi-k3")).toBe("kimi-k2.6");
+    expect(resolveAuxModel("kimi-k2.7-code")).toBe("kimi-k2.6");
+    expect(resolveAuxModel("kimi-k2.7-code-highspeed")).toBe("kimi-k2.6");
+  });
+
+  test("kimi-k2.6 → itself, kimi-k2.5 → itself", () => {
+    expect(resolveAuxModel("kimi-k2.6")).toBe("kimi-k2.6");
+    expect(resolveAuxModel("kimi-k2.5")).toBe("kimi-k2.5");
+  });
 });

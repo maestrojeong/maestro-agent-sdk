@@ -1,6 +1,14 @@
 import { unlinkSync } from "node:fs";
 import type { AgentRegistry } from "@/agents/contracts";
-import { MODEL_DEEPSEEK_V4_FLASH, MODEL_DEEPSEEK_V4_PRO } from "@/platform/config";
+import {
+  MODEL_DEEPSEEK_V4_FLASH,
+  MODEL_DEEPSEEK_V4_PRO,
+  MODEL_KIMI_K3,
+  MODEL_KIMI_K25,
+  MODEL_KIMI_K26,
+  MODEL_KIMI_K27_CODE,
+  MODEL_KIMI_K27_CODE_HIGHSPEED,
+} from "@/platform/config";
 import { logger } from "@/platform/logger";
 import { maestroSessionPath, writeMaestroRollout } from "@/session-store";
 import { readConversation } from "@/storage/conversations";
@@ -21,10 +29,24 @@ const ALIAS_MAP: Record<string, string> = {
   deepseek: MODEL_DEEPSEEK_V4_FLASH,
   "deepseek-flash": MODEL_DEEPSEEK_V4_FLASH,
   "deepseek-pro": MODEL_DEEPSEEK_V4_PRO,
+  // Kimi / Moonshot AI — `kimi`/`kimi-pro` land on the flagship K3 (1M ctx,
+  // vision, always-thinking); `kimi-flash` on the cheaper K2.6 general model;
+  // `kimi-code` on the coding-specialized K2.7-code tier.
+  kimi: MODEL_KIMI_K3,
+  "kimi-pro": MODEL_KIMI_K3,
+  "kimi-flash": MODEL_KIMI_K26,
+  "kimi-code": MODEL_KIMI_K27_CODE,
 };
 
 const VALID_ALIASES = new Set(Object.keys(ALIAS_MAP));
-const VALID_FULL_IDS = new Set(Object.values(ALIAS_MAP));
+// Kimi's K2.5 and K2.7-code-highspeed tiers aren't aliased above (no short
+// nickname routes to them) but must still validate as full model ids so a
+// caller can pin them explicitly via `AgentQueryOptions.model`.
+const VALID_FULL_IDS = new Set([
+  ...Object.values(ALIAS_MAP),
+  MODEL_KIMI_K25,
+  MODEL_KIMI_K27_CODE_HIGHSPEED,
+]);
 const VALID_EFFORTS = new Set<EffortLevel>(MAESTRO_EFFORT_VALUES);
 
 /**
@@ -34,12 +56,23 @@ const VALID_EFFORTS = new Set<EffortLevel>(MAESTRO_EFFORT_VALUES);
  * avoid runaway cost/wall-time on a single turn:
  *   - `deepseek-v4-pro`   → 65_536
  *   - `deepseek-v4-flash` → 32_768
+ * Kimi's docs mark `max_tokens` deprecated in favor of `max_completion_tokens`
+ * but still honor it; we keep conservative defaults here too:
+ *   - `kimi-k3`                    → 65_536 (native cap far higher, 1M ctx)
+ *   - `kimi-k2.7-code`(-highspeed) → 32_768
+ *   - `kimi-k2.6` / `kimi-k2.5`    → 32_768
  * Unknown ids fall back to `DEFAULT_MAX_OUTPUT_TOKENS` (32_768).
  */
 export const MODEL_MAX_OUTPUT_TOKENS: Readonly<Record<string, number>> = {
   // DeepSeek V4 — conservative defaults below the 384K native cap (see docstring).
   [MODEL_DEEPSEEK_V4_PRO]: 65_536,
   [MODEL_DEEPSEEK_V4_FLASH]: 32_768,
+  // Kimi / Moonshot AI — see docstring above.
+  [MODEL_KIMI_K3]: 65_536,
+  [MODEL_KIMI_K27_CODE]: 32_768,
+  [MODEL_KIMI_K27_CODE_HIGHSPEED]: 32_768,
+  [MODEL_KIMI_K26]: 32_768,
+  [MODEL_KIMI_K25]: 32_768,
 } as const;
 
 /**
