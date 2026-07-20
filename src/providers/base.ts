@@ -162,6 +162,12 @@ export type ProviderStreamChunk =
 export interface Provider {
   complete(opts: ProviderCompleteOptions): Promise<ProviderResponse>;
   /**
+   * Return the native context window for a model handled by this provider.
+   * The agent loop uses this for compaction and hard-cap thresholds. Hosts can
+   * still override it globally with `MAESTRO_CONTEXT_WINDOW`.
+   */
+  contextWindowForModel?(model: string): number;
+  /**
    * Optional streaming entrypoint. Yields `ProviderStreamChunk`s as the API
    * produces them so the agent loop can surface `text_delta` UnifiedEvents
    * to telegram in real time, matching claude/codex's progressive typing

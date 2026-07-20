@@ -20,4 +20,9 @@ describe("resolveAuxModel", () => {
     expect(resolveAuxModel("my-custom-llm")).toBe("my-custom-llm");
     expect(resolveAuxModel("")).toBe("");
   });
+
+  test("Kimi models compact with the explicitly selected model", () => {
+    expect(resolveAuxModel("kimi-k3")).toBe("kimi-k3");
+    expect(resolveAuxModel("kimi-k2.7-code")).toBe("kimi-k2.7-code");
+  });
 });

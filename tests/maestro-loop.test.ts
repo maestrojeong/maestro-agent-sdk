@@ -72,6 +72,40 @@ describe("runConversation", () => {
     expect(messages[1].role).toBe("assistant");
   });
 
+  test("uses the provider model's context window for compaction thresholds", async () => {
+    const originalOverride = process.env.MAESTRO_CONTEXT_WINDOW;
+    delete process.env.MAESTRO_CONTEXT_WINDOW;
+    try {
+      const { provider, calls } = makeProvider([
+        {
+          content: [{ type: "text", text: "done" }],
+          stopReason: "end_turn",
+          usage: { inputTokens: 135_000, outputTokens: 1 },
+        },
+      ]);
+      provider.contextWindowForModel = () => 1_000_000;
+      const agent = new AIAgent(provider, new ToolRegistry(), {
+        model: "kimi-k3",
+        systemPrompt: "",
+      });
+      const messages: ProviderMessage[] = Array.from({ length: 12 }, (_, i) => ({
+        role: i % 2 === 0 ? ("user" as const) : ("assistant" as const),
+        content: `${i}:${"x".repeat(45_000)}`,
+      }));
+
+      await collect(runConversation(agent, messages));
+
+      expect(calls).toHaveLength(1);
+      expect(calls[0].messages).toHaveLength(12);
+    } finally {
+      if (originalOverride === undefined) {
+        delete process.env.MAESTRO_CONTEXT_WINDOW;
+      } else {
+        process.env.MAESTRO_CONTEXT_WINDOW = originalOverride;
+      }
+    }
+  });
+
   test("tool_use round-trip: dispatch + continue + final text", async () => {
     const { provider, calls } = makeProvider([
       {

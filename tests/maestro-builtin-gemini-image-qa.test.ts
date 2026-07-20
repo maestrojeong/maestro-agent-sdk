@@ -2,7 +2,11 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { deepseekImageHandlingPrompt, shouldRegisterGeminiImageQATool } from "@/provider";
+import {
+  deepseekImageHandlingPrompt,
+  imageHandlingPrompt,
+  shouldRegisterGeminiImageQATool,
+} from "@/provider";
 import {
   __GEMINI_IMAGE_QA_DEFAULT_MODEL,
   createGeminiImageQATool,
@@ -181,5 +185,32 @@ describe("DeepSeek-only View registration policy", () => {
     expect(withoutGemini).not.toContain("call `View`");
 
     expect(deepseekImageHandlingPrompt("claude-sonnet-4-6", true)).toBeUndefined();
+  });
+});
+
+describe("Kimi vision-native registration policy", () => {
+  test("never registers the Gemini View fallback for Kimi models (native vision)", () => {
+    const env = { GEMINI_API_KEY: "gem-test" } as NodeJS.ProcessEnv;
+    expect(shouldRegisterGeminiImageQATool("kimi-k3", env)).toBe(false);
+    expect(shouldRegisterGeminiImageQATool("kimi-k2.6", env)).toBe(false);
+  });
+
+  test("adds a Kimi-specific image-handling prompt affirming native vision", () => {
+    const prompt = imageHandlingPrompt("kimi-k3", false) ?? "";
+    expect(prompt).toContain("native vision");
+    expect(prompt).not.toContain("cannot inspect image pixels");
+  });
+
+  test("Kimi prompt tells the model to Read on-disk images (no View fallback)", () => {
+    // Kimi has no Gemini `View` tool; on-disk images must be loaded via `Read`
+    // so the tool_result image block reaches Kimi's native vision. The prompt
+    // must name `Read` explicitly rather than relying on the model's instinct.
+    for (const model of ["kimi-k3", "kimi-k2.7-code"]) {
+      const prompt = imageHandlingPrompt(model, false) ?? "";
+      expect(prompt).toContain("`Read`");
+      // Must not instruct the model to call the Gemini `View` fallback — that
+      // tool is never registered for Kimi.
+      expect(prompt).not.toContain("call `View`");
+    }
   });
 });

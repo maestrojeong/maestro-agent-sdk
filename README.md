@@ -5,7 +5,7 @@
 [![license](https://img.shields.io/npm/l/maestro-agent-sdk.svg)](./LICENSE)
 
 **Embeddable agent SDK — skills, memory, MCP, and host-controlled guardrails out of the box.**
-DeepSeek V4 provider support. No CLI, no gateway, no host lock-in.
+DeepSeek V4 and Kimi K3/K2.7 Code provider support. No CLI, no gateway, no host lock-in.
 
 ![Multi-Agent SDK comparison](./assets/multi-agent-comparison.png)
 
@@ -13,12 +13,13 @@ DeepSeek V4 provider support. No CLI, no gateway, no host lock-in.
 
 > **Status:** Early port (v0.1.x). Active development. API surface may change before 1.0.
 
-A DeepSeek-backed agent runtime. Inject your own logger/MCP resolver/hooks, and embed it in any host process — no framework, no lock-in.
+A provider-backed agent runtime. Inject your own logger/MCP resolver/hooks, and embed it in any host process — no framework, no lock-in.
 
 ## What's in the box
 
 - **Agent loop** — provider-driven tool-calling loop with iteration cap, abort signal, LLM pre/post guardrail hooks, and event stream.
 - **DeepSeek provider** — first-class adapter for DeepSeek V4 with a provider-neutral message schema under the loop.
+- **Kimi provider** — K3 and K2.7 Code support with preserved thinking, native vision, streaming, and tool calls.
 - **Built-in tools** — `bash`, `Read`, `Write`, `Edit`, `MultiEdit`, `Glob`, `Grep`, `Agent` (sub-agent delegation), `TaskCreate`/`TaskUpdate`/`TaskList`/`TaskGet`, `WebFetch` (optional SSRF policy via `createWebFetchTool`), `skill_view`, `skill_write`, `View` (Gemini image QA — DeepSeek only, see [Image handling](#image-handling-deepseek)). Bring your own via `ToolRegistry`. Grep shells out to ripgrep (`rg`) so install it if you want the tool active; the SDK surfaces a structured error pointing to the install path when missing. Tool primitives are also importable from the `maestro-agent-sdk/tools` subpath when you don't need the rest of the runtime.
 - **MCP** — built-in client pool (stdio + SSE) so any MCP server (`@modelcontextprotocol/sdk`) shows up as tools.
 - **Skills** — per-workspace `.skills/<skillKey>/<name>/skill.md` packages with FTS-style indexing, on-demand body load (`skill_view`), and agent-autonomous authoring (`skill_write`).
@@ -71,6 +72,23 @@ for await (const event of runConversation(agent, "Summarize today's news.")) {
   if (event.type === "tool_use") console.error(`\n[tool] ${event.name}`);
 }
 ```
+
+### Kimi
+
+Set `MOONSHOT_API_KEY`, then select `kimi`/`kimi-pro` for K3 or `kimi-code`
+for K2.7 Code through `maestroProvider()`. Direct provider usage is also
+available from the root package or `maestro-agent-sdk/providers/kimi`:
+
+```ts
+import { KimiProvider } from "maestro-agent-sdk";
+
+const provider = KimiProvider.fromEnv();
+```
+
+The default endpoint is `https://api.moonshot.ai/v1`. Set
+`MOONSHOT_BASE_URL=https://api.moonshot.cn/v1` for the China platform or to
+route through a compatible proxy. Kimi vision accepts base64 and `ms://` file
+references; public image URLs are rejected before the request is sent.
 
 ## Image handling (DeepSeek)
 
@@ -136,6 +154,8 @@ The SDK resolves its data directory at module load. Override via env var
 | Env var | Default | What it does |
 |---|---|---|
 | `MAESTRO_DATA_DIR` | `~/.maestro` | Where session JSONLs and todo stores live. `maestroSessionsDir()` resolves to `<DATA_DIR>/sessions`. |
+| `MOONSHOT_API_KEY` | — | Enables Kimi K3 and K2.7 Code requests. |
+| `MOONSHOT_BASE_URL` | `https://api.moonshot.ai/v1` | Overrides the Kimi API base URL for regional endpoints or proxies. |
 | `GEMINI_API_KEY` | — | Enables the `View` image-QA tool when using a DeepSeek model. See [Image handling](#image-handling-deepseek). |
 
 Everything else is per-call: pass `cwd`, `model`, `effort`, etc. through

@@ -1,6 +1,11 @@
 import { unlinkSync } from "node:fs";
 import type { AgentRegistry } from "@/agents/contracts";
-import { MODEL_DEEPSEEK_V4_FLASH, MODEL_DEEPSEEK_V4_PRO } from "@/platform/config";
+import {
+  MODEL_DEEPSEEK_V4_FLASH,
+  MODEL_DEEPSEEK_V4_PRO,
+  MODEL_KIMI_K3,
+  MODEL_KIMI_K27_CODE,
+} from "@/platform/config";
 import { logger } from "@/platform/logger";
 import { maestroSessionPath, writeMaestroRollout } from "@/session-store";
 import { readConversation } from "@/storage/conversations";
@@ -21,6 +26,10 @@ const ALIAS_MAP: Record<string, string> = {
   deepseek: MODEL_DEEPSEEK_V4_FLASH,
   "deepseek-flash": MODEL_DEEPSEEK_V4_FLASH,
   "deepseek-pro": MODEL_DEEPSEEK_V4_PRO,
+  // Kimi / Moonshot AI — flagship K3 and coding-specialized K2.7 Code only.
+  kimi: MODEL_KIMI_K3,
+  "kimi-pro": MODEL_KIMI_K3,
+  "kimi-code": MODEL_KIMI_K27_CODE,
 };
 
 const VALID_ALIASES = new Set(Object.keys(ALIAS_MAP));
@@ -34,12 +43,19 @@ const VALID_EFFORTS = new Set<EffortLevel>(MAESTRO_EFFORT_VALUES);
  * avoid runaway cost/wall-time on a single turn:
  *   - `deepseek-v4-pro`   → 65_536
  *   - `deepseek-v4-flash` → 32_768
+ * K3 uses `max_completion_tokens`; K2.7 Code uses `max_tokens`. We keep
+ * conservative defaults for both:
+ *   - `kimi-k3`                    → 65_536 (native cap far higher, 1M ctx)
+ *   - `kimi-k2.7-code`             → 32_768
  * Unknown ids fall back to `DEFAULT_MAX_OUTPUT_TOKENS` (32_768).
  */
 export const MODEL_MAX_OUTPUT_TOKENS: Readonly<Record<string, number>> = {
   // DeepSeek V4 — conservative defaults below the 384K native cap (see docstring).
   [MODEL_DEEPSEEK_V4_PRO]: 65_536,
   [MODEL_DEEPSEEK_V4_FLASH]: 32_768,
+  // Kimi / Moonshot AI — see docstring above.
+  [MODEL_KIMI_K3]: 65_536,
+  [MODEL_KIMI_K27_CODE]: 32_768,
 } as const;
 
 /**

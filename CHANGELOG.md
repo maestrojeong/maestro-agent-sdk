@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.46] - 2026-07-19
+
+### Added
+- **Kimi (Moonshot AI) provider** — new `KimiProvider` (`src/providers/kimi.ts`) supporting `kimi-k3` and `kimi-k2.7-code` via the OpenAI-compatible `https://api.moonshot.ai/v1/chat/completions` endpoint. Reads the API key from `MOONSHOT_API_KEY`; `MOONSHOT_BASE_URL` can target a regional endpoint or proxy.
+  - New aliases: `kimi` / `kimi-pro` → `kimi-k3`, `kimi-code` → `kimi-k2.7-code`.
+  - K3 and K2.7 Code always run in thinking mode and preserve `reasoning_content` on every assistant turn.
+  - Native vision support — image blocks translate to real `image_url` parts instead of DeepSeek's text-placeholder fallback, so Kimi models never need the `View`/Gemini QA fallback.
+  - Compaction and hard-cap thresholds use each model's native context window; Kimi compaction stays on the selected model.
+
 ## [0.1.45] - 2026-07-14
 
 ### Added

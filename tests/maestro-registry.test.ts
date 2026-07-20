@@ -2,7 +2,12 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeAll, describe, expect, test } from "vitest";
-import { MODEL_DEEPSEEK_V4_FLASH, MODEL_DEEPSEEK_V4_PRO } from "@/platform/config";
+import {
+  MODEL_DEEPSEEK_V4_FLASH,
+  MODEL_DEEPSEEK_V4_PRO,
+  MODEL_KIMI_K3,
+  MODEL_KIMI_K27_CODE,
+} from "@/platform/config";
 import { maestroRegistry } from "@/registry";
 import { loadMaestroSession, maestroSessionPath, writeMaestroRollout } from "@/session-store";
 import { appendConversationEvent, getConversationPath } from "@/storage/conversations";
@@ -42,6 +47,21 @@ describe("maestroRegistry alias map", () => {
     // Contract: expandModelAlias returns the input verbatim for unknown
     // names so the caller can still hand a raw full model id to the API.
     expect(maestroRegistry.expandModelAlias("custom-id")).toBe("custom-id");
+  });
+
+  test("expands kimi aliases", () => {
+    expect(maestroRegistry.expandModelAlias("kimi")).toBe(MODEL_KIMI_K3);
+    expect(maestroRegistry.expandModelAlias("kimi-pro")).toBe(MODEL_KIMI_K3);
+    expect(maestroRegistry.expandModelAlias("kimi-code")).toBe(MODEL_KIMI_K27_CODE);
+  });
+
+  test("validateModel accepts only K3 and K2.7 Code Kimi models", () => {
+    expect(maestroRegistry.validateModel("kimi")).toBe(true);
+    expect(maestroRegistry.validateModel(MODEL_KIMI_K3)).toBe(true);
+    expect(maestroRegistry.validateModel(MODEL_KIMI_K27_CODE)).toBe(true);
+    expect(maestroRegistry.validateModel("kimi-k2.6")).toBe(false);
+    expect(maestroRegistry.validateModel("kimi-k2.5")).toBe(false);
+    expect(maestroRegistry.validateModel("kimi-k2.7-code-highspeed")).toBe(false);
   });
 });
 

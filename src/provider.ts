@@ -18,6 +18,7 @@ bootstrapHostPath();
 
 import type { Provider, ProviderContentBlock, ProviderMessage } from "@/providers/base";
 import { DeepseekProvider } from "@/providers/deepseek";
+import { KimiProvider } from "@/providers/kimi";
 import { maestroRegistry } from "@/registry";
 import {
   isWellFormedMessage,
@@ -433,7 +434,7 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
   // The persona is a pure function of `resolvedEffort` so it stays
   // prefix-cache stable across every call at a given level.
   const personaBlock = effortToPersonaPrompt(resolvedEffort);
-  const imageHandlingBlock = deepseekImageHandlingPrompt(
+  const imageHandlingBlock = imageHandlingPrompt(
     resolvedModel,
     tools.has("View") && !tools.isDisallowed("View"),
   );
@@ -751,15 +752,23 @@ export function wrapUpOverlayLine(remaining: number, max: number): string | null
   return "[wrap-up zone] Tools are now disabled and the thinking budget is trimmed. No further tool calls are possible — synthesize the final answer from existing context.";
 }
 
-export function providerForModel(_resolvedModel: string): Provider {
+export function providerForModel(resolvedModel: string): Provider {
+  if (resolvedModel === "kimi-k3" || resolvedModel === "kimi-k2.7-code") {
+    return KimiProvider.fromEnv();
+  }
+  if (resolvedModel.startsWith("kimi-")) {
+    throw new Error(`Maestro: unsupported Kimi model '${resolvedModel}'`);
+  }
   return DeepseekProvider.fromEnv();
 }
 
 /**
  * DeepSeek cannot currently consume Maestro image blocks natively in this
  * adapter, so when a Gemini API key is configured we expose a narrow vision
- * fallback tool only for DeepSeek models. Other providers keep their existing
- * tool menu and avoid unnecessary third-party image upload/cost.
+ * fallback tool only for DeepSeek models. Kimi models (K3/K2.7 Code)
+ * support vision natively via `kimi.ts`'s `image_url` translation, so they
+ * never need the Gemini fallback. Other providers keep their existing tool
+ * menu and avoid unnecessary third-party image upload/cost.
  */
 export function shouldRegisterGeminiImageQATool(
   resolvedModel: string,
@@ -769,10 +778,16 @@ export function shouldRegisterGeminiImageQATool(
   return resolvedModel.startsWith("deepseek-") && typeof key === "string" && key.trim().length > 0;
 }
 
-export function deepseekImageHandlingPrompt(
+export function imageHandlingPrompt(
   resolvedModel: string,
   geminiImageQaAvailable: boolean,
 ): string | undefined {
+  if (resolvedModel === "kimi-k3" || resolvedModel === "kimi-k2.7-code") {
+    return [
+      "## Image Handling",
+      "Kimi has native vision: inline images are visible directly, and on-disk images become visible once loaded with `Read`.",
+    ].join("\n");
+  }
   if (!resolvedModel.startsWith("deepseek-")) return undefined;
   const fallback = geminiImageQaAvailable
     ? "When the user asks about an attached image file path, call `View` with the absolute `image_path` and a focused `question` before answering."
@@ -784,6 +799,11 @@ export function deepseekImageHandlingPrompt(
     "Do not claim you inspected an image unless a vision/OCR tool returned evidence.",
   ].join("\n");
 }
+
+/** @deprecated Use `imageHandlingPrompt` — renamed when Kimi support was added
+ *  since the prompt is no longer DeepSeek-specific. Kept as an alias so any
+ *  external caller importing the old name doesn't break across the bump. */
+export const deepseekImageHandlingPrompt = imageHandlingPrompt;
 
 /**
  * Recognize the multiple shapes Node + WHATWG fetch use when a request is

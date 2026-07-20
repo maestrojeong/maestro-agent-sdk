@@ -30,6 +30,10 @@ export const DATA_DIR: string = process.env.MAESTRO_DATA_DIR
 export const MODEL_DEEPSEEK_V4_PRO: string = "deepseek-v4-pro";
 export const MODEL_DEEPSEEK_V4_FLASH: string = "deepseek-v4-flash";
 
+// Kimi / Moonshot AI. OpenAI-compatible chat-completions API.
+export const MODEL_KIMI_K3: string = "kimi-k3";
+export const MODEL_KIMI_K27_CODE: string = "kimi-k2.7-code";
+
 export const FILE_TAG_REGEX: RegExp = /\[FILE:(\/[^\]]+)\]/gi;
 
 // Make sure DATA_DIR exists before any tool/skill code tries to readdir into
