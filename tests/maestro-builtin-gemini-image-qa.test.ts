@@ -197,7 +197,20 @@ describe("Kimi vision-native registration policy", () => {
 
   test("adds a Kimi-specific image-handling prompt affirming native vision", () => {
     const prompt = imageHandlingPrompt("kimi-k3", false) ?? "";
-    expect(prompt).toContain("supports vision natively");
+    expect(prompt).toContain("native vision");
     expect(prompt).not.toContain("cannot inspect image pixels");
+  });
+
+  test("Kimi prompt tells the model to Read on-disk images (no View fallback)", () => {
+    // Kimi has no Gemini `View` tool; on-disk images must be loaded via `Read`
+    // so the tool_result image block reaches Kimi's native vision. The prompt
+    // must name `Read` explicitly rather than relying on the model's instinct.
+    for (const model of ["kimi-k3", "kimi-k2.7-code"]) {
+      const prompt = imageHandlingPrompt(model, false) ?? "";
+      expect(prompt).toContain("`Read`");
+      // Must not instruct the model to call the Gemini `View` fallback — that
+      // tool is never registered for Kimi.
+      expect(prompt).not.toContain("call `View`");
+    }
   });
 });

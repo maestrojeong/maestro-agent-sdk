@@ -4,8 +4,8 @@ import {
   contextWindowForKimiModel,
   effortForKimi,
   isAlwaysThinkingKimiModel,
-  KIMI_K2X_CONTEXT_WINDOW,
   KIMI_K3_CONTEXT_WINDOW,
+  KIMI_K27_CONTEXT_WINDOW,
   KimiProvider,
   mapStopReason,
   translateMessagesToOpenAI,
@@ -26,6 +26,7 @@ vi.mock("@/providers/node-fetch", async (importOriginal) => {
 
 const ORIGINAL_FETCH = globalThis.fetch;
 const ORIGINAL_KEY = process.env.MOONSHOT_API_KEY;
+const ORIGINAL_BASE_URL = process.env.MOONSHOT_BASE_URL;
 
 afterEach(() => {
   globalThis.fetch = ORIGINAL_FETCH;
@@ -33,6 +34,11 @@ afterEach(() => {
     delete process.env.MOONSHOT_API_KEY;
   } else {
     process.env.MOONSHOT_API_KEY = ORIGINAL_KEY;
+  }
+  if (ORIGINAL_BASE_URL === undefined) {
+    delete process.env.MOONSHOT_BASE_URL;
+  } else {
+    process.env.MOONSHOT_BASE_URL = ORIGINAL_BASE_URL;
   }
 });
 
@@ -42,27 +48,53 @@ describe("KimiProvider.fromEnv", () => {
     expect(() => KimiProvider.fromEnv()).toThrow(/MOONSHOT_API_KEY/);
   });
 
+  test("rejects a whitespace-only MOONSHOT_API_KEY", () => {
+    process.env.MOONSHOT_API_KEY = "   ";
+    expect(() => KimiProvider.fromEnv()).toThrow(/MOONSHOT_API_KEY/);
+  });
+
   test("returns instance when key is set", () => {
     process.env.MOONSHOT_API_KEY = "sk-test-xxx";
     const p = KimiProvider.fromEnv();
     expect(p).toBeInstanceOf(KimiProvider);
   });
+
+  test("honors MOONSHOT_BASE_URL without duplicating trailing slashes", async () => {
+    process.env.MOONSHOT_API_KEY = "sk-test-xxx";
+    process.env.MOONSHOT_BASE_URL = "https://proxy.example/v1/";
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      expect(String(url)).toBe("https://proxy.example/v1/chat/completions");
+      return new Response(
+        JSON.stringify({
+          choices: [
+            { index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    await KimiProvider.fromEnv().complete({
+      model: "kimi-k3",
+      messages: [{ role: "user", content: "hi" }],
+      system: "",
+    });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
 });
 
 describe("isAlwaysThinkingKimiModel / contextWindowForKimiModel", () => {
-  test("K3 and K2.7-code(-highspeed) always think; K2.6/K2.5 do not", () => {
+  test("K3 and K2.7 Code always think", () => {
     expect(isAlwaysThinkingKimiModel("kimi-k3")).toBe(true);
     expect(isAlwaysThinkingKimiModel("kimi-k2.7-code")).toBe(true);
-    expect(isAlwaysThinkingKimiModel("kimi-k2.7-code-highspeed")).toBe(true);
     expect(isAlwaysThinkingKimiModel("kimi-k2.6")).toBe(false);
-    expect(isAlwaysThinkingKimiModel("kimi-k2.5")).toBe(false);
   });
 
   test("K3 gets the 1M context window; K2.x family gets 256K", () => {
     expect(contextWindowForKimiModel("kimi-k3")).toBe(KIMI_K3_CONTEXT_WINDOW);
-    expect(contextWindowForKimiModel("kimi-k2.7-code")).toBe(KIMI_K2X_CONTEXT_WINDOW);
-    expect(contextWindowForKimiModel("kimi-k2.6")).toBe(KIMI_K2X_CONTEXT_WINDOW);
-    expect(contextWindowForKimiModel("kimi-k2.5")).toBe(KIMI_K2X_CONTEXT_WINDOW);
+    expect(contextWindowForKimiModel("kimi-k2.7-code")).toBe(KIMI_K27_CONTEXT_WINDOW);
+    expect(() => contextWindowForKimiModel("kimi-k2.6")).toThrow(/unsupported model/);
   });
 });
 
@@ -76,9 +108,8 @@ describe("effortForKimi", () => {
     expect(effortForKimi(undefined, "kimi-k2.7-code")).toEqual({ thinking: { type: "enabled" } });
   });
 
-  test("K2.6/K2.5 toggle thinking based on requested effort", () => {
-    expect(effortForKimi("high", "kimi-k2.6")).toEqual({ thinking: { type: "enabled" } });
-    expect(effortForKimi(undefined, "kimi-k2.6")).toBeUndefined();
+  test("unsupported Kimi tiers do not produce thinking parameters", () => {
+    expect(effortForKimi("high", "kimi-k2.6")).toBeUndefined();
   });
 });
 
@@ -134,7 +165,7 @@ describe("translateMessagesToOpenAI", () => {
     ]);
   });
 
-  test("K2.6 (alwaysThinking=false): thinking on a final-answer turn is dropped", () => {
+  test("non-preserved mode drops thinking on a final-answer turn", () => {
     const msgs: ProviderMessage[] = [
       {
         role: "assistant",
@@ -149,7 +180,7 @@ describe("translateMessagesToOpenAI", () => {
     expect(asst.content).toBe("final answer");
   });
 
-  test("K2.6 (alwaysThinking=false): thinking is preserved on a tool-calling turn", () => {
+  test("non-preserved mode retains thinking on a tool-calling turn", () => {
     const msgs: ProviderMessage[] = [
       {
         role: "assistant",
@@ -164,7 +195,7 @@ describe("translateMessagesToOpenAI", () => {
   });
 
   // CRITICAL: K3/K2.7-code require reasoning_content on EVERY assistant turn
-  // — the opposite of DeepSeek's/K2.6's "tool-calling turns only" rule.
+  // — the opposite of DeepSeek's "tool-calling turns only" rule.
   // Dropping it on a final-answer turn produces a 400 on the next call.
   test("K3/K2.7-code (alwaysThinking=true): thinking is preserved even on a final-answer turn", () => {
     const msgs: ProviderMessage[] = [
@@ -243,17 +274,43 @@ describe("Kimi multimodal translation (vision-native, unlike DeepSeek)", () => {
     });
   });
 
-  test("user-message URL image → image_url part with the URL passed through", () => {
+  test("public image URLs are rejected before calling Kimi", () => {
     const messages: ProviderMessage[] = [
       {
         role: "user",
         content: [{ type: "image", source: { type: "url", url: "https://example.com/img.jpg" } }],
       },
     ];
-    const out = translateMessagesToOpenAI("", messages, false);
-    expect(out[0].content).toEqual([
-      { type: "image_url", image_url: { url: "https://example.com/img.jpg" } },
-    ]);
+    expect(() => translateMessagesToOpenAI("", messages, true)).toThrow(/public image URLs/);
+  });
+
+  test("ms:// image references are passed through", () => {
+    const messages: ProviderMessage[] = [
+      {
+        role: "user",
+        content: [{ type: "image", source: { type: "url", url: "ms://file_123" } }],
+      },
+    ];
+    const out = translateMessagesToOpenAI("", messages, true);
+    expect(out[0].content).toEqual([{ type: "image_url", image_url: { url: "ms://file_123" } }]);
+  });
+
+  test("malformed image sources are rejected instead of sending empty image data", () => {
+    const missingUrl: ProviderMessage[] = [
+      {
+        role: "user",
+        content: [{ type: "image", source: { type: "url" } }],
+      },
+    ];
+    const missingData: ProviderMessage[] = [
+      {
+        role: "user",
+        content: [{ type: "image", source: { type: "base64", media_type: "image/png" } }],
+      },
+    ];
+
+    expect(() => translateMessagesToOpenAI("", missingUrl, true)).toThrow(/missing its url/);
+    expect(() => translateMessagesToOpenAI("", missingData, true)).toThrow(/missing its data/);
   });
 
   test("user-message PDF document still falls back to a text placeholder", () => {
@@ -298,7 +355,7 @@ describe("KimiProvider.complete (mocked)", () => {
   test("K3: posts reasoning_effort:max and parses cached_tokens usage", async () => {
     process.env.MOONSHOT_API_KEY = "sk-test-xxx";
     const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
-      expect(String(url)).toBe("https://api.moonshot.cn/v1/chat/completions");
+      expect(String(url)).toBe("https://api.moonshot.ai/v1/chat/completions");
       const body = JSON.parse(String(init?.body));
       expect(body.model).toBe("kimi-k3");
       expect(body.messages).toEqual([
@@ -307,6 +364,8 @@ describe("KimiProvider.complete (mocked)", () => {
       ]);
       expect(body.reasoning_effort).toBe("max");
       expect(body.thinking).toBeUndefined();
+      expect(body.max_completion_tokens).toBe(4096);
+      expect(body.max_tokens).toBeUndefined();
       return new Response(
         JSON.stringify({
           id: "chatcmpl-1",
@@ -346,14 +405,16 @@ describe("KimiProvider.complete (mocked)", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  test("K2.6: omits thinking/reasoning_effort when no effort requested", async () => {
+  test("K2.7 Code always enables thinking and uses max_tokens", async () => {
     process.env.MOONSHOT_API_KEY = "sk-test-xxx";
     const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const headers = (init?.headers ?? {}) as Record<string, string>;
       expect(headers.authorization).toBe("Bearer sk-test-xxx");
       const body = JSON.parse(String(init?.body));
-      expect(body.thinking).toBeUndefined();
+      expect(body.thinking).toEqual({ type: "enabled" });
       expect(body.reasoning_effort).toBeUndefined();
+      expect(body.max_tokens).toBe(4096);
+      expect(body.max_completion_tokens).toBeUndefined();
       return new Response(
         JSON.stringify({
           choices: [
@@ -367,7 +428,7 @@ describe("KimiProvider.complete (mocked)", () => {
 
     const provider = KimiProvider.fromEnv();
     await provider.complete({
-      model: "kimi-k2.6",
+      model: "kimi-k2.7-code",
       messages: [{ role: "user", content: "hi" }],
       system: "",
     });
@@ -494,7 +555,7 @@ describe("KimiProvider.stream (mocked SSE)", () => {
     const provider = KimiProvider.fromEnv();
     const events = [];
     for await (const ev of provider.stream({
-      model: "kimi-k2.6",
+      model: "kimi-k2.7-code",
       messages: [{ role: "user", content: "hi" }],
       system: "",
     })) {
@@ -511,9 +572,61 @@ describe("KimiProvider.stream (mocked SSE)", () => {
           inputTokens: 5,
           outputTokens: 6,
           contextTokens: 11,
-          contextWindow: KIMI_K2X_CONTEXT_WINDOW,
+          contextWindow: KIMI_K27_CONTEXT_WINDOW,
         },
       },
+    ]);
+  });
+
+  test("preserves tool arguments that arrive before id/name and parses CRLF SSE frames", async () => {
+    process.env.MOONSHOT_API_KEY = "sk-test-xxx";
+    const crlfFrame = (payload: object): string => `data: ${JSON.stringify(payload)}\r\n\r\n`;
+    globalThis.fetch = vi.fn(async () => {
+      return sseResponse([
+        crlfFrame({
+          choices: [
+            {
+              index: 0,
+              delta: { tool_calls: [{ index: 0, function: { arguments: '{"msg":' } }] },
+              finish_reason: null,
+            },
+          ],
+        }),
+        crlfFrame({
+          choices: [
+            {
+              index: 0,
+              delta: {
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: "call_late",
+                    function: { name: "echo", arguments: '"hi"}' },
+                  },
+                ],
+              },
+              finish_reason: null,
+            },
+          ],
+        }),
+        crlfFrame({ choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] }),
+        "data: [DONE]\r\n\r\n",
+      ]);
+    }) as unknown as typeof fetch;
+
+    const events = [];
+    for await (const event of KimiProvider.fromEnv().stream({
+      model: "kimi-k2.7-code",
+      messages: [{ role: "user", content: "hi" }],
+      system: "",
+    })) {
+      events.push(event);
+    }
+
+    expect(events.slice(0, 3)).toEqual([
+      { type: "tool_use_start", id: "call_late", name: "echo" },
+      { type: "tool_use_input_delta", id: "call_late", partial_json: '{"msg":"hi"}' },
+      { type: "tool_use_complete", id: "call_late", name: "echo" },
     ]);
   });
 });

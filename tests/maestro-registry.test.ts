@@ -6,10 +6,7 @@ import {
   MODEL_DEEPSEEK_V4_FLASH,
   MODEL_DEEPSEEK_V4_PRO,
   MODEL_KIMI_K3,
-  MODEL_KIMI_K25,
-  MODEL_KIMI_K26,
   MODEL_KIMI_K27_CODE,
-  MODEL_KIMI_K27_CODE_HIGHSPEED,
 } from "@/platform/config";
 import { maestroRegistry } from "@/registry";
 import { loadMaestroSession, maestroSessionPath, writeMaestroRollout } from "@/session-store";
@@ -55,18 +52,16 @@ describe("maestroRegistry alias map", () => {
   test("expands kimi aliases", () => {
     expect(maestroRegistry.expandModelAlias("kimi")).toBe(MODEL_KIMI_K3);
     expect(maestroRegistry.expandModelAlias("kimi-pro")).toBe(MODEL_KIMI_K3);
-    expect(maestroRegistry.expandModelAlias("kimi-flash")).toBe(MODEL_KIMI_K26);
     expect(maestroRegistry.expandModelAlias("kimi-code")).toBe(MODEL_KIMI_K27_CODE);
   });
 
-  test("validateModel accepts kimi aliases and full ids (incl. unaliased tiers)", () => {
+  test("validateModel accepts only K3 and K2.7 Code Kimi models", () => {
     expect(maestroRegistry.validateModel("kimi")).toBe(true);
     expect(maestroRegistry.validateModel(MODEL_KIMI_K3)).toBe(true);
-    expect(maestroRegistry.validateModel(MODEL_KIMI_K26)).toBe(true);
     expect(maestroRegistry.validateModel(MODEL_KIMI_K27_CODE)).toBe(true);
-    // Not aliased by any short nickname, but still a valid full id.
-    expect(maestroRegistry.validateModel(MODEL_KIMI_K25)).toBe(true);
-    expect(maestroRegistry.validateModel(MODEL_KIMI_K27_CODE_HIGHSPEED)).toBe(true);
+    expect(maestroRegistry.validateModel("kimi-k2.6")).toBe(false);
+    expect(maestroRegistry.validateModel("kimi-k2.5")).toBe(false);
+    expect(maestroRegistry.validateModel("kimi-k2.7-code-highspeed")).toBe(false);
   });
 });
 

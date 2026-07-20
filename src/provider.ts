@@ -753,8 +753,11 @@ export function wrapUpOverlayLine(remaining: number, max: number): string | null
 }
 
 export function providerForModel(resolvedModel: string): Provider {
-  if (resolvedModel.startsWith("kimi-") || resolvedModel.startsWith("moonshot-")) {
+  if (resolvedModel === "kimi-k3" || resolvedModel === "kimi-k2.7-code") {
     return KimiProvider.fromEnv();
+  }
+  if (resolvedModel.startsWith("kimi-")) {
+    throw new Error(`Maestro: unsupported Kimi model '${resolvedModel}'`);
   }
   return DeepseekProvider.fromEnv();
 }
@@ -762,7 +765,7 @@ export function providerForModel(resolvedModel: string): Provider {
 /**
  * DeepSeek cannot currently consume Maestro image blocks natively in this
  * adapter, so when a Gemini API key is configured we expose a narrow vision
- * fallback tool only for DeepSeek models. Kimi models (K3/K2.7-code/K2.6/K2.5)
+ * fallback tool only for DeepSeek models. Kimi models (K3/K2.7 Code)
  * support vision natively via `kimi.ts`'s `image_url` translation, so they
  * never need the Gemini fallback. Other providers keep their existing tool
  * menu and avoid unnecessary third-party image upload/cost.
@@ -779,11 +782,10 @@ export function imageHandlingPrompt(
   resolvedModel: string,
   geminiImageQaAvailable: boolean,
 ): string | undefined {
-  if (resolvedModel.startsWith("kimi-") || resolvedModel.startsWith("moonshot-")) {
+  if (resolvedModel === "kimi-k3" || resolvedModel === "kimi-k2.7-code") {
     return [
       "## Image Handling",
-      "The active Kimi model supports vision natively — image attachments are visible in the message content.",
-      "Describe or analyze attached images directly; do not claim you cannot see them.",
+      "Kimi has native vision: inline images are visible directly, and on-disk images become visible once loaded with `Read`.",
     ].join("\n");
   }
   if (!resolvedModel.startsWith("deepseek-")) return undefined;

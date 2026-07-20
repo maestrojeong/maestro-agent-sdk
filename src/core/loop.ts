@@ -131,6 +131,9 @@ export async function* runConversation(
     cacheReadInputTokens: 0,
   };
   let lastContextUsage: Pick<TokenUsage, "contextTokens" | "contextWindow"> | undefined;
+  const activeContextWindow = process.env.MAESTRO_CONTEXT_WINDOW
+    ? defaultContextWindow()
+    : (agent.provider.contextWindowForModel?.(agent.config.model) ?? defaultContextWindow());
 
   while (iterations < maxIter) {
     if (agent.config.abortSignal?.aborted) {
@@ -232,6 +235,7 @@ export async function* runConversation(
     let wireMessages = await compressIfNeeded(messages, {
       auxProvider: agent.provider,
       auxModel,
+      contextWindow: activeContextWindow,
       // Steer the summarizer to preserve the live work thread (latest user
       // request) in full and shed tangents. Undefined → generic summary.
       ...(focusTopic ? { focusTopic } : {}),
@@ -284,8 +288,8 @@ export async function* runConversation(
     // maxTokens can't starve the history. Pure copy-on-write: canonical
     // `messages` keeps the full payloads for persistence/resume.
     const hardCapTokens = Math.max(
-      Math.floor(defaultContextWindow() * 0.95) - (agent.config.maxTokens ?? 0),
-      Math.floor(defaultContextWindow() / 2),
+      Math.floor(activeContextWindow * 0.95) - (agent.config.maxTokens ?? 0),
+      Math.floor(activeContextWindow / 2),
     );
     const hardCap = capOversizeToolResults(wireMessages, hardCapTokens);
     if (hardCap.trimmed) {

@@ -3,11 +3,11 @@
 ## [0.1.46] - 2026-07-19
 
 ### Added
-- **Kimi (Moonshot AI) provider** — new `KimiProvider` (`src/providers/kimi.ts`) supporting `kimi-k3`, `kimi-k2.7-code`, `kimi-k2.7-code-highspeed`, `kimi-k2.6`, and `kimi-k2.5` via the OpenAI-compatible `https://api.moonshot.cn/v1/chat/completions` endpoint. Reads the API key from `MOONSHOT_API_KEY`.
-  - New aliases: `kimi` / `kimi-pro` → `kimi-k3`, `kimi-flash` → `kimi-k2.6`, `kimi-code` → `kimi-k2.7-code`.
-  - K3 and K2.7-code always run in thinking mode and preserve `reasoning_content` on every assistant turn (not just tool-calling turns, the opposite of DeepSeek's rule); K2.6/K2.5 follow DeepSeek's tool-calling-only rule.
+- **Kimi (Moonshot AI) provider** — new `KimiProvider` (`src/providers/kimi.ts`) supporting `kimi-k3` and `kimi-k2.7-code` via the OpenAI-compatible `https://api.moonshot.ai/v1/chat/completions` endpoint. Reads the API key from `MOONSHOT_API_KEY`; `MOONSHOT_BASE_URL` can target a regional endpoint or proxy.
+  - New aliases: `kimi` / `kimi-pro` → `kimi-k3`, `kimi-code` → `kimi-k2.7-code`.
+  - K3 and K2.7 Code always run in thinking mode and preserve `reasoning_content` on every assistant turn.
   - Native vision support — image blocks translate to real `image_url` parts instead of DeepSeek's text-placeholder fallback, so Kimi models never need the `View`/Gemini QA fallback.
-  - Compaction routes K3/K2.7-code(-highspeed) to the cheaper K2.6 tier via `resolveAuxModel`.
+  - Compaction and hard-cap thresholds use each model's native context window; Kimi compaction stays on the selected model.
 
 ## [0.1.45] - 2026-07-14
 

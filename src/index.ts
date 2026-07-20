@@ -84,6 +84,16 @@ export {
   translateMessagesToOpenAI,
   translateToolsToOpenAI,
 } from "@/providers/deepseek";
+export {
+  contextWindowForKimiModel,
+  effortForKimi,
+  isAlwaysThinkingKimiModel,
+  KIMI_K3_CONTEXT_WINDOW,
+  KIMI_K27_CONTEXT_WINDOW,
+  KimiProvider,
+  translateMessagesToOpenAI as translateKimiMessagesToOpenAI,
+  translateToolsToOpenAI as translateKimiToolsToOpenAI,
+} from "@/providers/kimi";
 // ─── Maestro registry + top-level provider entry point ───────────────────────
 export { maestroRegistry } from "@/registry";
 // ─── Session store ───────────────────────────────────────────────────────────
