@@ -240,7 +240,7 @@ export class ToolRegistry {
   }
 
   register(handler: ToolHandler, options?: RegisterOptions): void {
-    const name = handler.schema.name;
+    const name = handler.schema.function.name;
     if (this.tools.has(name)) {
       throw new Error(`Maestro ToolRegistry: tool '${name}' is already registered`);
     }
@@ -325,7 +325,7 @@ export class ToolRegistry {
       if (this.activeDeferred.has(name)) continue;
       const handler = this.tools.get(name);
       if (!handler) continue;
-      out.push({ name, summary: clipSummary(handler.schema.description) });
+      out.push({ name, summary: clipSummary(handler.schema.function.description) });
     }
     return out;
   }

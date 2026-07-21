@@ -1,3 +1,4 @@
+import { defineTool } from "@/providers/base";
 import type { CreateInput, TaskEntry, TaskStatus, TaskStore, UpdateInput } from "@/state/tasks";
 import type { ToolHandler } from "@/tools/registry";
 
@@ -63,7 +64,7 @@ export function createTaskCreateTool(opts: TaskToolsOptions): ToolHandler {
   const { store } = opts;
   return {
     parallelSafe: false,
-    schema: {
+    schema: defineTool({
       name: "TaskCreate",
       description:
         "Create a single new task. Returns the freshly assigned id (numeric " +
@@ -106,7 +107,7 @@ export function createTaskCreateTool(opts: TaskToolsOptions): ToolHandler {
         },
         required: ["subject"],
       },
-    },
+    }),
     async execute(input) {
       const subject = typeof input.subject === "string" ? input.subject.trim() : "";
       if (!subject) {
@@ -135,7 +136,7 @@ export function createTaskUpdateTool(opts: TaskToolsOptions): ToolHandler {
   const { store } = opts;
   return {
     parallelSafe: false,
-    schema: {
+    schema: defineTool({
       name: "TaskUpdate",
       description:
         "Update a single existing task by id. Any subset of fields can change " +
@@ -193,7 +194,7 @@ export function createTaskUpdateTool(opts: TaskToolsOptions): ToolHandler {
         },
         required: ["taskId"],
       },
-    },
+    }),
     async execute(input) {
       const taskId = typeof input.taskId === "string" ? input.taskId.trim() : "";
       if (!taskId) {
@@ -249,7 +250,7 @@ export function createTaskListTool(opts: TaskToolsOptions): ToolHandler {
   const { store } = opts;
   return {
     parallelSafe: true,
-    schema: {
+    schema: defineTool({
       name: "TaskList",
       description:
         "Return all non-deleted tasks (compact form: id, subject, status, " +
@@ -267,7 +268,7 @@ export function createTaskListTool(opts: TaskToolsOptions): ToolHandler {
           },
         },
       },
-    },
+    }),
     async execute(input) {
       const includeDeleted = input.includeDeleted === true;
       const list = includeDeleted ? store.listAll() : store.list();
@@ -288,7 +289,7 @@ export function createTaskGetTool(opts: TaskToolsOptions): ToolHandler {
   const { store } = opts;
   return {
     parallelSafe: true,
-    schema: {
+    schema: defineTool({
       name: "TaskGet",
       description:
         "Fetch the full entry for a single task (every field including " +
@@ -304,7 +305,7 @@ export function createTaskGetTool(opts: TaskToolsOptions): ToolHandler {
         },
         required: ["taskId"],
       },
-    },
+    }),
     async execute(input) {
       const taskId = typeof input.taskId === "string" ? input.taskId.trim() : "";
       if (!taskId) {
@@ -329,7 +330,7 @@ export function createTaskGetTool(opts: TaskToolsOptions): ToolHandler {
 export function createTaskOutputTool(store: TaskStore): ToolHandler {
   return {
     parallelSafe: false,
-    schema: {
+    schema: defineTool({
       name: "TaskOutput",
       description:
         "Attach an output / result string to a task. Use this when a task completes to save its deliverable. Combine with TaskUpdate(status:'completed') if you want to close it at the same time.",
@@ -347,7 +348,7 @@ export function createTaskOutputTool(store: TaskStore): ToolHandler {
         },
         required: ["taskId", "output"],
       },
-    },
+    }),
     async execute(input: Record<string, unknown>) {
       const taskId = typeof input.taskId === "string" ? input.taskId.trim() : "";
       if (!taskId) return JSON.stringify({ error: "TaskOutput: taskId is required" });
@@ -372,7 +373,7 @@ export function createTaskOutputTool(store: TaskStore): ToolHandler {
 export function createTaskStopTool(store: TaskStore): ToolHandler {
   return {
     parallelSafe: false,
-    schema: {
+    schema: defineTool({
       name: "TaskStop",
       description:
         "Stop an in-progress task, moving it back to pending. Use when a task cannot be completed right now but should stay in the task list for later retry.",
@@ -391,7 +392,7 @@ export function createTaskStopTool(store: TaskStore): ToolHandler {
         },
         required: ["taskId"],
       },
-    },
+    }),
     async execute(input: Record<string, unknown>) {
       const taskId = typeof input.taskId === "string" ? input.taskId.trim() : "";
       if (!taskId) return JSON.stringify({ error: "TaskStop: taskId is required" });

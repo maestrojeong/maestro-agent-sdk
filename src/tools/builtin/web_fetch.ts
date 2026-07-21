@@ -1,5 +1,6 @@
 import * as cheerio from "cheerio";
 import type { AnyNode } from "domhandler";
+import { defineTool } from "@/providers/base";
 import type { ToolHandler } from "@/tools/registry";
 
 /**
@@ -32,7 +33,7 @@ export const webFetchTool: ToolHandler = {
   // HTTP GET against an external URL with no local side effects — multiple
   // fetches in the same turn can run in parallel.
   parallelSafe: true,
-  schema: {
+  schema: defineTool({
     name: "WebFetch",
     description:
       "Fetch a URL and return its text content. Supports text/* and application/json " +
@@ -53,7 +54,7 @@ export const webFetchTool: ToolHandler = {
       },
       required: ["url"],
     },
-  },
+  }),
   async execute(input) {
     const url = typeof input.url === "string" ? input.url.trim() : "";
     if (!url) {

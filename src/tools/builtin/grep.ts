@@ -1,6 +1,7 @@
 import { type SpawnSyncOptions, spawnSync } from "node:child_process";
 import { isAbsolute } from "node:path";
 import { logger } from "@/platform/logger";
+import { defineTool } from "@/providers/base";
 import type { ToolHandler } from "@/tools/registry";
 
 /**
@@ -53,7 +54,7 @@ export const grepTool: ToolHandler = {
   // Pure read of the filesystem via an external process — multiple Greps
   // in parallel are fine.
   parallelSafe: true,
-  schema: {
+  schema: defineTool({
     name: "Grep",
     description:
       "Search file contents using ripgrep. Returns matches in one of three " +
@@ -145,7 +146,7 @@ export const grepTool: ToolHandler = {
       },
       required: ["pattern"],
     },
-  },
+  }),
   async execute(input) {
     const pattern = typeof input.pattern === "string" ? input.pattern : "";
     if (!pattern) {

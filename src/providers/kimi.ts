@@ -7,7 +7,6 @@ import type {
   ProviderMessage,
   ProviderResponse,
   ProviderStreamChunk,
-  ProviderToolSchema,
 } from "@/providers/base";
 import { type HttpResponseLike, type NodeFetchInit, nodeFetch } from "@/providers/node-fetch";
 import type { EffortLevel, TokenUsage } from "@/types";
@@ -55,15 +54,6 @@ interface OpenAIChatMessage {
   tool_calls?: OpenAIToolCall[];
   tool_call_id?: string;
   name?: string;
-}
-
-interface OpenAITool {
-  type: "function";
-  function: {
-    name: string;
-    description: string;
-    parameters: Record<string, unknown>;
-  };
 }
 
 interface OpenAIUsage {
@@ -301,7 +291,10 @@ function buildRequestBody(opts: ProviderCompleteOptions, stream: boolean): Recor
     body.max_tokens = opts.maxTokens ?? 4096;
   }
   if (opts.tools && opts.tools.length > 0) {
-    body.tools = translateToolsToOpenAI(opts.tools);
+    // v0.1.47: `ProviderToolSchema` IS the OpenAI Chat Completions wire
+    // shape now (see providers/base.ts's `defineTool`) — no per-call
+    // translation needed (see deepseek.ts's equivalent comment).
+    body.tools = opts.tools;
   }
   if (stream) {
     body.stream = true;
@@ -396,17 +389,6 @@ function openAiChoiceToBlocks(choice: OpenAIChoice): ProviderContentBlock[] {
     }
   }
   return blocks;
-}
-
-export function translateToolsToOpenAI(tools: readonly ProviderToolSchema[]): OpenAITool[] {
-  return tools.map((t) => ({
-    type: "function",
-    function: {
-      name: t.name,
-      description: t.description,
-      parameters: t.input_schema as unknown as Record<string, unknown>,
-    },
-  }));
 }
 
 /**

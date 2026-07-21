@@ -16,8 +16,8 @@ afterEach(() => {
 
 describe("writeTool", () => {
   test("schema name is exactly 'Write' — claude SDK parity", () => {
-    expect(writeTool.schema.name).toBe("Write");
-    expect(writeTool.schema.input_schema.required).toEqual(["file_path", "content"]);
+    expect(writeTool.schema.function.name).toBe("Write");
+    expect(writeTool.schema.function.parameters.required).toEqual(["file_path", "content"]);
   });
 
   test("creates a new file with the given content", async () => {

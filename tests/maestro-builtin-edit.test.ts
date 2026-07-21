@@ -16,8 +16,8 @@ afterEach(() => {
 
 describe("editTool", () => {
   test("schema name is exactly 'Edit' — claude SDK parity", () => {
-    expect(editTool.schema.name).toBe("Edit");
-    expect(editTool.schema.input_schema.required).toEqual([
+    expect(editTool.schema.function.name).toBe("Edit");
+    expect(editTool.schema.function.parameters.required).toEqual([
       "file_path",
       "old_string",
       "new_string",

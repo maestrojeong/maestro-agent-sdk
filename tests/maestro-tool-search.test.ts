@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { buildSystemReminder } from "@/memory/reminder";
-import type { ProviderToolSchema } from "@/providers/base";
+import { defineTool } from "@/providers/base";
 import { createToolSearchTool, TOOL_SEARCH_NAME } from "@/tools/builtin/tool_search";
 import { type ToolHandler, ToolRegistry } from "@/tools/registry";
 
@@ -23,11 +23,11 @@ import { type ToolHandler, ToolRegistry } from "@/tools/registry";
 // Minimal stub tool factory — every test wants several distinct schemas
 // without hand-rolling JSON Schema noise.
 function stubTool(name: string, description: string): ToolHandler {
-  const schema: ProviderToolSchema = {
+  const schema = defineTool({
     name,
     description,
     input_schema: { type: "object", properties: {} },
-  };
+  });
   return {
     schema,
     async execute() {
@@ -43,7 +43,7 @@ describe("ToolRegistry: deferred + active set", () => {
     reg.register(stubTool("Lazy1", "deferred one"), { deferred: true });
     reg.register(stubTool("Lazy2", "deferred two"), { deferred: true });
 
-    const names = reg.schemas().map((s) => s.name);
+    const names = reg.schemas().map((s) => s.function.name);
     expect(names).toEqual(["AlwaysOn"]);
     expect(reg.isDeferred("Lazy1")).toBe(true);
     expect(reg.isDeferred("Lazy2")).toBe(true);
@@ -56,7 +56,7 @@ describe("ToolRegistry: deferred + active set", () => {
     reg.register(stubTool("Lazy1", "deferred one"), { deferred: true });
 
     expect(reg.markActive("Lazy1")).toBe(true);
-    const names = reg.schemas().map((s) => s.name);
+    const names = reg.schemas().map((s) => s.function.name);
     expect(names).toContain("Lazy1");
     // No-longer-deferred from the catalog's perspective:
     expect(reg.deferredCatalog().map((c) => c.name)).not.toContain("Lazy1");
@@ -111,7 +111,7 @@ describe("ToolRegistry: deferred + active set", () => {
     expect(
       reg2
         .schemas()
-        .map((s) => s.name)
+        .map((s) => s.function.name)
         .sort(),
     ).toEqual(["A", "C"]);
   });
@@ -122,7 +122,7 @@ describe("ToolRegistry: deferred + active set", () => {
     reg.register(stubTool("A", "a"), { deferred: true });
     // 'Ghost' is in the persisted snapshot but the new registry doesn't have it.
     reg.restoreActive(["A", "Ghost"]);
-    expect(reg.schemas().map((s) => s.name)).toEqual(["A"]);
+    expect(reg.schemas().map((s) => s.function.name)).toEqual(["A"]);
   });
 
   test("disallowed deferred tools stay hidden and cannot be restored or activated", () => {
@@ -136,7 +136,7 @@ describe("ToolRegistry: deferred + active set", () => {
 
     reg.restoreActive(["Allowed", "Blocked"]);
     expect(reg.serializeActive()).toEqual(["Allowed"]);
-    expect(reg.schemas().map((s) => s.name)).toEqual(["Allowed"]);
+    expect(reg.schemas().map((s) => s.function.name)).toEqual(["Allowed"]);
   });
 });
 
@@ -156,7 +156,7 @@ describe("ToolSearch built-in", () => {
     expect(text).toContain("<functions>");
     expect(text).toContain("<function>");
     // Both should now be active on the wire.
-    expect(reg.schemas().map((s) => s.name)).toEqual(
+    expect(reg.schemas().map((s) => s.function.name)).toEqual(
       expect.arrayContaining([TOOL_SEARCH_NAME, "Foo", "Bar"]),
     );
   });

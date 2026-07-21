@@ -216,7 +216,7 @@ function buildToolRegistry(
   // builtins always take precedence on a name collision.
   if (SUBAGENT_CAPABILITIES[kind].acceptsExtraTools && extraTools) {
     for (const t of extraTools) {
-      if (!tools.has(t.schema.name)) {
+      if (!tools.has(t.schema.function.name)) {
         tools.register(t);
       }
     }

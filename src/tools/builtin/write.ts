@@ -1,5 +1,6 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, normalize } from "node:path";
+import { defineTool } from "@/providers/base";
 import type { FileStateTracker } from "@/tools/file-state";
 import { checkBlockedPath } from "@/tools/path-guard";
 import type { ToolHandler } from "@/tools/registry";
@@ -33,7 +34,7 @@ export interface WriteToolOptions {
 export function createWriteTool(opts: WriteToolOptions = {}): ToolHandler {
   const { tracker } = opts;
   return {
-    schema: {
+    schema: defineTool({
       name: "Write",
       description:
         "Write content to a file (overwrite). Parent directories are created " +
@@ -53,7 +54,7 @@ export function createWriteTool(opts: WriteToolOptions = {}): ToolHandler {
         },
         required: ["file_path", "content"],
       },
-    },
+    }),
     async execute(input) {
       // Validate presence/type BEFORE normalize() — Node's `normalize("")`
       // returns `"."` (not ""), so a missing/empty `file_path` would silently

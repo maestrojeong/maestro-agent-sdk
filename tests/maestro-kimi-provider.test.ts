@@ -9,7 +9,6 @@ import {
   KimiProvider,
   mapStopReason,
   translateMessagesToOpenAI,
-  translateToolsToOpenAI,
 } from "@/providers/kimi";
 
 // Providers POST via `nodeFetch` (node:http). Delegate to `globalThis.fetch`
@@ -125,35 +124,10 @@ describe("mapStopReason", () => {
   });
 });
 
-describe("translateToolsToOpenAI", () => {
-  test("converts Anthropic tool schema to OpenAI function format", () => {
-    const out = translateToolsToOpenAI([
-      {
-        name: "echo",
-        description: "echo back",
-        input_schema: {
-          type: "object",
-          properties: { msg: { type: "string" } },
-          required: ["msg"],
-        },
-      },
-    ]);
-    expect(out).toEqual([
-      {
-        type: "function",
-        function: {
-          name: "echo",
-          description: "echo back",
-          parameters: {
-            type: "object",
-            properties: { msg: { type: "string" } },
-            required: ["msg"],
-          },
-        },
-      },
-    ]);
-  });
-});
+// `translateToolsToOpenAI` was removed in v0.1.47 — `ProviderToolSchema` is
+// now already the OpenAI wire shape (built via `defineTool()` at tool-
+// definition time), so there's nothing left to translate per-call. See
+// tests/maestro-providers-base.test.ts for `defineTool` coverage.
 
 describe("translateMessagesToOpenAI", () => {
   test("prepends system message and passes through string content", () => {

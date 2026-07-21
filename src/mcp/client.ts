@@ -5,6 +5,7 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { logger } from "@/platform/logger";
 import { MAESTRO_SDK_VERSION } from "@/platform/version";
 import type { ProviderToolSchema } from "@/providers/base";
+import { defineTool } from "@/providers/base";
 
 /**
  * Maestro MCP client wrapper.
@@ -90,11 +91,11 @@ export class MaestroMcpClient {
         publicName,
         originalName: original,
         serverName: this.name,
-        schema: {
+        schema: defineTool({
           name: publicName,
           description: typeof t.description === "string" ? t.description : "",
           input_schema: normalizeInputSchema(t.inputSchema),
-        },
+        }),
       });
     }
     return out;
@@ -184,7 +185,7 @@ function sanitizeName(s: string): string {
   return s.replace(/[^a-zA-Z0-9_-]/g, "_");
 }
 
-function normalizeInputSchema(s: unknown): ProviderToolSchema["input_schema"] {
+function normalizeInputSchema(s: unknown): ProviderToolSchema["function"]["parameters"] {
   if (s && typeof s === "object") {
     const obj = s as Record<string, unknown>;
     const props =

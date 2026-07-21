@@ -9,8 +9,8 @@ afterEach(() => {
 
 describe("webFetchTool", () => {
   test("schema name is exactly 'WebFetch' — claude SDK parity", () => {
-    expect(webFetchTool.schema.name).toBe("WebFetch");
-    expect(webFetchTool.schema.input_schema.required).toEqual(["url"]);
+    expect(webFetchTool.schema.function.name).toBe("WebFetch");
+    expect(webFetchTool.schema.function.parameters.required).toEqual(["url"]);
   });
 
   test("returns formatted body for text/plain response", async () => {

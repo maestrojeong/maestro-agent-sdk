@@ -1,6 +1,7 @@
 // SUBAGENT_CAPABILITIES comes from its own module (not runner.ts) because it
 // is read at module-eval time — importing it through runner.ts would hit the
 // provider → agent → runner → provider cycle before runner finishes evaluating.
+import { defineTool } from "@/providers/base";
 import { SUBAGENT_CAPABILITIES, type SubagentType } from "@/sub-agent/capabilities";
 import { type RunSubAgentOptions, runSubAgent } from "@/sub-agent/runner";
 import type { ToolHandler } from "@/tools/registry";
@@ -67,7 +68,7 @@ export function createAgentTool(opts: AgentToolFactoryOptions): ToolHandler {
   return {
     parallelSafe: (input) =>
       SUBAGENT_CAPABILITIES[input.subagent_type as SubagentType]?.parallelSafe ?? false,
-    schema: {
+    schema: defineTool({
       name: "Agent",
       description:
         "Spawn a focused sub-agent to do ONE delegated task and return its final text. " +
@@ -103,7 +104,7 @@ export function createAgentTool(opts: AgentToolFactoryOptions): ToolHandler {
         },
         required: ["subagent_type", "prompt"],
       },
-    },
+    }),
     async execute(input) {
       const subagentTypeRaw = input.subagent_type;
       const prompt = input.prompt;

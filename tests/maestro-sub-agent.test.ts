@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { defineTool } from "@/providers/base";
 import { maestroSessionPath } from "@/session-store";
 import {
   __buildToolRegistryForTest,
@@ -52,9 +53,9 @@ describe("Agent tool — schema + validation", () => {
     // `required`. The schema declares all three properties; only
     // subagent_type + prompt are required.
     const tool = makeTool();
-    expect(tool.schema.name).toBe("Agent");
-    expect(tool.schema.input_schema.required).toEqual(["subagent_type", "prompt"]);
-    const props = tool.schema.input_schema.properties as Record<string, unknown>;
+    expect(tool.schema.function.name).toBe("Agent");
+    expect(tool.schema.function.parameters.required).toEqual(["subagent_type", "prompt"]);
+    const props = tool.schema.function.parameters.properties as Record<string, unknown>;
     expect(props.subagent_type).toBeDefined();
     expect(props.prompt).toBeDefined();
     expect(props.description).toBeDefined();
@@ -120,11 +121,11 @@ describe("Sub-agent isolation invariants", () => {
 describe("Sub-agent tool registry scoping", () => {
   test("parent-forwarded extra tools are registered for general only", () => {
     const extraTool: ToolHandler = {
-      schema: {
+      schema: defineTool({
         name: "mcp__demo__write_record",
         description: "write record",
         input_schema: { type: "object", properties: {} },
-      },
+      }),
       async execute() {
         return "ok";
       },
@@ -150,9 +151,10 @@ describe("Sub-agent tool registry scoping", () => {
       const overlay = readFileSync(join("src", "prompts", "sub-agents", `${kind}.md`), "utf8");
       const registry = __buildToolRegistryForTest(kind, `${kind}-overlay-sync-session`);
       for (const handler of registry.allHandlers()) {
-        expect(overlay, `${kind}.md does not mention \`${handler.schema.name}\``).toContain(
-          `\`${handler.schema.name}\``,
-        );
+        expect(
+          overlay,
+          `${kind}.md does not mention \`${handler.schema.function.name}\``,
+        ).toContain(`\`${handler.schema.function.name}\``);
       }
     }
   });

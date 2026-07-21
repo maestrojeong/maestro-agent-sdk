@@ -1,12 +1,12 @@
 import { describe, expect, test } from "vitest";
-import type { ProviderToolSchema } from "@/providers/base";
+import { defineTool } from "@/providers/base";
 import { isToolExecuteError, ToolRegistry } from "@/tools/registry";
 
-const echoSchema: ProviderToolSchema = {
+const echoSchema = defineTool({
   name: "echo",
   description: "echo input back",
   input_schema: { type: "object", properties: {} },
-};
+});
 
 describe("ToolRegistry", () => {
   test("register + dispatch returns handler output", async () => {
@@ -127,12 +127,12 @@ describe("ToolRegistry", () => {
       },
     });
     reg.register({
-      schema: { ...echoSchema, name: "blocked" },
+      schema: { ...echoSchema, function: { ...echoSchema.function, name: "blocked" } },
       async execute() {
         return "";
       },
     });
 
-    expect(reg.allHandlers().map((h) => h.schema.name)).toEqual(["echo"]);
+    expect(reg.allHandlers().map((h) => h.schema.function.name)).toEqual(["echo"]);
   });
 });

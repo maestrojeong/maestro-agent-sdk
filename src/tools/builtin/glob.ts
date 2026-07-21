@@ -1,5 +1,6 @@
 import { readdirSync, type Stats, statSync } from "node:fs";
 import { isAbsolute, join, normalize, relative, sep } from "node:path";
+import { defineTool } from "@/providers/base";
 import type { ToolHandler } from "@/tools/registry";
 
 /**
@@ -43,7 +44,7 @@ export const globTool: ToolHandler = {
   // Pure read of the filesystem — safe to run in parallel with anything
   // that doesn't write the same tree.
   parallelSafe: true,
-  schema: {
+  schema: defineTool({
     name: "Glob",
     description:
       "Fast file pattern matching. Supports `*` (within-segment wildcard), " +
@@ -74,7 +75,7 @@ export const globTool: ToolHandler = {
       },
       required: ["pattern"],
     },
-  },
+  }),
   async execute(input) {
     const rawPattern = typeof input.pattern === "string" ? input.pattern : "";
     if (!rawPattern) {

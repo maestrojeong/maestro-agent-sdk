@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { defineTool } from "@/providers/base";
 import type {
   HookRegistration,
   PostToolUseResult,
@@ -22,7 +23,7 @@ import { isToolExecuteError, ToolRegistry } from "@/tools/registry";
  *  was actually invoked with so tests can assert post-modification flow. */
 function makeEcho(name = "echo"): ToolHandler {
   return {
-    schema: { name, description: "", input_schema: { type: "object", properties: {} } },
+    schema: defineTool({ name, description: "", input_schema: { type: "object", properties: {} } }),
     async execute(input) {
       return JSON.stringify({ echoed: input });
     },
@@ -177,11 +178,11 @@ describe("ToolRegistry hook chain", () => {
     const r = new ToolRegistry();
     let preFired = false;
     r.register({
-      schema: {
+      schema: defineTool({
         name: "explode",
         description: "",
         input_schema: { type: "object", properties: {} },
-      },
+      }),
       async execute() {
         throw new Error("boom");
       },

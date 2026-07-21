@@ -124,9 +124,9 @@ export function registerMcpTools(
   const deferred = options?.deferred === true;
   const byName = new Map(pool.clients.map((c) => [c.name, c]));
   for (const t of pool.tools) {
-    if (registry.has(t.schema.name)) {
+    if (registry.has(t.schema.function.name)) {
       logger.warn(
-        { name: t.schema.name, server: t.serverName },
+        { name: t.schema.function.name, server: t.serverName },
         "maestro mcp pool: tool name collision — skipping",
       );
       continue;

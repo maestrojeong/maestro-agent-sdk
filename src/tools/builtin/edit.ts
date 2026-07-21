@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, type Stats, statSync, writeFileSync } from "node:fs";
 import { isAbsolute, normalize } from "node:path";
+import { defineTool } from "@/providers/base";
 import type { FileStateTracker } from "@/tools/file-state";
 import { checkBlockedPath } from "@/tools/path-guard";
 import type { ToolHandler } from "@/tools/registry";
@@ -46,7 +47,7 @@ export interface EditToolOptions {
 export function createEditTool(opts: EditToolOptions = {}): ToolHandler {
   const { tracker } = opts;
   return {
-    schema: {
+    schema: defineTool({
       name: "Edit",
       description:
         "Find-and-replace within a single file. " +
@@ -77,7 +78,7 @@ export function createEditTool(opts: EditToolOptions = {}): ToolHandler {
         },
         required: ["file_path", "old_string", "new_string"],
       },
-    },
+    }),
     async execute(input) {
       // Validate presence/type BEFORE normalize() — Node's `normalize("")`
       // returns `"."` (not ""), so a missing/empty `file_path` would silently

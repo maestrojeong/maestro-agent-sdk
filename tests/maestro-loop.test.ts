@@ -8,6 +8,7 @@ import type {
   ProviderResponse,
   ProviderStreamChunk,
 } from "@/providers/base";
+import { defineTool } from "@/providers/base";
 import { type ToolHandler, ToolRegistry } from "@/tools/registry";
 import type { UnifiedEvent } from "@/types";
 
@@ -131,11 +132,11 @@ describe("runConversation", () => {
     ]);
     const tools = new ToolRegistry();
     tools.register({
-      schema: {
+      schema: defineTool({
         name: "echo",
         description: "echo",
         input_schema: { type: "object", properties: {} },
-      },
+      }),
       async execute(input) {
         return JSON.stringify({ echoed: input });
       },
@@ -199,11 +200,11 @@ describe("runConversation", () => {
     ]);
     const tools = new ToolRegistry();
     tools.register({
-      schema: {
+      schema: defineTool({
         name: "explode",
         description: "always throws",
         input_schema: { type: "object", properties: {} },
-      },
+      }),
       async execute() {
         throw new Error("disk full");
       },
@@ -255,11 +256,11 @@ describe("runConversation", () => {
     const tools = new ToolRegistry({ disallowedTools: ["echo"] });
     let executed = false;
     tools.register({
-      schema: {
+      schema: defineTool({
         name: "echo",
         description: "echo",
         input_schema: { type: "object", properties: {} },
-      },
+      }),
       async execute() {
         executed = true;
         return "should not run";
@@ -298,11 +299,11 @@ describe("runConversation", () => {
     ]);
     const tools = new ToolRegistry();
     tools.register({
-      schema: {
+      schema: defineTool({
         name: "echo",
         description: "echo",
         input_schema: { type: "object", properties: {} },
-      },
+      }),
       async execute(input) {
         return JSON.stringify({ echoed: input });
       },
@@ -385,11 +386,11 @@ describe("runConversation", () => {
     ]);
     const tools = new ToolRegistry();
     tools.register({
-      schema: {
+      schema: defineTool({
         name: "big",
         description: "",
         input_schema: { type: "object", properties: {} },
-      },
+      }),
       async execute() {
         return longResult;
       },
@@ -433,11 +434,11 @@ describe("runConversation", () => {
     ]);
     const tools = new ToolRegistry();
     tools.register({
-      schema: {
+      schema: defineTool({
         name: "tiny",
         description: "",
         input_schema: { type: "object", properties: {} },
-      },
+      }),
       async execute() {
         return short;
       },
@@ -506,11 +507,11 @@ describe("runConversation", () => {
     const { provider } = makeProvider(responses);
     const tools = new ToolRegistry();
     tools.register({
-      schema: {
+      schema: defineTool({
         name: "echo",
         description: "",
         input_schema: { type: "object", properties: {} },
-      },
+      }),
       async execute() {
         return "{}";
       },
@@ -547,11 +548,11 @@ describe("runConversation", () => {
     const { provider, calls } = makeProvider(responses);
     const tools = new ToolRegistry();
     tools.register({
-      schema: {
+      schema: defineTool({
         name: "echo",
         description: "",
         input_schema: { type: "object", properties: {} },
-      },
+      }),
       async execute() {
         return "{}";
       },
@@ -591,11 +592,11 @@ describe("runConversation", () => {
     const { provider, calls } = makeProvider(responses);
     const tools = new ToolRegistry();
     tools.register({
-      schema: {
+      schema: defineTool({
         name: "echo",
         description: "",
         input_schema: { type: "object", properties: {} },
-      },
+      }),
       async execute() {
         return "{}";
       },
@@ -702,11 +703,11 @@ describe("runConversation (streaming path)", () => {
     ]);
     const tools = new ToolRegistry();
     tools.register({
-      schema: {
+      schema: defineTool({
         name: "echo",
         description: "",
         input_schema: { type: "object", properties: {} },
-      },
+      }),
       async execute(input) {
         return JSON.stringify({ echoed: input });
       },
@@ -772,11 +773,11 @@ describe("runConversation (streaming path)", () => {
     ]);
     const tools = new ToolRegistry();
     tools.register({
-      schema: {
+      schema: defineTool({
         name: "echo",
         description: "",
         input_schema: { type: "object", properties: {} },
-      },
+      }),
       async execute(input) {
         return JSON.stringify({ echoed: input });
       },
@@ -819,11 +820,11 @@ describe("runConversation (streaming path)", () => {
     ]);
     const tools = new ToolRegistry();
     tools.register({
-      schema: {
+      schema: defineTool({
         name: "broken",
         description: "",
         input_schema: { type: "object", properties: {} },
-      },
+      }),
       async execute(input) {
         return JSON.stringify({ gotInput: input });
       },
@@ -868,11 +869,11 @@ describe("runConversation (streaming path)", () => {
     ]);
     const tools = new ToolRegistry();
     tools.register({
-      schema: {
+      schema: defineTool({
         name: "noop",
         description: "",
         input_schema: { type: "object", properties: {} },
-      },
+      }),
       async execute() {
         return "{}";
       },
@@ -915,11 +916,11 @@ describe("runConversation (streaming path)", () => {
     const startedAt: Record<string, number> = {};
     tools.register({
       parallelSafe: true,
-      schema: {
+      schema: defineTool({
         name: "slow_read",
         description: "",
         input_schema: { type: "object", properties: {} },
-      },
+      }),
       async execute() {
         startedAt.slow = Date.now();
         await new Promise((r) => setTimeout(r, 200));
@@ -928,11 +929,11 @@ describe("runConversation (streaming path)", () => {
     });
     tools.register({
       parallelSafe: true,
-      schema: {
+      schema: defineTool({
         name: "fast_read",
         description: "",
         input_schema: { type: "object", properties: {} },
-      },
+      }),
       async execute() {
         startedAt.fast = Date.now();
         await new Promise((r) => setTimeout(r, 30));
@@ -1007,11 +1008,11 @@ describe("runConversation (streaming path)", () => {
         seenModes.push(input.mode);
         return input.mode === "parallel";
       },
-      schema: {
+      schema: defineTool({
         name: "dynamic",
         description: "",
         input_schema: { type: "object", properties: {} },
-      },
+      }),
       async execute(input) {
         const label = String(input.label);
         const delay = Number(input.delay ?? 0);
@@ -1057,11 +1058,11 @@ describe("runConversation (streaming path)", () => {
 
     tools.register({
       parallelSafe: true,
-      schema: {
+      schema: defineTool({
         name: "parallel_read",
         description: "",
         input_schema: { type: "object", properties: {} },
-      },
+      }),
       async execute() {
         order.push("parallel:start");
         await new Promise((r) => setTimeout(r, 5));
@@ -1071,11 +1072,11 @@ describe("runConversation (streaming path)", () => {
       },
     });
     tools.register({
-      schema: {
+      schema: defineTool({
         name: "serial_write",
         description: "",
         input_schema: { type: "object", properties: {} },
-      },
+      }),
       async execute() {
         order.push("serial:execute");
         return "WRITE";
@@ -1137,11 +1138,11 @@ describe("runConversation (streaming path)", () => {
         seenByParallelSafe.push(input.mode);
         return input.mode === "parallel";
       },
-      schema: {
+      schema: defineTool({
         name: "dynamic",
         description: "",
         input_schema: { type: "object", properties: {} },
-      },
+      }),
       async execute(input) {
         seenByExecute.push(input.mode);
         const label = String(input.label);
@@ -1197,7 +1198,11 @@ describe("runConversation (streaming path)", () => {
     let maxInFlight = 0;
     const order: string[] = [];
     const writeTool = (name: string): ToolHandler => ({
-      schema: { name, description: "", input_schema: { type: "object", properties: {} } },
+      schema: defineTool({
+        name,
+        description: "",
+        input_schema: { type: "object", properties: {} },
+      }),
       async execute() {
         inFlight++;
         maxInFlight = Math.max(maxInFlight, inFlight);
@@ -1312,11 +1317,11 @@ describe("runConversation (streaming path)", () => {
     ]);
     const tools = new ToolRegistry();
     tools.register({
-      schema: {
+      schema: defineTool({
         name: "Read",
         description: "stub",
         input_schema: { type: "object", properties: {}, required: [] },
-      },
+      }),
       async execute() {
         return [{ type: "text", text: "<image png>" }, imageBlock];
       },
@@ -1355,7 +1360,11 @@ describe("runConversation (tasks snapshot)", () => {
 
   function taskTool(name: string): ToolHandler {
     return {
-      schema: { name, description: "", input_schema: { type: "object", properties: {} } },
+      schema: defineTool({
+        name,
+        description: "",
+        input_schema: { type: "object", properties: {} },
+      }),
       async execute() {
         return "{}";
       },

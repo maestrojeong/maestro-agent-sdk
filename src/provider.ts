@@ -451,7 +451,10 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
   // scopes.
   const mcpToolHandlers = tools
     .allHandlers()
-    .filter((h) => h.schema.name.startsWith("mcp__") && !tools.isDeferred(h.schema.name));
+    .filter(
+      (h) =>
+        h.schema.function.name.startsWith("mcp__") && !tools.isDeferred(h.schema.function.name),
+    );
 
   // Register the `Agent` tool last — it captures the resolved model,
   // effort, augmented system prompt (parent base for sub-agents), and the

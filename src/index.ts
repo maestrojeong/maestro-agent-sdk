@@ -72,7 +72,6 @@ export {
   providerForModel,
   wrapUpOverlayLine,
 } from "@/provider";
-// ─── Providers ───────────────────────────────────────────────────────────────
 export type {
   MaestroDocumentSource,
   MaestroImageSource,
@@ -85,11 +84,12 @@ export type {
   ProviderStreamChunk,
   ProviderToolSchema,
 } from "@/providers/base";
+// ─── Providers ───────────────────────────────────────────────────────────────
+export { defineTool } from "@/providers/base";
 export {
   DeepseekProvider,
   effortForDeepseek,
   translateMessagesToOpenAI,
-  translateToolsToOpenAI,
 } from "@/providers/deepseek";
 export {
   contextWindowForKimiModel,
@@ -99,7 +99,6 @@ export {
   KIMI_K27_CONTEXT_WINDOW,
   KimiProvider,
   translateMessagesToOpenAI as translateKimiMessagesToOpenAI,
-  translateToolsToOpenAI as translateKimiToolsToOpenAI,
 } from "@/providers/kimi";
 // ─── Maestro registry + top-level provider entry point ───────────────────────
 export { maestroRegistry } from "@/registry";

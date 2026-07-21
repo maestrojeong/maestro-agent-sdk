@@ -1,3 +1,4 @@
+import { defineTool } from "@/providers/base";
 import type { ToolHandler, ToolRegistry } from "@/tools/registry";
 
 /**
@@ -79,7 +80,7 @@ export function createToolSearchTool(opts: { registry: ToolRegistry }): ToolHand
   const { registry } = opts;
   return {
     parallelSafe: true,
-    schema: {
+    schema: defineTool({
       name: TOOL_SEARCH_NAME,
       description:
         "Activate one or more deferred tools so you can call them on subsequent turns. " +
@@ -107,7 +108,7 @@ export function createToolSearchTool(opts: { registry: ToolRegistry }): ToolHand
         },
         required: ["query"],
       },
-    },
+    }),
     async execute(input) {
       const queryRaw = typeof input.query === "string" ? input.query : "";
       const query = queryRaw.trim();

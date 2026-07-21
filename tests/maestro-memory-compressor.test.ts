@@ -601,7 +601,7 @@ describe("compressIfNeeded — file-based aux tool loop", () => {
     // Each call must carry the read_compaction_log tool schema.
     for (const c of provider.calls) {
       expect(c.tools?.length).toBe(1);
-      expect(c.tools?.[0].name).toBe("read_compaction_log");
+      expect(c.tools?.[0].function.name).toBe("read_compaction_log");
     }
 
     // Round 2's message stack contains a user turn whose content is a
@@ -1038,8 +1038,10 @@ describe("compressIfNeeded — H1/H2 regression", () => {
     expect(typeof provider.calls[0].messages[0]?.content).toBe("string");
     expect(String(provider.calls[0].messages[0]?.content)).toContain("read_compaction_log");
     // Tool schema is passed so aux can read the file in chunks.
-    const toolDef = provider.calls[0].tools?.find((t: any) => t.name === "read_compaction_log");
+    const toolDef = provider.calls[0].tools?.find(
+      (t: any) => t.function.name === "read_compaction_log",
+    );
     expect(toolDef).toBeDefined();
-    expect(toolDef?.input_schema?.properties?.offset).toBeDefined();
+    expect(toolDef?.function?.parameters?.properties?.offset).toBeDefined();
   });
 });
