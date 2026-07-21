@@ -11,5 +11,4 @@ DEEPSEEK_API_KEY=... npx tsx examples/02-deepseek.ts "list /tmp"
 | File | What it shows |
 |---|---|
 | `02-deepseek.ts` | DeepSeek V4 provider + bash builtin + event stream printing |
-| `03-custom-tool.ts` | Register a user-defined tool alongside builtins |
-| `04-skill-write.ts` | Agent-autonomous skill authoring — model creates `skill.md` + adjacent scripts/templates/references via `skill_write` in one transactional call |
+| `03-custom-tool.ts` | Register a user-defined tool (via `defineTool`) alongside builtins |

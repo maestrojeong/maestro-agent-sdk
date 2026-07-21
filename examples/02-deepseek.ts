@@ -28,7 +28,12 @@ async function main() {
     effort: "medium",
   });
 
-  for await (const event of runConversation(agent, userPrompt)) {
+  // `runConversation` takes the full message history (`ProviderMessage[]`),
+  // not a bare string — the array mutates in place as the turn runs, so a
+  // real host persists it (or reuses it) for multi-turn resume.
+  const messages = [{ role: "user" as const, content: userPrompt }];
+
+  for await (const event of runConversation(agent, messages)) {
     if (event.type === "text_delta") process.stdout.write(event.content);
     if (event.type === "tool_use") console.error(`\n[tool] ${event.name}`);
     if (event.type === "result") console.error(`\n[done] ${event.stopReason}`);
