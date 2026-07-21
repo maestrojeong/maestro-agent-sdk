@@ -763,6 +763,59 @@ export function providerForModel(resolvedModel: string): Provider {
 }
 
 /**
+ * True when `resolvedModel` can natively see image blocks — Kimi K3/K2.7
+ * Code render them as real `image_url` parts (kimi.ts). Everything else
+ * (currently only the DeepSeek family) unconditionally rewrites every
+ * `image` block into a text placeholder regardless of whether the source
+ * is well-formed (deepseek.ts's `toolResultToOpenAI` / user-block handling).
+ */
+export function modelHasNativeVision(resolvedModel: string): boolean {
+  return resolvedModel === "kimi-k3" || resolvedModel === "kimi-k2.7-code";
+}
+
+/**
+ * Count `image` content blocks — in user-turn content and inside
+ * `tool_result` content — across a canonical `ProviderMessage[]` history
+ * that would silently lose visibility (degrade to a text placeholder) if
+ * this history's next call were sent to `targetModel`.
+ *
+ * Call this BEFORE resuming a persisted session under a different
+ * model/provider (see `providerForModel`, which silently swaps
+ * `DeepseekProvider` <-> `KimiProvider` based on the model string, reusing
+ * the same history) so a host can warn the user — e.g. "switching to
+ * DeepSeek will make 3 attached images invisible to the model" — instead of
+ * the loss happening silently on the very next turn.
+ *
+ * Scope: this only reports the DeepSeek-degrades-every-image case, since
+ * that's unconditional. It does NOT flag Kimi's narrower case (a malformed
+ * `image` block — missing url/data, or a disallowed public URL — degrading
+ * to a placeholder there too; kimi.ts's `imageBlockToPart`), because that
+ * can only happen via a host directly constructing invalid history, not
+ * through any of this SDK's own tools. A host doing that is expected to
+ * validate its own `image` blocks before persisting them.
+ */
+export function countImagesLosingVisibility(
+  messages: readonly ProviderMessage[],
+  targetModel: string,
+): number {
+  if (modelHasNativeVision(targetModel)) return 0;
+  let count = 0;
+  for (const msg of messages) {
+    if (typeof msg.content === "string") continue;
+    for (const block of msg.content) {
+      if (block.type === "image") {
+        count++;
+      } else if (block.type === "tool_result" && Array.isArray(block.content)) {
+        for (const inner of block.content) {
+          if (inner.type === "image") count++;
+        }
+      }
+    }
+  }
+  return count;
+}
+
+/**
  * DeepSeek cannot currently consume Maestro image blocks natively in this
  * adapter, so when a Gemini API key is configured we expose a narrow vision
  * fallback tool only for DeepSeek models. Kimi models (K3/K2.7 Code)

@@ -26,7 +26,12 @@ export type {
   ToolResultTruncationResult,
 } from "@/core/tool-result-truncation";
 // ─── MCP ─────────────────────────────────────────────────────────────────────
-export type { MaestroMcpClient, MaestroMcpServerSpec, MaestroMcpTool } from "@/mcp/client";
+export type {
+  MaestroMcpCallResult,
+  MaestroMcpClient,
+  MaestroMcpServerSpec,
+  MaestroMcpTool,
+} from "@/mcp/client";
 
 export { ACTIVE_TASK_TEMPLATE, wrapCompactedSummary } from "@/memory/active-task-template";
 export { resolveAuxModel } from "@/memory/aux-model-map";
@@ -57,11 +62,13 @@ export { onShutdown, runShutdown } from "@/platform/lifecycle";
 export { type LogFn, type Logger, setLogger } from "@/platform/logger";
 export { type McpResolver, type McpServerMap, setMcpResolver } from "@/platform/mcp-config";
 export {
+  countImagesLosingVisibility,
   DEFAULT_MAX_ITERATIONS,
   isAbortError,
   isTimeoutError,
   iterationBudgetLine,
   maestroProvider,
+  modelHasNativeVision,
   providerForModel,
   wrapUpOverlayLine,
 } from "@/provider";
@@ -139,6 +146,7 @@ export { dropFileStateTracker, getFileStateTracker } from "@/tools/file-state";
 // ─── Tool registry + hook surface ────────────────────────────────────────────
 export {
   type HookRegistration,
+  isToolExecuteError,
   type PostToolUseContext,
   type PostToolUseHook,
   type PostToolUseResult,
@@ -146,10 +154,12 @@ export {
   type PreToolUseContext,
   type PreToolUseDecision,
   type PreToolUseHook,
+  type ToolExecuteError,
   type ToolExecuteResult,
   type ToolHandler,
   ToolRegistry,
   type ToolRegistryOptions,
+  unwrapToolExecuteResult,
 } from "@/tools/registry";
 // ─── Shared types ────────────────────────────────────────────────────────────
 export type {

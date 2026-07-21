@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.48] - 2026-07-20
+
+### Added
+- **`ToolExecuteResult` gains a tagged `ToolExecuteError` variant (`{isError: true, content}`).** Before this, every tool-dispatch failure — a thrown exception, an unknown/disallowed tool name, a blocked PreToolUse hook, and (most importantly) a real MCP `isError: true` response — was flattened into a plain error-shaped STRING (`JSON.stringify({error: ...})`), which reads as ordinary tool output to the model. There was no way for a structural failure to reach `ProviderContentBlock`'s `tool_result.is_error` flag, so DeepSeek/Kimi's `"[tool error] "` wire prefix (added in 0.1.47) had nothing to key off for a real MCP failure. `mcp/client.ts`'s `renderCallResult` now returns the MCP server's own `isError` flag alongside the rendered payload, `mcp/pool.ts` threads it into a `ToolExecuteError`, and `loop.ts` unwraps it onto the canonical `tool_result.is_error` block AND the surfaced `tool_result` UnifiedEvent's new `isError` field. Use `isToolExecuteError()` / `unwrapToolExecuteResult()` (exported from `tools/registry.ts`) to handle the new variant in custom `ToolHandler`s or hooks.
+- **`countImagesLosingVisibility(messages, targetModel)` / `modelHasNativeVision(model)`** (exported from `provider.ts`) — a cheap capability check a host can run before resuming a persisted session under a different model/provider. `providerForModel` silently swaps `DeepseekProvider` <-> `KimiProvider` based on the model string, reusing the same history; DeepSeek unconditionally rewrites every `image` block into a text placeholder while Kimi keeps native `image_url` parts, so switching to DeepSeek silently loses all attached-image visibility on the very next turn. Call `countImagesLosingVisibility` first to warn the user (e.g. "switching to DeepSeek will make 3 attached images invisible to the model") instead of it happening silently.
+
+### Fixed
+- The `is_error` wire-prefix docstring in `deepseek.ts`/`kimi.ts` no longer overstates current behavior — it now correctly points at the `ToolExecuteError` plumbing above as what actually makes the prefix reach a real MCP failure.
+
 ## [0.1.47] - 2026-07-20
 
 ### Fixed

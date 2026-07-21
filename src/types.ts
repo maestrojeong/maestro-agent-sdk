@@ -150,6 +150,13 @@ export type UnifiedEvent =
       toolUseId: string;
       content: string;
       metadata?: ToolResultTruncationMetadata;
+      /** v0.1.48+: set when the tool call structurally failed (thrown
+       *  exception, unknown/disallowed tool, blocked PreToolUse hook, or a
+       *  real MCP `isError: true` response) — mirrors the canonical
+       *  `tool_result.is_error` flag (base.ts) a host would otherwise have
+       *  to infer from error-shaped text. Omitted (not `false`) on success,
+       *  matching how `is_error` itself is only ever present when true. */
+      isError?: boolean;
     }
   | { type: "text_delta"; content: string }
   | { type: "text"; content: string }

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { countImagesLosingVisibility, modelHasNativeVision } from "@/provider";
 import type { ProviderMessage } from "@/providers/base";
 import { translateMessagesToOpenAI as translateDeepseek } from "@/providers/deepseek";
 import { translateMessagesToOpenAI as translateKimi } from "@/providers/kimi";
@@ -92,5 +93,57 @@ describe("DeepSeek/Kimi translator parity", () => {
     ];
     expect(() => translateDeepseek("", msgs)).not.toThrow();
     expect(() => translateKimi("", msgs, false)).not.toThrow();
+  });
+});
+
+describe("countImagesLosingVisibility / modelHasNativeVision (provider-switch capability check)", () => {
+  test("only Kimi K3/K2.7-code are reported as natively vision-capable", () => {
+    expect(modelHasNativeVision("kimi-k3")).toBe(true);
+    expect(modelHasNativeVision("kimi-k2.7-code")).toBe(true);
+    expect(modelHasNativeVision("deepseek-v4-pro")).toBe(false);
+    expect(modelHasNativeVision("deepseek-v4-flash")).toBe(false);
+  });
+
+  test("counts images in both user turns and tool_result content when the target model lacks vision", () => {
+    const msgs: ProviderMessage[] = [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "look" },
+          { type: "image", source: { type: "base64", media_type: "image/png", data: "aaaa" } },
+        ],
+      },
+      {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "call_1",
+            content: [
+              { type: "text", text: "screenshot" },
+              { type: "image", source: { type: "base64", media_type: "image/png", data: "bbbb" } },
+            ],
+          },
+        ],
+      },
+    ];
+    expect(countImagesLosingVisibility(msgs, "deepseek-v4-pro")).toBe(2);
+  });
+
+  test("reports zero when the target model has native vision (Kimi)", () => {
+    const msgs: ProviderMessage[] = [
+      {
+        role: "user",
+        content: [
+          { type: "image", source: { type: "base64", media_type: "image/png", data: "aaaa" } },
+        ],
+      },
+    ];
+    expect(countImagesLosingVisibility(msgs, "kimi-k3")).toBe(0);
+  });
+
+  test("reports zero when there are no image blocks at all", () => {
+    const msgs: ProviderMessage[] = [{ role: "user", content: "no images here" }];
+    expect(countImagesLosingVisibility(msgs, "deepseek-v4-pro")).toBe(0);
   });
 });

@@ -177,6 +177,68 @@ describe("runConversation", () => {
     expect(messages[3].role).toBe("assistant");
   });
 
+  test("regression: a tool that fails structurally sets tool_result.is_error and the UnifiedEvent's isError flag", async () => {
+    // v0.1.48: a `ToolExecuteError` (returned by a thrown exception, an
+    // unknown/disallowed tool, a blocked PreToolUse hook, or an MCP
+    // `isError: true` response threaded through mcp/pool.ts) must survive
+    // through loop.ts's unwrap into BOTH the canonical `tool_result.is_error`
+    // block (base.ts) that DeepSeek/Kimi's `"[tool error] "` wire prefix
+    // keys off, and the surfaced `tool_result` UnifiedEvent's `isError` flag
+    // a host dispatcher can render on.
+    const { provider, calls } = makeProvider([
+      {
+        content: [{ type: "tool_use", id: "t1", name: "explode", input: {} }],
+        stopReason: "tool_use",
+        usage: { inputTokens: 10, outputTokens: 5, contextTokens: 15, contextWindow: 200_000 },
+      },
+      {
+        content: [{ type: "text", text: "handled the failure" }],
+        stopReason: "end_turn",
+        usage: { inputTokens: 8, outputTokens: 4, contextTokens: 12, contextWindow: 200_000 },
+      },
+    ]);
+    const tools = new ToolRegistry();
+    tools.register({
+      schema: {
+        name: "explode",
+        description: "always throws",
+        input_schema: { type: "object", properties: {} },
+      },
+      async execute() {
+        throw new Error("disk full");
+      },
+    });
+    const agent = new AIAgent(provider, tools, {
+      model: "claude-sonnet-4-6",
+      systemPrompt: "use tools",
+    });
+
+    const messages = initialMessages("do the risky thing");
+    const events = await collect(runConversation(agent, messages));
+
+    const tr = events.find((e) => e.type === "tool_result");
+    expect(tr?.type === "tool_result" && tr.isError).toBe(true);
+    expect(tr?.type === "tool_result" && JSON.parse(tr.content)).toEqual({ error: "disk full" });
+
+    // Canonical history's tool_result block must carry is_error: true too —
+    // this is what the DeepSeek/Kimi translators read.
+    const historyToolResult = messages[2];
+    expect(historyToolResult.role).toBe("user");
+    if (typeof historyToolResult.content === "string") {
+      throw new Error("expected structured content");
+    }
+    const block = historyToolResult.content[0];
+    expect(block.type).toBe("tool_result");
+    expect(block.type === "tool_result" && block.is_error).toBe(true);
+
+    // Second provider call must carry that is_error:true block onward.
+    const sentToolResult = calls[1].messages[2];
+    expect(typeof sentToolResult.content !== "string" && sentToolResult.content[0]).toMatchObject({
+      type: "tool_result",
+      is_error: true,
+    });
+  });
+
   test("disallowed registered tool is hidden from schemas and blocked on stale tool_use", async () => {
     const { provider, calls } = makeProvider([
       {

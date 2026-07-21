@@ -5,7 +5,7 @@ import type {
   PreToolUseDecision,
   ToolHandler,
 } from "@/tools/registry";
-import { ToolRegistry } from "@/tools/registry";
+import { isToolExecuteError, ToolRegistry } from "@/tools/registry";
 
 /**
  * Tests for the PreToolUse / PostToolUse hook chain.
@@ -95,7 +95,11 @@ describe("ToolRegistry hook chain", () => {
     });
 
     const out = await r.dispatch("echo", { v: 1 });
-    const parsed = JSON.parse(out) as { error: string };
+    // v0.1.48: a blocked call is now a tagged ToolExecuteError, not a bare
+    // error string — see tools/registry.ts's ToolExecuteResult JSDoc.
+    expect(isToolExecuteError(out)).toBe(true);
+    if (!isToolExecuteError(out)) throw new Error("unreachable");
+    const parsed = JSON.parse(out.content as string) as { error: string };
     expect(parsed.error).toBe("denied by A");
     // Only the blocker ran — B's pre + post never fire.
     expect(events).toEqual(["preA"]);
@@ -162,7 +166,9 @@ describe("ToolRegistry hook chain", () => {
       },
     });
     const out = await r.dispatch("nope", {});
-    const parsed = JSON.parse(out) as { error: string };
+    expect(isToolExecuteError(out)).toBe(true);
+    if (!isToolExecuteError(out)) throw new Error("unreachable");
+    const parsed = JSON.parse(out.content as string) as { error: string };
     expect(parsed.error).toContain("unknown tool: nope");
     expect(preFired).toBe(false);
   });
@@ -193,7 +199,9 @@ describe("ToolRegistry hook chain", () => {
     });
 
     const out = await r.dispatch("explode", {});
-    const parsed = JSON.parse(out) as { error: string };
+    expect(isToolExecuteError(out)).toBe(true);
+    if (!isToolExecuteError(out)) throw new Error("unreachable");
+    const parsed = JSON.parse(out.content as string) as { error: string };
     expect(parsed.error).toBe("boom");
     expect(preFired).toBe(true);
   });
