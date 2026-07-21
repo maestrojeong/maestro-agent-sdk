@@ -627,6 +627,45 @@ describe("DeepseekProvider.stream (mocked SSE)", () => {
     expect(JSON.parse(joined)).toEqual({ path: "/x" });
   });
 
+  test("regression: parses CRLF-framed SSE (every frame boundary, including [DONE])", async () => {
+    // deepseek.ts's parseSseStream used to split events on a literal
+    // `"\n\n"` — a CRLF-normalizing proxy between the client and the
+    // DeepSeek origin would silently stall the entire stream since no
+    // boundary would ever match. Kimi's parser already handled `\r\n\r\n`;
+    // this exercises the ported fix with EVERY frame (including the
+    // terminal `[DONE]`) using CRLF, not just a mix that might pass by luck
+    // if only some frames were fixed.
+    process.env.DEEPSEEK_API_KEY = "sk-test-xxx";
+    const crlfFrame = (payload: object): string => `data: ${JSON.stringify(payload)}\r\n\r\n`;
+    globalThis.fetch = vi.fn(async () => {
+      return sseResponse([
+        crlfFrame({ choices: [{ index: 0, delta: { content: "hel" }, finish_reason: null }] }),
+        crlfFrame({ choices: [{ index: 0, delta: { content: "lo" }, finish_reason: null }] }),
+        crlfFrame({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] }),
+        "data: [DONE]\r\n\r\n",
+      ]);
+    }) as unknown as typeof fetch;
+
+    const provider = DeepseekProvider.fromEnv();
+    const events = [];
+    for await (const ev of provider.stream({
+      model: "deepseek-v4-flash",
+      messages: [{ role: "user", content: "hi" }],
+      system: "",
+    })) {
+      events.push(ev);
+    }
+    expect(events).toEqual([
+      { type: "text_delta", text: "hel" },
+      { type: "text_delta", text: "lo" },
+      {
+        type: "message_complete",
+        stopReason: "end_turn",
+        usage: { inputTokens: 0, outputTokens: 0 },
+      },
+    ]);
+  });
+
   test("regression: thinking_complete is emitted before tool_use events", async () => {
     // The stream used to flush all tool_use_complete events and only then
     // emit thinking_complete. Combined with loop.ts's block-order repair

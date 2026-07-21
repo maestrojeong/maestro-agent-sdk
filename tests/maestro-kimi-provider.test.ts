@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { MaestroToolResultBlock, ProviderMessage } from "@/providers/base";
+import { defineTool } from "@/providers/base";
 import {
   contextWindowForKimiModel,
   effortForKimi,
@@ -423,6 +424,55 @@ describe("KimiProvider.complete (mocked)", () => {
       cacheReadInputTokens: 7,
       contextTokens: 18,
       contextWindow: KIMI_K3_CONTEXT_WINDOW,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  test("regression: posts the exact OpenAI-shaped tools body (no double-wrap, no omission)", async () => {
+    // deepseek.ts has an equivalent assertion; Kimi's buildRequestBody is
+    // an INDEPENDENT implementation of the same `body.tools = opts.tools`
+    // passthrough (v0.1.47's ProviderToolSchema refactor removed a
+    // separate translateToolsToOpenAI from each provider file) — this
+    // proves Kimi's copy of the passthrough isn't accidentally
+    // double-wrapping `defineTool`'s already-wire-shaped output, or
+    // silently dropping it.
+    process.env.MOONSHOT_API_KEY = "sk-test-xxx";
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      expect(body.tools).toEqual([
+        {
+          type: "function",
+          function: {
+            name: "echo",
+            description: "e",
+            parameters: { type: "object", properties: {} },
+          },
+        },
+      ]);
+      return new Response(
+        JSON.stringify({
+          id: "chatcmpl-1",
+          choices: [
+            { index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const provider = KimiProvider.fromEnv();
+    await provider.complete({
+      model: "kimi-k3",
+      messages: [{ role: "user", content: "hi" }],
+      system: "sys",
+      tools: [
+        defineTool({
+          name: "echo",
+          description: "e",
+          input_schema: { type: "object", properties: {} },
+        }),
+      ],
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });

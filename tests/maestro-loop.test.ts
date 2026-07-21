@@ -272,7 +272,15 @@ describe("runConversation", () => {
     });
 
     const events = await collect(runConversation(agent, initialMessages("echo ping")));
-    expect(calls[0].tools?.map((t) => t.name)).not.toContain("echo");
+    // Regression: `t.name` was the pre-v0.1.47 flat-schema field. Since the
+    // ProviderToolSchema refactor moved it to `t.function.name`, `t.name`
+    // is `undefined` for every element post-refactor — `.not.toContain`
+    // would pass vacuously here regardless of whether "echo" is actually
+    // hidden from the wire. Assert on `t.function.name` and pin the exact
+    // (empty) list so a schema-hiding regression can't hide behind a loose
+    // `.not.toContain` check again.
+    expect(calls[0].tools?.map((t) => t.function.name)).not.toContain("echo");
+    expect(calls[0].tools ?? []).toEqual([]);
     const tr = events.find((e) => e.type === "tool_result");
     expect(tr?.type === "tool_result" && JSON.parse(tr.content)).toEqual({
       error: "disallowed tool: echo",

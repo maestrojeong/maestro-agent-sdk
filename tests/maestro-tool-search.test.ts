@@ -159,6 +159,29 @@ describe("ToolSearch built-in", () => {
     expect(reg.schemas().map((s) => s.function.name)).toEqual(
       expect.arrayContaining([TOOL_SEARCH_NAME, "Foo", "Bar"]),
     );
+
+    // Regression: this model-facing transcript payload must stay in the
+    // flat {name, description, input_schema} shape Claude's pretrained
+    // tool-activation transcripts use — NOT ProviderToolSchema's
+    // OpenAI-nested {type:"function", function:{...}} wire shape
+    // (v0.1.47's defineTool/ProviderToolSchema refactor). Dumping the
+    // registry schema object wholesale would leak that unrelated wire-shape
+    // change into this contract, which a plain substring check like the
+    // ones above can't catch — parse the actual payload and assert on it.
+    const functionPayloads = [...text.matchAll(/<function>(.*?)<\/function>/g)].map((m) =>
+      JSON.parse(m[1]),
+    );
+    expect(functionPayloads).toHaveLength(2);
+    for (const payload of functionPayloads) {
+      expect(payload).toHaveProperty("name");
+      expect(payload).toHaveProperty("description");
+      expect(payload).toHaveProperty("input_schema");
+      expect(payload.input_schema).toEqual({ type: "object", properties: {} });
+      // The OpenAI wire wrapper must NOT leak into this transcript format.
+      expect(payload).not.toHaveProperty("type");
+      expect(payload).not.toHaveProperty("function");
+    }
+    expect(functionPayloads.map((p) => p.name).sort()).toEqual(["Bar", "Foo"]);
   });
 
   test("'select:' on unknown name reports NOT_FOUND without erroring", async () => {

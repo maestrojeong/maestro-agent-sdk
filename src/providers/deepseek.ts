@@ -639,14 +639,14 @@ function toolResultToOpenAI(
   // part of the public, provider-agnostic ProviderMessage shape (base.ts),
   // so this future-proofs the translator for any host that sets it directly.
   //
-  // NOTE (as of v0.1.47): the main tool-dispatch loop doesn't actually set
-  // `is_error` on real MCP tool failures today — `mcp/client.ts`'s
-  // `renderCallResult` already flattens an MCP `isError: true` response
-  // into `{"error": ...}` prose text before it reaches this type, so this
-  // prefix currently only fires for the internal aux-compaction sub-loop's
-  // synthetic "Unknown tool" result. If MCP failures should read as
-  // structural failures (not just error-shaped text) to DeepSeek/Kimi, the
-  // more impactful fix is upstream in `mcp/client.ts` / `tools/registry.ts`.
+  // NOTE (as of v0.1.47): this now DOES fire for real MCP tool failures.
+  // `mcp/client.ts`'s `renderCallResult` returns the MCP server's own
+  // `isError` flag instead of discarding it, `mcp/pool.ts` wraps it into a
+  // `ToolExecuteError`, and `loop.ts` unwraps that onto the canonical
+  // `tool_result.is_error` field this function reads — see those files'
+  // docstrings for the full chain. (Earlier in the v0.1.47 cycle this
+  // prefix only fired for the internal aux-compaction sub-loop's synthetic
+  // "Unknown tool" result; that gap was closed within the same release.)
   const prefix = isError ? "[tool error] " : "";
   if (typeof content === "string") return `${prefix}${content}`;
   const parts: OpenAIContentPart[] = [];

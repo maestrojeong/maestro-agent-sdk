@@ -555,10 +555,9 @@ function toolResultToOpenAI(
   isError?: boolean,
 ): string | OpenAIContentPart[] {
   // See deepseek.ts's toolResultToOpenAI for the full rationale and the
-  // v0.1.47 note that this currently only fires for the internal
-  // aux-compaction sub-loop's synthetic result, not real MCP failures
-  // (which `mcp/client.ts` already flattens into error-shaped text before
-  // `is_error` would ever be set).
+  // v0.1.47 note on this now firing for real MCP tool failures too (via
+  // mcp/client.ts + mcp/pool.ts + loop.ts's ToolExecuteError plumbing), not
+  // just the internal aux-compaction sub-loop's synthetic result.
   const prefix = isError ? "[tool error] " : "";
   if (typeof content === "string") return `${prefix}${content}`;
   const parts: OpenAIContentPart[] = [];
