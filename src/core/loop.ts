@@ -270,7 +270,7 @@ export async function* runConversation(
       },
     });
     if (compactionMeta?.didCompact) {
-      yield { type: "status", content: "✅ 대화 압축 완료" };
+      yield { type: "status", content: "compressed" };
     }
     if (emergencyNotice !== undefined) {
       yield { type: "error", content: emergencyNotice };
@@ -306,7 +306,7 @@ export async function* runConversation(
       );
       yield {
         type: "status",
-        content: `⚠️ 컨텍스트 한도 초과 방어: 대형 도구 출력 ${hardCap.trimmedBlocks}개를 잘라 전송합니다`,
+        content: `trimmed ${hardCap.trimmedBlocks} oversize tool output(s)`,
       };
     }
 
