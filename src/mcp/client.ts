@@ -113,7 +113,7 @@ export class MaestroMcpClient {
    * of left blocking on a dead server.
    *
    * Returns the rendered text/JSON payload PLUS whether the MCP server
-   * itself reported `isError: true`. Before v0.1.48, `renderCallResult`
+   * itself reported `isError: true`. Before v0.1.47, `renderCallResult`
    * flattened that flag into error-shaped prose (`{"error": ...}` text) and
    * discarded it — meaning no provider translator ever saw an MCP failure
    * as a structural `tool_result.is_error`, only as ordinary-looking text.
@@ -210,7 +210,7 @@ function normalizeInputSchema(s: unknown): ProviderToolSchema["input_schema"] {
  * claude/codex (their SDK feeds full payloads to the model and only the
  * UnifiedEvent emit path truncates for downstream telegram-render layout).
  *
- * v0.1.48: previously this flattened `isError: true` into an
+ * v0.1.47: previously this flattened `isError: true` into an
  * error-shaped-but-plain string (`{"error": ...}`) and discarded the flag —
  * so no provider ever saw an MCP failure as a STRUCTURAL failure, only as
  * text that happened to look like an error. `isError` now rides back out

@@ -664,7 +664,7 @@ export async function* runConversation(
     const truncConfig = agent.config.toolResultTruncation;
     for (let i = 0; i < toolUses.length; i++) {
       const tu = toolUses[i];
-      // v0.1.48: a result may be wrapped in `ToolExecuteError` (unknown/
+      // v0.1.47: a result may be wrapped in `ToolExecuteError` (unknown/
       // disallowed tool, blocked PreToolUse hook, a thrown exception, or —
       // most importantly — a real MCP `isError: true` response threaded
       // through by mcp/pool.ts). Unwrap once here so every consumer below

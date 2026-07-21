@@ -15,7 +15,7 @@ import type { MaestroToolResultBlock, ProviderToolSchema } from "@/providers/bas
  *     each of which serializes per its native wire shape (Anthropic image
  *     block, DeepSeek `image_url`, etc).
  *
- *   - `ToolExecuteError` — v0.1.48+: a tagged failure wrapper around either
+ *   - `ToolExecuteError` — v0.1.47+: a tagged failure wrapper around either
  *     of the above. Before this, every failure (a thrown exception, an
  *     unknown/disallowed tool name, a blocked PreToolUse hook, and — most
  *     importantly — an MCP `isError: true` response) was flattened into a

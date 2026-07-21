@@ -95,7 +95,7 @@ describe("ToolRegistry hook chain", () => {
     });
 
     const out = await r.dispatch("echo", { v: 1 });
-    // v0.1.48: a blocked call is now a tagged ToolExecuteError, not a bare
+    // v0.1.47: a blocked call is now a tagged ToolExecuteError, not a bare
     // error string — see tools/registry.ts's ToolExecuteResult JSDoc.
     expect(isToolExecuteError(out)).toBe(true);
     if (!isToolExecuteError(out)) throw new Error("unreachable");

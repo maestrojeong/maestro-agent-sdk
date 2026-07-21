@@ -141,7 +141,7 @@ export function registerMcpTools(
             content: JSON.stringify({ error: `mcp client '${t.serverName}' not available` }),
           };
         }
-        // v0.1.48: thread the MCP server's own `isError` flag through as a
+        // v0.1.47: thread the MCP server's own `isError` flag through as a
         // `ToolExecuteError` instead of discarding it — see
         // `mcp/client.ts`'s `renderCallResult` docstring for why this
         // matters (it's what makes DeepSeek/Kimi's `"[tool error] "` wire

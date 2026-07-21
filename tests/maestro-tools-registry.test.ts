@@ -22,7 +22,7 @@ describe("ToolRegistry", () => {
   });
 
   test("dispatch unknown tool returns a tagged ToolExecuteError without throwing", async () => {
-    // v0.1.48: unknown/disallowed/blocked/thrown failures are now tagged
+    // v0.1.47: unknown/disallowed/blocked/thrown failures are now tagged
     // `{isError: true, content}` (ToolExecuteError) instead of a bare error
     // string, so they can reach `tool_result.is_error` on the wire — see
     // tools/registry.ts's ToolExecuteResult JSDoc.

@@ -178,7 +178,7 @@ describe("runConversation", () => {
   });
 
   test("regression: a tool that fails structurally sets tool_result.is_error and the UnifiedEvent's isError flag", async () => {
-    // v0.1.48: a `ToolExecuteError` (returned by a thrown exception, an
+    // v0.1.47: a `ToolExecuteError` (returned by a thrown exception, an
     // unknown/disallowed tool, a blocked PreToolUse hook, or an MCP
     // `isError: true` response threaded through mcp/pool.ts) must survive
     // through loop.ts's unwrap into BOTH the canonical `tool_result.is_error`

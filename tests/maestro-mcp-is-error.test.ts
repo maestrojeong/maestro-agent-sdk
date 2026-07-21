@@ -8,7 +8,7 @@ import { __resetForTests, __setClientFactoryForTests, closeAll } from "@/mcp/poo
 import { isToolExecuteError, ToolRegistry } from "@/tools/registry";
 
 /**
- * v0.1.48 regression coverage: an MCP tool's `isError: true` response must
+ * v0.1.47 regression coverage: an MCP tool's `isError: true` response must
  * survive all the way from `client.callTool` through `registerMcpTools`'s
  * `ToolHandler` into a `ToolExecuteError` the loop can thread onto
  * `tool_result.is_error` — see mcp/client.ts's `renderCallResult` docstring
