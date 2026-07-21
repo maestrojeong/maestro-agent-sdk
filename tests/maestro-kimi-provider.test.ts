@@ -243,6 +243,25 @@ describe("translateMessagesToOpenAI", () => {
     ]);
   });
 
+  test("regression: multi-part (prompt + reminder) text-only user turn collapses to one string", () => {
+    // Same rationale as the equivalent DeepSeek test — provider.ts always
+    // builds real user turns with ≥2 text parts, which the old
+    // `length === 1` guard never collapsed.
+    const msgs: ProviderMessage[] = [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "do the thing" },
+          { type: "text", text: "<system-reminder>be careful</system-reminder>" },
+        ],
+      },
+    ];
+    const out = translateMessagesToOpenAI("", msgs, false);
+    expect(out).toEqual([
+      { role: "user", content: "do the thing\n<system-reminder>be careful</system-reminder>" },
+    ]);
+  });
+
   test("regression: tool_result.is_error is surfaced with a prefix (was silently dropped)", () => {
     const msgs: ProviderMessage[] = [
       {
@@ -291,14 +310,23 @@ describe("Kimi multimodal translation (vision-native, unlike DeepSeek)", () => {
     });
   });
 
-  test("public image URLs are rejected before calling Kimi", () => {
+  test("regression: public image URLs degrade to a text placeholder instead of throwing", () => {
+    // Was `.toThrow(...)` — see imageBlockToPart's docstring for why that
+    // was dangerous: translateMessagesToOpenAI re-renders the whole history
+    // on every call, so a bad image block anywhere in a resumed session
+    // would permanently break every future turn instead of just degrading
+    // that one image's visibility, like DeepSeek already does.
     const messages: ProviderMessage[] = [
       {
         role: "user",
         content: [{ type: "image", source: { type: "url", url: "https://example.com/img.jpg" } }],
       },
     ];
-    expect(() => translateMessagesToOpenAI("", messages, true)).toThrow(/public image URLs/);
+    const out = translateMessagesToOpenAI("", messages, true);
+    // Single text-only part → condenseUserParts collapses it to a string.
+    expect(typeof out[0].content).toBe("string");
+    expect(out[0].content as string).toContain("cannot render on Kimi");
+    expect(out[0].content as string).toContain("public image URLs");
   });
 
   test("ms:// image references are passed through", () => {
@@ -312,7 +340,7 @@ describe("Kimi multimodal translation (vision-native, unlike DeepSeek)", () => {
     expect(out[0].content).toEqual([{ type: "image_url", image_url: { url: "ms://file_123" } }]);
   });
 
-  test("malformed image sources are rejected instead of sending empty image data", () => {
+  test("regression: malformed image sources degrade to a placeholder instead of throwing", () => {
     const missingUrl: ProviderMessage[] = [
       {
         role: "user",
@@ -326,8 +354,11 @@ describe("Kimi multimodal translation (vision-native, unlike DeepSeek)", () => {
       },
     ];
 
-    expect(() => translateMessagesToOpenAI("", missingUrl, true)).toThrow(/missing its url/);
-    expect(() => translateMessagesToOpenAI("", missingData, true)).toThrow(/missing its data/);
+    const outUrl = translateMessagesToOpenAI("", missingUrl, true);
+    expect(outUrl[0].content as string).toContain("missing its url");
+
+    const outData = translateMessagesToOpenAI("", missingData, true);
+    expect(outData[0].content as string).toContain("missing its base64 data");
   });
 
   test("user-message PDF document still falls back to a text placeholder", () => {

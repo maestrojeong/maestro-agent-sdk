@@ -503,6 +503,26 @@ export function translateMessagesToOpenAI(
   return out;
 }
 
+/**
+ * Translate a Maestro `image` block source into an OpenAI-shaped content
+ * part. Degrades to a text placeholder (never throws) for any source Kimi
+ * can't render — same contract as DeepSeek's unconditional image→placeholder
+ * degrade (deepseek.ts's `toolResultToOpenAI`/user-block image handling).
+ *
+ * This USED to throw here instead of degrading. That was fine for a *live*
+ * turn a host just constructed (fail fast, catch the bug immediately), but
+ * `translateMessagesToOpenAI` re-renders the ENTIRE canonical history on
+ * every single call — including old turns. If any historical image block in
+ * a session ever has an unsupported shape (a public `https://` URL, a
+ * malformed base64 source with missing data — e.g. from a session
+ * hand-constructed by a host, or resumed after being built on a
+ * vision-capable provider that accepts shapes Kimi doesn't), throwing here
+ * doesn't just fail once — it permanently breaks *every* subsequent turn of
+ * that session under Kimi, since the same bad historical block gets
+ * re-translated (and re-thrown) on every future call. Degrading, like
+ * DeepSeek does, keeps a session usable and just loses that one image's
+ * visibility instead of bricking the whole conversation.
+ */
 function imageBlockToPart(source: {
   type: "base64" | "url";
   media_type?: string;
@@ -511,20 +531,25 @@ function imageBlockToPart(source: {
 }): OpenAIContentPart {
   if (source.type === "url") {
     if (!source.url) {
-      throw new Error("Kimi image URL source is missing its url");
+      return imageDegradePlaceholder("missing its url");
     }
     if (!source.url.startsWith("ms://") && !source.url.startsWith("data:")) {
-      throw new Error(
-        "Kimi API does not support public image URLs; provide a base64 image or an ms:// file reference",
+      return imageDegradePlaceholder(
+        "Kimi does not support public image URLs — provide a base64 image or an ms:// file reference",
       );
     }
     return { type: "image_url", image_url: { url: source.url } };
   }
   if (!source.data) {
-    throw new Error("Kimi base64 image source is missing its data");
+    return imageDegradePlaceholder("missing its base64 data");
   }
   const mediaType = source.media_type ?? "image/png";
   return { type: "image_url", image_url: { url: `data:${mediaType};base64,${source.data}` } };
+}
+
+function imageDegradePlaceholder(reason: string): OpenAIContentPart {
+  logger.warn({ reason }, "kimi: image block cannot be rendered — degrading to text placeholder");
+  return { type: "text", text: `[Image attached — cannot render on Kimi: ${reason}.]` };
 }
 
 // See deepseek.ts's condenseUserParts for why this collapses on "every part
@@ -547,9 +572,11 @@ function toolResultToOpenAI(
   content: string | MaestroToolResultBlock[],
   isError?: boolean,
 ): string | OpenAIContentPart[] {
-  // See deepseek.ts's toolResultToOpenAI for why this prefix exists: OpenAI
-  // `tool` messages have no equivalent of Anthropic's `tool_result.is_error`
-  // flag, so without it a failed MCP tool call reads as a success.
+  // See deepseek.ts's toolResultToOpenAI for the full rationale and the
+  // v0.1.47 note that this currently only fires for the internal
+  // aux-compaction sub-loop's synthetic result, not real MCP failures
+  // (which `mcp/client.ts` already flattens into error-shaped text before
+  // `is_error` would ever be set).
   const prefix = isError ? "[tool error] " : "";
   if (typeof content === "string") return `${prefix}${content}`;
   const parts: OpenAIContentPart[] = [];

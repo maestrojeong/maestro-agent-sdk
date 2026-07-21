@@ -214,6 +214,29 @@ describe("translateMessagesToOpenAI", () => {
     ]);
   });
 
+  test("regression: multi-part (prompt + reminder) text-only user turn collapses to one string", () => {
+    // This is the REAL shape provider.ts:412-416 builds for every user turn
+    // — two text blocks, never one. The old `condenseUserParts` guard only
+    // fired on `parts.length === 1`, which this shape never satisfies, so a
+    // test with a single text part per user message (as elsewhere in this
+    // file) would pass under either the old buggy guard or the fix and
+    // wouldn't actually catch a regression. This one exercises the exact
+    // ≥2-part case the fix targets.
+    const msgs: ProviderMessage[] = [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "do the thing" },
+          { type: "text", text: "<system-reminder>be careful</system-reminder>" },
+        ],
+      },
+    ];
+    const out = translateMessagesToOpenAI("", msgs);
+    expect(out).toEqual([
+      { role: "user", content: "do the thing\n<system-reminder>be careful</system-reminder>" },
+    ]);
+  });
+
   test("regression: tool_result.is_error is surfaced with a prefix (was silently dropped)", () => {
     // OpenAI `tool` messages have no field equivalent to Anthropic's
     // `tool_result.is_error`. Without translating it into the content text,

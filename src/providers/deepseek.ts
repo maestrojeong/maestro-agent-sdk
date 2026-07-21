@@ -657,11 +657,19 @@ function toolResultToOpenAI(
   isError?: boolean,
 ): string | OpenAIContentPart[] {
   // OpenAI `tool` messages have no structural equivalent of Anthropic's
-  // `tool_result.is_error` flag, so without this prefix a failed MCP tool
-  // call (which reports failure via `isError: true` rather than error text)
-  // reads as an ordinary success to the model. Built-in tools already
-  // encode failure in their text ("Error: ..."), so this is a no-op for
-  // them and only matters for MCP results.
+  // `tool_result.is_error` flag, so without this prefix an `is_error: true`
+  // block would read as an ordinary success to the model. `is_error` is
+  // part of the public, provider-agnostic ProviderMessage shape (base.ts),
+  // so this future-proofs the translator for any host that sets it directly.
+  //
+  // NOTE (as of v0.1.47): the main tool-dispatch loop doesn't actually set
+  // `is_error` on real MCP tool failures today — `mcp/client.ts`'s
+  // `renderCallResult` already flattens an MCP `isError: true` response
+  // into `{"error": ...}` prose text before it reaches this type, so this
+  // prefix currently only fires for the internal aux-compaction sub-loop's
+  // synthetic "Unknown tool" result. If MCP failures should read as
+  // structural failures (not just error-shaped text) to DeepSeek/Kimi, the
+  // more impactful fix is upstream in `mcp/client.ts` / `tools/registry.ts`.
   const prefix = isError ? "[tool error] " : "";
   if (typeof content === "string") return `${prefix}${content}`;
   const parts: OpenAIContentPart[] = [];
