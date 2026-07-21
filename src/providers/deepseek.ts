@@ -1,3 +1,4 @@
+import { logger } from "@/platform/logger";
 import type {
   MaestroToolResultBlock,
   Provider,
@@ -6,7 +7,6 @@ import type {
   ProviderMessage,
   ProviderResponse,
   ProviderStreamChunk,
-  ProviderToolSchema,
 } from "@/providers/base";
 import { type HttpResponseLike, type NodeFetchInit, nodeFetch } from "@/providers/node-fetch";
 import type { EffortLevel, TokenUsage } from "@/types";
@@ -74,15 +74,6 @@ interface OpenAIChatMessage {
   tool_calls?: OpenAIToolCall[];
   tool_call_id?: string;
   name?: string;
-}
-
-interface OpenAITool {
-  type: "function";
-  function: {
-    name: string;
-    description: string;
-    parameters: Record<string, unknown>;
-  };
 }
 
 interface OpenAIUsage {
@@ -189,7 +180,7 @@ export class DeepseekProvider implements Provider {
     // chunks before we emit the matching `tool_use_complete`.
     const toolAccum = new Map<
       number,
-      { id: string; name: string; args: string; startEmitted: boolean }
+      { id: string; name: string; args: string; emittedArgsLength: number; startEmitted: boolean }
     >();
     // Reasoning content arrives as `delta.reasoning_content` deltas. The
     // base.ts contract only carries terminal `thinking_complete` blocks
@@ -224,26 +215,34 @@ export class DeepseekProvider implements Provider {
           if (typeof tc?.index !== "number") continue;
           let entry = toolAccum.get(tc.index);
           if (!entry) {
-            entry = { id: "", name: "", args: "", startEmitted: false };
+            entry = { id: "", name: "", args: "", emittedArgsLength: 0, startEmitted: false };
             toolAccum.set(tc.index, entry);
           }
           if (typeof tc.id === "string" && tc.id.length > 0) entry.id = tc.id;
           if (typeof tc.function?.name === "string" && tc.function.name.length > 0) {
             entry.name = tc.function.name;
           }
+          if (typeof tc.function?.arguments === "string" && tc.function.arguments.length > 0) {
+            entry.args += tc.function.arguments;
+          }
           if (!entry.startEmitted && entry.id.length > 0 && entry.name.length > 0) {
             entry.startEmitted = true;
             yield { type: "tool_use_start", id: entry.id, name: entry.name };
           }
-          if (typeof tc.function?.arguments === "string" && tc.function.arguments.length > 0) {
-            entry.args += tc.function.arguments;
-            if (entry.startEmitted) {
-              yield {
-                type: "tool_use_input_delta",
-                id: entry.id,
-                partial_json: tc.function.arguments,
-              };
-            }
+          // Emit any args accumulated so far (including bytes that arrived
+          // in earlier chunks before id/name showed up — see kimi.ts, which
+          // fixed this same bug via emittedArgsLength). Without this cursor,
+          // arguments that land before the tool's id/name are buffered into
+          // `entry.args` but never flushed as a delta, so the parsed JSON is
+          // truncated and the tool dispatches with `{}`.
+          if (entry.startEmitted && entry.emittedArgsLength < entry.args.length) {
+            const partialJson = entry.args.slice(entry.emittedArgsLength);
+            entry.emittedArgsLength = entry.args.length;
+            yield {
+              type: "tool_use_input_delta",
+              id: entry.id,
+              partial_json: partialJson,
+            };
           }
         }
       }
@@ -252,6 +251,21 @@ export class DeepseekProvider implements Provider {
         stopReason = mapStopReason(choice.finish_reason);
       }
       if (event.usage) usage = mapUsage(event.usage, this.contextWindow);
+    }
+
+    // Emit thinking BEFORE the tool_use flush below (and before
+    // message_complete) so the loop pushes it into assistantBlocks first
+    // (loop.ts appends thinking_complete blocks directly into
+    // assistantBlocks). This must match the non-streaming path's block
+    // order — [thinking, text, tool_use] (see openAiChoiceToBlocks) —
+    // otherwise the same response gets stored with different block order
+    // depending on whether streaming was used, and a resumed session sees a
+    // different history than a non-streamed one would have produced.
+    if (reasoningSeen && reasoningBuf.length > 0) {
+      yield {
+        type: "thinking_complete",
+        block: { type: "thinking", thinking: reasoningBuf },
+      };
     }
 
     // Flush per-index tool buffers in the order their indexes appeared. If a
@@ -273,17 +287,6 @@ export class DeepseekProvider implements Provider {
         }
       }
       yield { type: "tool_use_complete", id: entry.id, name: entry.name };
-    }
-
-    // Emit thinking BEFORE message_complete so the loop pushes it into the
-    // assistant block list (loop.ts:155 appends thinking_complete blocks
-    // directly into assistantBlocks). Order in history: thinking → text →
-    // tool_use, matching Anthropic's interleaved-thinking convention.
-    if (reasoningSeen && reasoningBuf.length > 0) {
-      yield {
-        type: "thinking_complete",
-        block: { type: "thinking", thinking: reasoningBuf },
-      };
     }
 
     yield { type: "message_complete", stopReason, usage };
@@ -309,7 +312,11 @@ function buildRequestBody(opts: ProviderCompleteOptions, stream: boolean): Recor
     max_tokens: opts.maxTokens ?? 4096,
   };
   if (opts.tools && opts.tools.length > 0) {
-    body.tools = translateToolsToOpenAI(opts.tools);
+    // v0.1.47: `ProviderToolSchema` IS the OpenAI Chat Completions wire
+    // shape now (see providers/base.ts's `defineTool`) — no per-call
+    // translation needed. Schemas are canonicalized once, at tool-
+    // definition time, instead of re-derived on every single request.
+    body.tools = opts.tools;
   }
   if (stream) {
     body.stream = true;
@@ -427,10 +434,16 @@ function openAiChoiceToBlocks(choice: OpenAIChoice): ProviderContentBlock[] {
       if (tc.function?.arguments) {
         try {
           input = JSON.parse(tc.function.arguments);
-        } catch {
+        } catch (e) {
           // Defensive — malformed JSON arguments fall through with an empty
           // input. The loop's tool dispatcher then sees no args, same as
-          // Anthropic's analogous failure mode.
+          // Anthropic's analogous failure mode. Logged so a silently-empty
+          // tool call (e.g. Write/Bash with no args) is diagnosable instead
+          // of failing mysteriously.
+          logger.warn(
+            { err: e, toolName: tc.function?.name, raw: tc.function.arguments.slice(0, 200) },
+            "deepseek complete: tool_use input_json parse failed — using empty input",
+          );
         }
       }
       blocks.push({
@@ -442,23 +455,6 @@ function openAiChoiceToBlocks(choice: OpenAIChoice): ProviderContentBlock[] {
     }
   }
   return blocks;
-}
-
-/**
- * Translate Maestro's Anthropic-shaped tool schemas into OpenAI function
- * format. DeepSeek accepts the standard `{type:"function", function:{...}}`
- * shape; we pass `input_schema` through as `parameters` (same JSON Schema
- * subset, just renamed).
- */
-export function translateToolsToOpenAI(tools: readonly ProviderToolSchema[]): OpenAITool[] {
-  return tools.map((t) => ({
-    type: "function",
-    function: {
-      name: t.name,
-      description: t.description,
-      parameters: t.input_schema as unknown as Record<string, unknown>,
-    },
-  }));
 }
 
 /**
@@ -549,7 +545,7 @@ export function translateMessagesToOpenAI(
           out.push({
             role: "tool",
             tool_call_id: block.tool_use_id,
-            content: toolResultToOpenAI(block.content),
+            content: toolResultToOpenAI(block.content, block.is_error),
           });
         }
         // Other block types (tool_use, thinking) don't legally appear in
@@ -600,14 +596,22 @@ export function translateMessagesToOpenAI(
 }
 
 /**
- * If a user message ends up as a single text part, collapse to a plain
+ * If a user message ends up as all-text parts, collapse to a single plain
  * string — keeps the wire shape identical to v0.1.17 for the (overwhelming)
  * text-only case and avoids tripping any strict server-side validator that
  * insists on string content for non-vision models. Mixed / image-bearing
  * messages keep the array form.
+ *
+ * NOTE: this used to only collapse when `parts.length === 1`, but every
+ * user turn built by provider.ts arrives as at least two text parts (the
+ * prompt plus a system-reminder block), so that condition was effectively
+ * always false and the "avoid array content" comment above never applied
+ * in practice. Collapse whenever every part is text, regardless of count.
  */
 function condenseUserParts(parts: OpenAIContentPart[]): string | OpenAIContentPart[] {
-  if (parts.length === 1 && parts[0].type === "text") return parts[0].text;
+  if (parts.every((p) => p.type === "text")) {
+    return parts.map((p) => (p as { type: "text"; text: string }).text).join("\n");
+  }
   return parts;
 }
 
@@ -627,8 +631,24 @@ function condenseUserParts(parts: OpenAIContentPart[]): string | OpenAIContentPa
  */
 function toolResultToOpenAI(
   content: string | MaestroToolResultBlock[],
+  isError?: boolean,
 ): string | OpenAIContentPart[] {
-  if (typeof content === "string") return content;
+  // OpenAI `tool` messages have no structural equivalent of Anthropic's
+  // `tool_result.is_error` flag, so without this prefix an `is_error: true`
+  // block would read as an ordinary success to the model. `is_error` is
+  // part of the public, provider-agnostic ProviderMessage shape (base.ts),
+  // so this future-proofs the translator for any host that sets it directly.
+  //
+  // NOTE (as of v0.1.47): this now DOES fire for real MCP tool failures.
+  // `mcp/client.ts`'s `renderCallResult` returns the MCP server's own
+  // `isError` flag instead of discarding it, `mcp/pool.ts` wraps it into a
+  // `ToolExecuteError`, and `loop.ts` unwraps that onto the canonical
+  // `tool_result.is_error` field this function reads — see those files'
+  // docstrings for the full chain. (Earlier in the v0.1.47 cycle this
+  // prefix only fired for the internal aux-compaction sub-loop's synthetic
+  // "Unknown tool" result; that gap was closed within the same release.)
+  const prefix = isError ? "[tool error] " : "";
+  if (typeof content === "string") return `${prefix}${content}`;
   const parts: OpenAIContentPart[] = [];
   for (const b of content) {
     if (b.type === "text") {
@@ -650,7 +670,10 @@ function toolResultToOpenAI(
   }
   // All-text → collapse for compatibility (see condenseUserParts).
   if (parts.every((p) => p.type === "text")) {
-    return parts.map((p) => (p as { type: "text"; text: string }).text).join("\n");
+    return `${prefix}${parts.map((p) => (p as { type: "text"; text: string }).text).join("\n")}`;
+  }
+  if (prefix.length > 0) {
+    parts.unshift({ type: "text", text: prefix.trimEnd() });
   }
   return parts;
 }
@@ -701,12 +724,17 @@ async function* parseSseStream(
       const { value, done } = await reader.read();
       if (done) break;
       buf += decoder.decode(value, { stream: true });
-      let idx = buf.indexOf("\n\n");
-      while (idx >= 0) {
-        const raw = buf.slice(0, idx);
-        buf = buf.slice(idx + 2);
+      // Match kimi.ts: SSE frames may be separated by `\n\n` or `\r\n\r\n`
+      // depending on what sits between us and the DeepSeek origin (proxies,
+      // gateways). A literal `"\n\n"` split silently stalls the whole
+      // stream if CRLF framing ever shows up, since no boundary is ever
+      // found.
+      let boundary = /\r?\n\r?\n/.exec(buf);
+      while (boundary) {
+        const raw = buf.slice(0, boundary.index);
+        buf = buf.slice(boundary.index + boundary[0].length);
         const dataLine = raw
-          .split("\n")
+          .split(/\r?\n/)
           .find((l) => l.startsWith("data:"))
           ?.slice("data:".length)
           .trim();
@@ -714,12 +742,14 @@ async function* parseSseStream(
           if (dataLine === "[DONE]") return;
           try {
             yield JSON.parse(dataLine) as OpenAIStreamEvent;
-          } catch {
-            // Skip malformed frames — DeepSeek shouldn't emit them, and one
-            // bad byte shouldn't kill a turn.
+          } catch (e) {
+            logger.warn(
+              { err: e, raw: dataLine.slice(0, 200) },
+              "deepseek stream: malformed SSE data frame — skipping",
+            );
           }
         }
-        idx = buf.indexOf("\n\n");
+        boundary = /\r?\n\r?\n/.exec(buf);
       }
     }
   } finally {

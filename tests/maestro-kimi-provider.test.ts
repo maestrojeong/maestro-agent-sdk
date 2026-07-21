@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { MaestroToolResultBlock, ProviderMessage } from "@/providers/base";
+import { defineTool } from "@/providers/base";
 import {
   contextWindowForKimiModel,
   effortForKimi,
@@ -9,7 +10,6 @@ import {
   KimiProvider,
   mapStopReason,
   translateMessagesToOpenAI,
-  translateToolsToOpenAI,
 } from "@/providers/kimi";
 
 // Providers POST via `nodeFetch` (node:http). Delegate to `globalThis.fetch`
@@ -125,35 +125,10 @@ describe("mapStopReason", () => {
   });
 });
 
-describe("translateToolsToOpenAI", () => {
-  test("converts Anthropic tool schema to OpenAI function format", () => {
-    const out = translateToolsToOpenAI([
-      {
-        name: "echo",
-        description: "echo back",
-        input_schema: {
-          type: "object",
-          properties: { msg: { type: "string" } },
-          required: ["msg"],
-        },
-      },
-    ]);
-    expect(out).toEqual([
-      {
-        type: "function",
-        function: {
-          name: "echo",
-          description: "echo back",
-          parameters: {
-            type: "object",
-            properties: { msg: { type: "string" } },
-            required: ["msg"],
-          },
-        },
-      },
-    ]);
-  });
-});
+// `translateToolsToOpenAI` was removed in v0.1.47 — `ProviderToolSchema` is
+// now already the OpenAI wire shape (built via `defineTool()` at tool-
+// definition time), so there's nothing left to translate per-call. See
+// tests/maestro-providers-base.test.ts for `defineTool` coverage.
 
 describe("translateMessagesToOpenAI", () => {
   test("prepends system message and passes through string content", () => {
@@ -242,6 +217,42 @@ describe("translateMessagesToOpenAI", () => {
       { role: "tool", tool_call_id: "call_2", content: "result 2" },
     ]);
   });
+
+  test("regression: multi-part (prompt + reminder) text-only user turn collapses to one string", () => {
+    // Same rationale as the equivalent DeepSeek test — provider.ts always
+    // builds real user turns with ≥2 text parts, which the old
+    // `length === 1` guard never collapsed.
+    const msgs: ProviderMessage[] = [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "do the thing" },
+          { type: "text", text: "<system-reminder>be careful</system-reminder>" },
+        ],
+      },
+    ];
+    const out = translateMessagesToOpenAI("", msgs, false);
+    expect(out).toEqual([
+      { role: "user", content: "do the thing\n<system-reminder>be careful</system-reminder>" },
+    ]);
+  });
+
+  test("regression: tool_result.is_error is surfaced with a prefix (was silently dropped)", () => {
+    const msgs: ProviderMessage[] = [
+      {
+        role: "user",
+        content: [
+          { type: "tool_result", tool_use_id: "call_1", content: "boom", is_error: true },
+          { type: "tool_result", tool_use_id: "call_2", content: "ok" },
+        ],
+      },
+    ];
+    const out = translateMessagesToOpenAI("", msgs, false);
+    expect(out).toEqual([
+      { role: "tool", tool_call_id: "call_1", content: "[tool error] boom" },
+      { role: "tool", tool_call_id: "call_2", content: "ok" },
+    ]);
+  });
 });
 
 // ─── Kimi-specific: native vision support (image_url, not text placeholder) ──
@@ -274,14 +285,23 @@ describe("Kimi multimodal translation (vision-native, unlike DeepSeek)", () => {
     });
   });
 
-  test("public image URLs are rejected before calling Kimi", () => {
+  test("regression: public image URLs degrade to a text placeholder instead of throwing", () => {
+    // Was `.toThrow(...)` — see imageBlockToPart's docstring for why that
+    // was dangerous: translateMessagesToOpenAI re-renders the whole history
+    // on every call, so a bad image block anywhere in a resumed session
+    // would permanently break every future turn instead of just degrading
+    // that one image's visibility, like DeepSeek already does.
     const messages: ProviderMessage[] = [
       {
         role: "user",
         content: [{ type: "image", source: { type: "url", url: "https://example.com/img.jpg" } }],
       },
     ];
-    expect(() => translateMessagesToOpenAI("", messages, true)).toThrow(/public image URLs/);
+    const out = translateMessagesToOpenAI("", messages, true);
+    // Single text-only part → condenseUserParts collapses it to a string.
+    expect(typeof out[0].content).toBe("string");
+    expect(out[0].content as string).toContain("cannot render on Kimi");
+    expect(out[0].content as string).toContain("public image URLs");
   });
 
   test("ms:// image references are passed through", () => {
@@ -295,7 +315,7 @@ describe("Kimi multimodal translation (vision-native, unlike DeepSeek)", () => {
     expect(out[0].content).toEqual([{ type: "image_url", image_url: { url: "ms://file_123" } }]);
   });
 
-  test("malformed image sources are rejected instead of sending empty image data", () => {
+  test("regression: malformed image sources degrade to a placeholder instead of throwing", () => {
     const missingUrl: ProviderMessage[] = [
       {
         role: "user",
@@ -309,8 +329,11 @@ describe("Kimi multimodal translation (vision-native, unlike DeepSeek)", () => {
       },
     ];
 
-    expect(() => translateMessagesToOpenAI("", missingUrl, true)).toThrow(/missing its url/);
-    expect(() => translateMessagesToOpenAI("", missingData, true)).toThrow(/missing its data/);
+    const outUrl = translateMessagesToOpenAI("", missingUrl, true);
+    expect(outUrl[0].content as string).toContain("missing its url");
+
+    const outData = translateMessagesToOpenAI("", missingData, true);
+    expect(outData[0].content as string).toContain("missing its base64 data");
   });
 
   test("user-message PDF document still falls back to a text placeholder", () => {
@@ -401,6 +424,55 @@ describe("KimiProvider.complete (mocked)", () => {
       cacheReadInputTokens: 7,
       contextTokens: 18,
       contextWindow: KIMI_K3_CONTEXT_WINDOW,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  test("regression: posts the exact OpenAI-shaped tools body (no double-wrap, no omission)", async () => {
+    // deepseek.ts has an equivalent assertion; Kimi's buildRequestBody is
+    // an INDEPENDENT implementation of the same `body.tools = opts.tools`
+    // passthrough (v0.1.47's ProviderToolSchema refactor removed a
+    // separate translateToolsToOpenAI from each provider file) — this
+    // proves Kimi's copy of the passthrough isn't accidentally
+    // double-wrapping `defineTool`'s already-wire-shaped output, or
+    // silently dropping it.
+    process.env.MOONSHOT_API_KEY = "sk-test-xxx";
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      expect(body.tools).toEqual([
+        {
+          type: "function",
+          function: {
+            name: "echo",
+            description: "e",
+            parameters: { type: "object", properties: {} },
+          },
+        },
+      ]);
+      return new Response(
+        JSON.stringify({
+          id: "chatcmpl-1",
+          choices: [
+            { index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const provider = KimiProvider.fromEnv();
+    await provider.complete({
+      model: "kimi-k3",
+      messages: [{ role: "user", content: "hi" }],
+      system: "sys",
+      tools: [
+        defineTool({
+          name: "echo",
+          description: "e",
+          input_schema: { type: "object", properties: {} },
+        }),
+      ],
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
@@ -628,5 +700,52 @@ describe("KimiProvider.stream (mocked SSE)", () => {
       { type: "tool_use_input_delta", id: "call_late", partial_json: '{"msg":"hi"}' },
       { type: "tool_use_complete", id: "call_late", name: "echo" },
     ]);
+  });
+
+  test("regression: thinking_complete is emitted before tool_use_complete", async () => {
+    // Same block-order bug as deepseek.ts — see that file's equivalent test
+    // for the full rationale. loop.ts only pushes into `assistantBlocks` on
+    // `tool_use_complete`, so that's the event whose order relative to
+    // `thinking_complete` determines the stored history shape.
+    process.env.MOONSHOT_API_KEY = "sk-test-xxx";
+    globalThis.fetch = vi.fn(async () => {
+      return sseResponse([
+        frame({
+          choices: [{ index: 0, delta: { reasoning_content: "thinking..." }, finish_reason: null }],
+        }),
+        frame({
+          choices: [
+            {
+              index: 0,
+              delta: {
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: "call_1",
+                    type: "function",
+                    function: { name: "echo", arguments: "{}" },
+                  },
+                ],
+              },
+              finish_reason: "tool_calls",
+            },
+          ],
+        }),
+        "data: [DONE]\n\n",
+      ]);
+    }) as unknown as typeof fetch;
+
+    const events = [];
+    for await (const event of KimiProvider.fromEnv().stream({
+      model: "kimi-k2.7-code",
+      messages: [{ role: "user", content: "hi" }],
+      system: "",
+    })) {
+      events.push(event);
+    }
+    const relevantTypes = events
+      .map((e) => e.type)
+      .filter((t) => t === "thinking_complete" || t === "tool_use_complete");
+    expect(relevantTypes).toEqual(["thinking_complete", "tool_use_complete"]);
   });
 });

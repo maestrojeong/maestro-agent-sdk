@@ -12,6 +12,7 @@
  * collect the user's answer before the next iteration.
  */
 
+import { defineTool } from "@/providers/base";
 import type { ToolHandler } from "@/tools/registry";
 
 export interface AskUserQuestionInput {
@@ -25,7 +26,7 @@ export interface AskUserQuestionInput {
 
 export const askUserQuestionTool: ToolHandler = {
   parallelSafe: false, // must be the last tool call in a turn
-  schema: {
+  schema: defineTool({
     name: "AskUserQuestion",
     description:
       "Ask the user a question. Use this when you need a decision, confirmation, " +
@@ -69,7 +70,7 @@ export const askUserQuestionTool: ToolHandler = {
       },
       required: ["question"],
     },
-  },
+  }),
   async execute(input) {
     const { question, choices, multiSelect } = input as unknown as AskUserQuestionInput;
     return JSON.stringify({

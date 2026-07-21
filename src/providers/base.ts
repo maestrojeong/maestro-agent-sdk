@@ -3,24 +3,87 @@ import type { EffortLevel, TokenUsage } from "@/types";
 /**
  * Provider abstraction for the Maestro TS port.
  *
- * Phase 1 ships an Anthropic adapter only. OpenAI / Gemini / etc. arrive in
- * Phase 5 — when they do, they implement this same Provider interface so the
- * agent loop in core/loop.ts stays unchanged.
+ * Phase 1 shipped with an Anthropic adapter planned; as of v0.1.47 the only
+ * providers actually implemented are DeepSeek and Kimi, both OpenAI Chat
+ * Completions-compatible. No Anthropic (or other flat-tool-schema) adapter
+ * has ever shipped in this SDK.
  *
- * Message format follows Anthropic's Messages API shape (closer to Claude
- * than to OpenAI). The OpenAI-style conversion that upstream Maestro does
- * inside run_agent.py is pushed down into per-provider adapters for the TS
- * port — keeps the loop simple at the cost of one extra adapter step per
- * non-Anthropic provider when Phase 5 lands.
+ * Message format (`ProviderMessage`/`ProviderContentBlock`) still follows
+ * Anthropic's Messages API shape (closer to Claude than to OpenAI) — each
+ * provider adapter translates it to its own wire format per-call. Tool
+ * schemas (`ProviderToolSchema`, below) do NOT follow this pattern anymore:
+ * they're canonicalized directly to the OpenAI wire shape at definition time
+ * via `defineTool()`, since both implemented providers require it and no
+ * provider needs the flatter shape translated away from it.
  */
 
+/**
+ * Tool schema, in the exact shape both currently-implemented providers
+ * (DeepSeek, Kimi — both OpenAI Chat Completions-compatible) require on the
+ * wire: `{type:"function", function:{name, description, parameters}}`.
+ *
+ * v0.1.19 through v0.1.47 stored this internally in a flatter,
+ * Anthropic-shaped form (`{name, description, input_schema}`) and re-derived
+ * the OpenAI shape on EVERY single `complete`/`stream` call via
+ * `translateToolsToOpenAI` (deepseek.ts, kimi.ts) — duplicated,
+ * per-call-repeated logic for a translation that never had anywhere else to
+ * go, since no Anthropic provider has ever shipped in this SDK (see the
+ * v0.1.47 review notes). Schemas are now canonicalized to the wire shape
+ * ONCE, at tool-definition time, via `defineTool()` below — `tools/registry.ts`
+ * and both provider adapters pass this straight through to `body.tools`
+ * with zero per-call transform cost.
+ *
+ * If a flat-shaped provider (Anthropic or otherwise) is ever added, THAT
+ * adapter is the one that should translate FROM this shape TO its own wire
+ * format — not the other way around, now that OpenAI-compatible providers
+ * are the only ones this SDK implements.
+ */
 export interface ProviderToolSchema {
+  type: "function";
+  function: {
+    name: string;
+    description: string;
+    parameters: {
+      type: "object";
+      properties: Record<string, unknown>;
+      required?: string[];
+    };
+  };
+}
+
+/**
+ * Build a `ProviderToolSchema` from the more compact
+ * `{name, description, input_schema}` shape every built-in tool's schema
+ * literal defines — keeps those literals flat and readable while producing
+ * the canonical wire shape. Use this at every tool-definition call site
+ * instead of hand-nesting the `type`/`function` wrapper.
+ *
+ * Accepts `readonly string[]` for `required` (not just mutable `string[]`)
+ * because several built-in schemas are declared `as const` for literal-type
+ * narrowing elsewhere, which makes every array in the literal readonly —
+ * copies it into a fresh mutable array below rather than forcing every
+ * call site to fight the const-assertion.
+ */
+export function defineTool(spec: {
   name: string;
   description: string;
   input_schema: {
     type: "object";
     properties: Record<string, unknown>;
-    required?: string[];
+    required?: readonly string[];
+  };
+}): ProviderToolSchema {
+  return {
+    type: "function",
+    function: {
+      name: spec.name,
+      description: spec.description,
+      parameters: {
+        type: "object",
+        properties: spec.input_schema.properties,
+        ...(spec.input_schema.required ? { required: [...spec.input_schema.required] } : {}),
+      },
+    },
   };
 }
 

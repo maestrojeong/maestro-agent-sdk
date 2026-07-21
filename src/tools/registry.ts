@@ -15,13 +15,61 @@ import type { MaestroToolResultBlock, ProviderToolSchema } from "@/providers/bas
  *     each of which serializes per its native wire shape (Anthropic image
  *     block, DeepSeek `image_url`, etc).
  *
+ *   - `ToolExecuteError` — v0.1.47+: a tagged failure wrapper around either
+ *     of the above. Before this, every failure (a thrown exception, an
+ *     unknown/disallowed tool name, a blocked PreToolUse hook, and — most
+ *     importantly — an MCP `isError: true` response) was flattened into a
+ *     plain error-shaped STRING (`JSON.stringify({error: ...})`), which
+ *     reads as ordinary tool output to the model. There was no way for a
+ *     structural failure to reach `ProviderContentBlock`'s
+ *     `tool_result.is_error` flag (base.ts), so DeepSeek/Kimi's
+ *     `"[tool error] "` wire prefix (providers/deepseek.ts,
+ *     providers/kimi.ts) had nothing to key off for a real MCP failure —
+ *     see the v0.1.47 changelog note on `is_error` being effectively dead
+ *     for the live tool-dispatch path. Wrap a failure in
+ *     `{isError: true, content}` to mark it structurally; use
+ *     `unwrapToolExecuteResult()` to read it back out uniformly. Pre/Post
+ *     hooks and the loop's preview builder treat the wrapper's `content`
+ *     exactly like the top-level `string | MaestroToolResultBlock[]` case.
+ *
  * Pre/Post hooks operate on the string preview path — structured arrays
- * skip the post-hook output rewrite (hooks can still log via `log`).
- * Downstream rationale: most policy hooks redact text; a binary-aware
- * redactor needs a different surface and would land as a separate hook
- * type in a later version.
+ * (and the error wrapper's content, when itself an array) skip the
+ * post-hook output rewrite (hooks can still log via `log`). Downstream
+ * rationale: most policy hooks redact text; a binary-aware redactor needs a
+ * different surface and would land as a separate hook type in a later
+ * version.
  */
-export type ToolExecuteResult = string | MaestroToolResultBlock[];
+export interface ToolExecuteError {
+  isError: true;
+  content: string | MaestroToolResultBlock[];
+}
+
+export type ToolExecuteResult = string | MaestroToolResultBlock[] | ToolExecuteError;
+
+/** Type guard for `ToolExecuteResult`'s tagged-error variant. */
+export function isToolExecuteError(result: ToolExecuteResult): result is ToolExecuteError {
+  return (
+    typeof result === "object" &&
+    result !== null &&
+    !Array.isArray(result) &&
+    (result as { isError?: unknown }).isError === true
+  );
+}
+
+/**
+ * Unwrap any `ToolExecuteResult` shape into its raw content plus an
+ * explicit error flag. Use this instead of branching on the union directly
+ * — every consumer (preview builder, truncation, canonical history block
+ * construction) should go through here so a future 4th variant only needs
+ * one update site.
+ */
+export function unwrapToolExecuteResult(result: ToolExecuteResult): {
+  isError: boolean;
+  content: string | MaestroToolResultBlock[];
+} {
+  if (isToolExecuteError(result)) return { isError: true, content: result.content };
+  return { isError: false, content: result };
+}
 
 /**
  * Maestro tool registry — TS port of upstream `tools/registry.py`.
@@ -192,7 +240,7 @@ export class ToolRegistry {
   }
 
   register(handler: ToolHandler, options?: RegisterOptions): void {
-    const name = handler.schema.name;
+    const name = handler.schema.function.name;
     if (this.tools.has(name)) {
       throw new Error(`Maestro ToolRegistry: tool '${name}' is already registered`);
     }
@@ -277,7 +325,7 @@ export class ToolRegistry {
       if (this.activeDeferred.has(name)) continue;
       const handler = this.tools.get(name);
       if (!handler) continue;
-      out.push({ name, summary: clipSummary(handler.schema.description) });
+      out.push({ name, summary: clipSummary(handler.schema.function.description) });
     }
     return out;
   }
@@ -382,18 +430,30 @@ export class ToolRegistry {
       output = await handler.execute(input);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      return JSON.stringify({ error: msg });
+      // Tagged as a structural failure (not just error-shaped text) so it
+      // can reach `tool_result.is_error` on the wire — see the
+      // `ToolExecuteError` JSDoc above.
+      return { isError: true, content: JSON.stringify({ error: msg }) };
     }
 
     for (const hook of this.hooks) {
       if (!hook.post) continue;
       try {
         // Post hooks operate on the text preview path. For structured
-        // (array) outputs we synthesize a short preview so existing hooks
-        // can still log / inspect, but the post hook's `output` rewrite
-        // applies ONLY when the underlying result was a string. Binary
-        // payloads pass through untouched — see ToolExecuteResult JSDoc.
-        const previewIn = typeof output === "string" ? output : previewOfBlocks(output);
+        // (array) outputs, and for the error wrapper's content when THAT is
+        // an array, we synthesize a short preview so existing hooks can
+        // still log / inspect, but the post hook's `output` rewrite applies
+        // ONLY when the underlying result is a bare string (not wrapped in
+        // `ToolExecuteError`, even if its content is a string) — a hook
+        // rewriting error-preview text can't silently un-flag a failure by
+        // handing back a plain string here; it would need a dedicated
+        // error-aware hook surface. Binary payloads pass through untouched
+        // — see ToolExecuteResult JSDoc.
+        const unwrapped = unwrapToolExecuteResult(output);
+        const previewIn =
+          typeof unwrapped.content === "string"
+            ? unwrapped.content
+            : previewOfBlocks(unwrapped.content);
         const result = await hook.post({
           toolName,
           input,
@@ -426,7 +486,7 @@ export class ToolRegistry {
         toolName: name,
         input,
         parallelSafe: false,
-        result: JSON.stringify({ error: `unknown tool: ${name}` }),
+        result: { isError: true, content: JSON.stringify({ error: `unknown tool: ${name}` }) },
       };
     }
     if (this.disallowedNames.has(name)) {
@@ -435,7 +495,10 @@ export class ToolRegistry {
         toolName: name,
         input,
         parallelSafe: false,
-        result: JSON.stringify({ error: `disallowed tool: ${name}` }),
+        result: {
+          isError: true,
+          content: JSON.stringify({ error: `disallowed tool: ${name}` }),
+        },
       };
     }
 
@@ -449,7 +512,7 @@ export class ToolRegistry {
           toolName: name,
           input: currentInput,
           parallelSafe: false,
-          result: JSON.stringify({ error: decision.error }),
+          result: { isError: true, content: JSON.stringify({ error: decision.error }) },
         };
       }
       if (decision.decision === "modify") {

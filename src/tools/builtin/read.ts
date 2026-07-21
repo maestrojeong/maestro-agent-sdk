@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, type Stats, statSync } from "node:fs";
 import { extname, isAbsolute } from "node:path";
 import type { MaestroToolResultBlock } from "@/providers/base";
+import { defineTool } from "@/providers/base";
 import type { FileStateTracker } from "@/tools/file-state";
 import type { ToolHandler } from "@/tools/registry";
 
@@ -76,7 +77,7 @@ export function createReadTool(opts: ReadToolOptions = {}): ToolHandler {
   const { tracker } = opts;
   return {
     parallelSafe: true,
-    schema: {
+    schema: defineTool({
       name: "Read",
       description:
         "Read a file from the local filesystem. Returns line-numbered text for plain " +
@@ -107,7 +108,7 @@ export function createReadTool(opts: ReadToolOptions = {}): ToolHandler {
         },
         required: ["file_path"],
       },
-    },
+    }),
     async execute(input) {
       const filePath = typeof input.file_path === "string" ? input.file_path : "";
       if (!filePath) {

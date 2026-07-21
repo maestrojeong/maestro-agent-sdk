@@ -1,11 +1,12 @@
 import { describe, expect, test } from "vitest";
+import { defineTool } from "@/providers/base";
 import type {
   HookRegistration,
   PostToolUseResult,
   PreToolUseDecision,
   ToolHandler,
 } from "@/tools/registry";
-import { ToolRegistry } from "@/tools/registry";
+import { isToolExecuteError, ToolRegistry } from "@/tools/registry";
 
 /**
  * Tests for the PreToolUse / PostToolUse hook chain.
@@ -22,7 +23,7 @@ import { ToolRegistry } from "@/tools/registry";
  *  was actually invoked with so tests can assert post-modification flow. */
 function makeEcho(name = "echo"): ToolHandler {
   return {
-    schema: { name, description: "", input_schema: { type: "object", properties: {} } },
+    schema: defineTool({ name, description: "", input_schema: { type: "object", properties: {} } }),
     async execute(input) {
       return JSON.stringify({ echoed: input });
     },
@@ -95,7 +96,11 @@ describe("ToolRegistry hook chain", () => {
     });
 
     const out = await r.dispatch("echo", { v: 1 });
-    const parsed = JSON.parse(out) as { error: string };
+    // v0.1.47: a blocked call is now a tagged ToolExecuteError, not a bare
+    // error string — see tools/registry.ts's ToolExecuteResult JSDoc.
+    expect(isToolExecuteError(out)).toBe(true);
+    if (!isToolExecuteError(out)) throw new Error("unreachable");
+    const parsed = JSON.parse(out.content as string) as { error: string };
     expect(parsed.error).toBe("denied by A");
     // Only the blocker ran — B's pre + post never fire.
     expect(events).toEqual(["preA"]);
@@ -162,7 +167,9 @@ describe("ToolRegistry hook chain", () => {
       },
     });
     const out = await r.dispatch("nope", {});
-    const parsed = JSON.parse(out) as { error: string };
+    expect(isToolExecuteError(out)).toBe(true);
+    if (!isToolExecuteError(out)) throw new Error("unreachable");
+    const parsed = JSON.parse(out.content as string) as { error: string };
     expect(parsed.error).toContain("unknown tool: nope");
     expect(preFired).toBe(false);
   });
@@ -171,11 +178,11 @@ describe("ToolRegistry hook chain", () => {
     const r = new ToolRegistry();
     let preFired = false;
     r.register({
-      schema: {
+      schema: defineTool({
         name: "explode",
         description: "",
         input_schema: { type: "object", properties: {} },
-      },
+      }),
       async execute() {
         throw new Error("boom");
       },
@@ -193,7 +200,9 @@ describe("ToolRegistry hook chain", () => {
     });
 
     const out = await r.dispatch("explode", {});
-    const parsed = JSON.parse(out) as { error: string };
+    expect(isToolExecuteError(out)).toBe(true);
+    if (!isToolExecuteError(out)) throw new Error("unreachable");
+    const parsed = JSON.parse(out.content as string) as { error: string };
     expect(parsed.error).toBe("boom");
     expect(preFired).toBe(true);
   });

@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { isAbsolute, normalize } from "node:path";
-import type { ProviderToolSchema } from "@/providers/base";
+import { defineTool } from "@/providers/base";
 import type { BackgroundBashRegistry } from "@/tools/builtin/bash_background";
 import type { ToolHandler } from "@/tools/registry";
 
@@ -89,7 +89,7 @@ export function createBashTool(opts?: {
   const parentSignal = opts?.signal;
   const bgRegistry = opts?.background;
   return {
-    schema: bashSchema as unknown as ProviderToolSchema,
+    schema: defineTool(bashSchema),
     // v0.1.19+: enable parallel dispatch. The model frequently emits batches
     // of independent bash calls in one assistant turn (running tests across
     // multiple solution dirs, checking git status + branch + log in one

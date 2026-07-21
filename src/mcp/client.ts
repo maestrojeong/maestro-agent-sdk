@@ -5,6 +5,7 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { logger } from "@/platform/logger";
 import { MAESTRO_SDK_VERSION } from "@/platform/version";
 import type { ProviderToolSchema } from "@/providers/base";
+import { defineTool } from "@/providers/base";
 
 /**
  * Maestro MCP client wrapper.
@@ -41,6 +42,13 @@ export interface MaestroMcpTool {
   serverName: string;
   /** Anthropic-style tool schema for the API `tools` array. */
   schema: ProviderToolSchema;
+}
+
+/** Result of a `callTool` invocation — rendered payload plus whether the
+ *  MCP server itself flagged the call as a failure (`isError: true`). */
+export interface MaestroMcpCallResult {
+  content: string;
+  isError: boolean;
 }
 
 export class MaestroMcpClient {
@@ -83,11 +91,11 @@ export class MaestroMcpClient {
         publicName,
         originalName: original,
         serverName: this.name,
-        schema: {
+        schema: defineTool({
           name: publicName,
           description: typeof t.description === "string" ? t.description : "",
           input_schema: normalizeInputSchema(t.inputSchema),
-        },
+        }),
       });
     }
     return out;
@@ -104,12 +112,22 @@ export class MaestroMcpClient {
    * Optional `abortSignal` propagates the Maestro-level abort down into the
    * SDK's JSON-RPC request, so an in-flight `tools/call` is cancelled instead
    * of left blocking on a dead server.
+   *
+   * Returns the rendered text/JSON payload PLUS whether the MCP server
+   * itself reported `isError: true`. Before v0.1.47, `renderCallResult`
+   * flattened that flag into error-shaped prose (`{"error": ...}` text) and
+   * discarded it — meaning no provider translator ever saw an MCP failure
+   * as a structural `tool_result.is_error`, only as ordinary-looking text.
+   * `mcp/pool.ts`'s `registerMcpTools` now threads `isError` through into a
+   * `ToolExecuteError` (tools/registry.ts) so it survives all the way to
+   * the canonical history block and the DeepSeek/Kimi `"[tool error] "`
+   * wire prefix.
    */
   async callTool(
     originalName: string,
     input: Record<string, unknown>,
     abortSignal?: AbortSignal,
-  ): Promise<string> {
+  ): Promise<MaestroMcpCallResult> {
     const res = await this.client.callTool(
       { name: originalName, arguments: input },
       undefined,
@@ -167,7 +185,7 @@ function sanitizeName(s: string): string {
   return s.replace(/[^a-zA-Z0-9_-]/g, "_");
 }
 
-function normalizeInputSchema(s: unknown): ProviderToolSchema["input_schema"] {
+function normalizeInputSchema(s: unknown): ProviderToolSchema["function"]["parameters"] {
   if (s && typeof s === "object") {
     const obj = s as Record<string, unknown>;
     const props =
@@ -186,14 +204,23 @@ function normalizeInputSchema(s: unknown): ProviderToolSchema["input_schema"] {
 
 /**
  * Render an MCP `callTool` result into a full payload string for the Maestro
- * tool_result block. No length cap here — the model must see the complete
- * output to act on it (e.g. accessibility trees from playwright, OCR text).
- * The 200-char display cap lives in `loop.ts` where the UnifiedEvent is
- * surfaced, mirroring claude/codex (their SDK feeds full payloads to the
- * model and only the UnifiedEvent emit path truncates for downstream
- * telegram-render layout).
+ * tool_result block, plus the server's own `isError` flag. No length cap on
+ * the payload — the model must see the complete output to act on it (e.g.
+ * accessibility trees from playwright, OCR text). The 200-char display cap
+ * lives in `loop.ts` where the UnifiedEvent is surfaced, mirroring
+ * claude/codex (their SDK feeds full payloads to the model and only the
+ * UnifiedEvent emit path truncates for downstream telegram-render layout).
+ *
+ * v0.1.47: previously this flattened `isError: true` into an
+ * error-shaped-but-plain string (`{"error": ...}`) and discarded the flag —
+ * so no provider ever saw an MCP failure as a STRUCTURAL failure, only as
+ * text that happened to look like an error. `isError` now rides back out
+ * on the return value so `mcp/pool.ts` can wrap it into a `ToolExecuteError`
+ * (tools/registry.ts), which the loop threads onto the canonical
+ * `tool_result.is_error` field (base.ts) — the thing DeepSeek/Kimi's
+ * `"[tool error] "` wire prefix was built to key off in the first place.
  */
-function renderCallResult(res: unknown): string {
+function renderCallResult(res: unknown): MaestroMcpCallResult {
   const r = res as { content?: unknown; isError?: boolean };
   const blocks = Array.isArray(r.content) ? r.content : [];
   const text = blocks
@@ -206,12 +233,13 @@ function renderCallResult(res: unknown): string {
     })
     .filter(Boolean)
     .join("\n");
-  if (r.isError) {
-    return JSON.stringify({ error: text || "mcp tool error" });
+  const isError = r.isError === true;
+  if (isError) {
+    return { content: JSON.stringify({ error: text || "mcp tool error" }), isError: true };
   }
-  if (text) return text;
+  if (text) return { content: text, isError: false };
   // Non-text content (image / structured): pass JSON dump so the model still has signal.
-  return JSON.stringify(r.content ?? null);
+  return { content: JSON.stringify(r.content ?? null), isError: false };
 }
 
 /** StdioClientTransport requires `Record<string, string>`; drop undefined values from process.env. */

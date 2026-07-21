@@ -1,12 +1,12 @@
 import { describe, expect, test } from "vitest";
-import type { ProviderToolSchema } from "@/providers/base";
-import { ToolRegistry } from "@/tools/registry";
+import { defineTool } from "@/providers/base";
+import { isToolExecuteError, ToolRegistry } from "@/tools/registry";
 
-const echoSchema: ProviderToolSchema = {
+const echoSchema = defineTool({
   name: "echo",
   description: "echo input back",
   input_schema: { type: "object", properties: {} },
-};
+});
 
 describe("ToolRegistry", () => {
   test("register + dispatch returns handler output", async () => {
@@ -21,10 +21,16 @@ describe("ToolRegistry", () => {
     expect(JSON.parse(result)).toEqual({ ok: { msg: "hi" } });
   });
 
-  test("dispatch unknown tool returns error JSON without throwing", async () => {
+  test("dispatch unknown tool returns a tagged ToolExecuteError without throwing", async () => {
+    // v0.1.47: unknown/disallowed/blocked/thrown failures are now tagged
+    // `{isError: true, content}` (ToolExecuteError) instead of a bare error
+    // string, so they can reach `tool_result.is_error` on the wire — see
+    // tools/registry.ts's ToolExecuteResult JSDoc.
     const reg = new ToolRegistry();
     const result = await reg.dispatch("nope", {});
-    expect(JSON.parse(result)).toEqual({ error: "unknown tool: nope" });
+    expect(isToolExecuteError(result)).toBe(true);
+    if (!isToolExecuteError(result)) throw new Error("unreachable");
+    expect(JSON.parse(result.content as string)).toEqual({ error: "unknown tool: nope" });
   });
 
   test("register duplicate name throws", () => {
@@ -56,7 +62,7 @@ describe("ToolRegistry", () => {
     expect(reg.schemas()).toEqual([echoSchema]);
   });
 
-  test("dispatch wraps execute errors as { error: msg }", async () => {
+  test("dispatch wraps execute errors as a tagged ToolExecuteError { error: msg }", async () => {
     const reg = new ToolRegistry();
     reg.register({
       schema: echoSchema,
@@ -65,7 +71,9 @@ describe("ToolRegistry", () => {
       },
     });
     const result = await reg.dispatch("echo", {});
-    expect(JSON.parse(result)).toEqual({ error: "boom" });
+    expect(isToolExecuteError(result)).toBe(true);
+    if (!isToolExecuteError(result)) throw new Error("unreachable");
+    expect(JSON.parse(result.content as string)).toEqual({ error: "boom" });
   });
 
   test("has() reflects registration", () => {
@@ -103,7 +111,9 @@ describe("ToolRegistry", () => {
     expect(reg.schemas()).toEqual([]);
 
     const result = await reg.dispatch("echo", { msg: "hi" });
-    expect(JSON.parse(result)).toEqual({ error: "disallowed tool: echo" });
+    expect(isToolExecuteError(result)).toBe(true);
+    if (!isToolExecuteError(result)) throw new Error("unreachable");
+    expect(JSON.parse(result.content as string)).toEqual({ error: "disallowed tool: echo" });
     expect(executed).toBe(false);
     expect(preFired).toBe(false);
   });
@@ -117,12 +127,12 @@ describe("ToolRegistry", () => {
       },
     });
     reg.register({
-      schema: { ...echoSchema, name: "blocked" },
+      schema: { ...echoSchema, function: { ...echoSchema.function, name: "blocked" } },
       async execute() {
         return "";
       },
     });
 
-    expect(reg.allHandlers().map((h) => h.schema.name)).toEqual(["echo"]);
+    expect(reg.allHandlers().map((h) => h.schema.function.name)).toEqual(["echo"]);
   });
 });

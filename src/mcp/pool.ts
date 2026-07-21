@@ -124,9 +124,9 @@ export function registerMcpTools(
   const deferred = options?.deferred === true;
   const byName = new Map(pool.clients.map((c) => [c.name, c]));
   for (const t of pool.tools) {
-    if (registry.has(t.schema.name)) {
+    if (registry.has(t.schema.function.name)) {
       logger.warn(
-        { name: t.schema.name, server: t.serverName },
+        { name: t.schema.function.name, server: t.serverName },
         "maestro mcp pool: tool name collision — skipping",
       );
       continue;
@@ -136,11 +136,18 @@ export function registerMcpTools(
       async execute(input) {
         const client = byName.get(t.serverName);
         if (!client) {
-          return JSON.stringify({
-            error: `mcp client '${t.serverName}' not available`,
-          });
+          return {
+            isError: true,
+            content: JSON.stringify({ error: `mcp client '${t.serverName}' not available` }),
+          };
         }
-        return client.callTool(t.originalName, input, abortSignal);
+        // v0.1.47: thread the MCP server's own `isError` flag through as a
+        // `ToolExecuteError` instead of discarding it — see
+        // `mcp/client.ts`'s `renderCallResult` docstring for why this
+        // matters (it's what makes DeepSeek/Kimi's `"[tool error] "` wire
+        // prefix actually fire for a real MCP failure).
+        const result = await client.callTool(t.originalName, input, abortSignal);
+        return result.isError ? { isError: true, content: result.content } : result.content;
       },
     };
     registry.register(handler, { deferred });

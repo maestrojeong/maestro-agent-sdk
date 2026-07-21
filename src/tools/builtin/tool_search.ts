@@ -1,3 +1,4 @@
+import { defineTool } from "@/providers/base";
 import type { ToolHandler, ToolRegistry } from "@/tools/registry";
 
 /**
@@ -79,7 +80,7 @@ export function createToolSearchTool(opts: { registry: ToolRegistry }): ToolHand
   const { registry } = opts;
   return {
     parallelSafe: true,
-    schema: {
+    schema: defineTool({
       name: TOOL_SEARCH_NAME,
       description:
         "Activate one or more deferred tools so you can call them on subsequent turns. " +
@@ -107,7 +108,7 @@ export function createToolSearchTool(opts: { registry: ToolRegistry }): ToolHand
         },
         required: ["query"],
       },
-    },
+    }),
     async execute(input) {
       const queryRaw = typeof input.query === "string" ? input.query : "";
       const query = queryRaw.trim();
@@ -172,7 +173,15 @@ export function createToolSearchTool(opts: { registry: ToolRegistry }): ToolHand
  * wrapper because that's the format the model's pretrained Claude Code
  * transcripts use when ToolSearch surfaces a new tool — keeping the same
  * envelope means the model recognizes the activation pattern without us
- * having to reinvent another shape.
+ * having to reinvent another shape. This is a MODEL-FACING transcript
+ * protocol, separate from the wire body a provider sends — it intentionally
+ * uses the flatter `{name, description, input_schema}` shape (matching
+ * Claude's own tool definition format), NOT `ProviderToolSchema`'s
+ * OpenAI-nested `{type:"function", function:{...}}` wire shape (v0.1.47's
+ * `defineTool`/`ProviderToolSchema` refactor — see providers/base.ts).
+ * Render it explicitly rather than dumping the registry schema object
+ * wholesale, so a future provider-schema shape change can't silently leak
+ * into this unrelated transcript contract again.
  */
 function renderActivationResult(registry: ToolRegistry, names: readonly string[]): string {
   const statusLines: string[] = [];
@@ -186,7 +195,12 @@ function renderActivationResult(registry: ToolRegistry, names: readonly string[]
     const promoted = registry.markActive(name);
     if (promoted) {
       statusLines.push(`- ${name}: OK`);
-      schemaBlocks.push(`<function>${JSON.stringify(schema)}</function>`);
+      const flatSchema = {
+        name: schema.function.name,
+        description: schema.function.description,
+        input_schema: schema.function.parameters,
+      };
+      schemaBlocks.push(`<function>${JSON.stringify(flatSchema)}</function>`);
     } else {
       statusLines.push(`- ${name}: ALREADY_ACTIVE`);
     }

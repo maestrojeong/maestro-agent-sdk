@@ -23,6 +23,7 @@ import type {
   ProviderResponse,
 } from "@/providers/base";
 import type { PreparedToolDispatch, ToolExecuteResult } from "@/tools/registry";
+import { unwrapToolExecuteResult } from "@/tools/registry";
 import type { TokenUsage, UnifiedEvent } from "@/types";
 
 // v0.1.16: removed `EFFORT_LEVELS` + `nextEffortLevel`. The previous
@@ -663,12 +664,20 @@ export async function* runConversation(
     const truncConfig = agent.config.toolResultTruncation;
     for (let i = 0; i < toolUses.length; i++) {
       const tu = toolUses[i];
-      const result = results[i];
+      // v0.1.47: a result may be wrapped in `ToolExecuteError` (unknown/
+      // disallowed tool, blocked PreToolUse hook, a thrown exception, or —
+      // most importantly — a real MCP `isError: true` response threaded
+      // through by mcp/pool.ts). Unwrap once here so every consumer below
+      // (preview, truncation, canonical block) works on the raw content and
+      // the loop threads `isError` onto `tool_result.is_error` (base.ts),
+      // which is what DeepSeek/Kimi's `"[tool error] "` wire prefix
+      // (providers/deepseek.ts, providers/kimi.ts) keys off.
+      const { isError, content: result } = unwrapToolExecuteResult(results[i]);
       const preview = previewToolResult(result);
 
       // Determine content the model will see — truncate string results when
       // configured; leave multimodal (structured array) results untouched.
-      let modelContent: ToolExecuteResult = result;
+      let modelContent: string | MaestroToolResultBlock[] = result;
       let metadata: ToolResultTruncationMetadata | undefined;
 
       if (typeof result === "string" && truncConfig) {
@@ -689,11 +698,13 @@ export async function* runConversation(
         toolUseId: tu.id,
         content: preview,
         ...(metadata ? { metadata } : {}),
+        ...(isError ? { isError: true } : {}),
       };
       toolResultBlocks.push({
         type: "tool_result",
         tool_use_id: tu.id,
         content: modelContent,
+        ...(isError ? { is_error: true } : {}),
       });
     }
 
@@ -773,7 +784,7 @@ export async function* runConversation(
  * `tool_result.content` array; the preview is only for log / chat-window
  * confirmation that the tool fired.
  */
-function previewToolResult(result: ToolExecuteResult): string {
+function previewToolResult(result: string | MaestroToolResultBlock[]): string {
   if (typeof result === "string") {
     return result.length > TOOL_RESULT_PREVIEW_MAX
       ? result.slice(0, TOOL_RESULT_PREVIEW_MAX)

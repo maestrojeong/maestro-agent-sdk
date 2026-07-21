@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, type Stats, statSync } from "node:fs";
 import { extname, isAbsolute } from "node:path";
+import { defineTool } from "@/providers/base";
 import type { ToolHandler } from "@/tools/registry";
 
 const DEFAULT_GEMINI_IMAGE_QA_MODEL = "gemini-2.5-flash";
@@ -36,7 +37,7 @@ interface GeminiGenerateContentResponse {
 export function createGeminiImageQATool(opts: GeminiImageQAToolOptions = {}): ToolHandler {
   return {
     parallelSafe: true,
-    schema: {
+    schema: defineTool({
       name: "View",
       description:
         "Ask Gemini a question about a local image file and return plain text. " +
@@ -56,7 +57,7 @@ export function createGeminiImageQATool(opts: GeminiImageQAToolOptions = {}): To
         },
         required: ["image_path", "question"],
       },
-    },
+    }),
     async execute(input) {
       const apiKey = opts.apiKey ?? process.env.GEMINI_API_KEY;
       if (!apiKey || apiKey.trim().length === 0) {

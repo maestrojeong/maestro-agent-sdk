@@ -2,7 +2,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { isAbsolute, normalize } from "node:path";
 import { logger } from "@/platform/logger";
-import type { ProviderToolSchema } from "@/providers/base";
+import { defineTool } from "@/providers/base";
 import type { ToolHandler } from "@/tools/registry";
 
 /**
@@ -343,7 +343,7 @@ export function createBashOutputTool(reg: BackgroundBashRegistry): ToolHandler {
     // Pure read of in-memory buffers — multiple polls in one turn are
     // safe and useful when the model is reading several backgrounds.
     parallelSafe: true,
-    schema: bashOutputSchema as unknown as ProviderToolSchema,
+    schema: defineTool(bashOutputSchema),
     async execute(input) {
       const bashId = typeof input.bash_id === "string" ? input.bash_id : "";
       if (!bashId) {
@@ -381,7 +381,7 @@ export function createKillBashTool(reg: BackgroundBashRegistry): ToolHandler {
     // Side-effecting — sequential dispatch keeps the kill semantics
     // deterministic when the model batches several at once.
     parallelSafe: false,
-    schema: killBashSchema as unknown as ProviderToolSchema,
+    schema: defineTool(killBashSchema),
     async execute(input) {
       const bashId = typeof input.bash_id === "string" ? input.bash_id : "";
       if (!bashId) {

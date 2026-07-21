@@ -79,7 +79,7 @@ export interface RunSubAgentOptions {
    * Use this to forward MCP tools from the parent session:
    *
    *   extraTools: parentTools.allHandlers().filter(h =>
-   *     h.schema.name.startsWith("mcp__")
+   *     h.schema.function.name.startsWith("mcp__")
    *   )
    *
    * Handlers are registered after the builtin set, so a name collision
@@ -216,7 +216,7 @@ function buildToolRegistry(
   // builtins always take precedence on a name collision.
   if (SUBAGENT_CAPABILITIES[kind].acceptsExtraTools && extraTools) {
     for (const t of extraTools) {
-      if (!tools.has(t.schema.name)) {
+      if (!tools.has(t.schema.function.name)) {
         tools.register(t);
       }
     }

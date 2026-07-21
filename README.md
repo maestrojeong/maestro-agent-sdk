@@ -4,7 +4,7 @@
 [![npm version](https://img.shields.io/npm/v/maestro-agent-sdk.svg)](https://www.npmjs.com/package/maestro-agent-sdk)
 [![license](https://img.shields.io/npm/l/maestro-agent-sdk.svg)](./LICENSE)
 
-**Embeddable agent SDK — skills, memory, MCP, and host-controlled guardrails out of the box.**
+**Embeddable agent SDK — memory, MCP, and host-controlled guardrails out of the box.**
 DeepSeek V4 and Kimi K3/K2.7 Code provider support. No CLI, no gateway, no host lock-in.
 
 ![Multi-Agent SDK comparison](./assets/multi-agent-comparison.png)
@@ -20,11 +20,10 @@ A provider-backed agent runtime. Inject your own logger/MCP resolver/hooks, and 
 - **Agent loop** — provider-driven tool-calling loop with iteration cap, abort signal, LLM pre/post guardrail hooks, and event stream.
 - **DeepSeek provider** — first-class adapter for DeepSeek V4 with a provider-neutral message schema under the loop.
 - **Kimi provider** — K3 and K2.7 Code support with preserved thinking, native vision, streaming, and tool calls.
-- **Built-in tools** — `bash`, `Read`, `Write`, `Edit`, `MultiEdit`, `Glob`, `Grep`, `Agent` (sub-agent delegation), `TaskCreate`/`TaskUpdate`/`TaskList`/`TaskGet`, `WebFetch` (optional SSRF policy via `createWebFetchTool`), `skill_view`, `skill_write`, `View` (Gemini image QA — DeepSeek only, see [Image handling](#image-handling-deepseek)). Bring your own via `ToolRegistry`. Grep shells out to ripgrep (`rg`) so install it if you want the tool active; the SDK surfaces a structured error pointing to the install path when missing. Tool primitives are also importable from the `maestro-agent-sdk/tools` subpath when you don't need the rest of the runtime.
+- **Built-in tools** — `Bash` (+ `BashOutput`/`KillBash` for background processes), `Read`, `Write`, `Edit`, `Glob`, `Grep`, `Agent` (sub-agent delegation), `TaskCreate`/`TaskUpdate`/`TaskList`/`TaskGet`/`TaskOutput`/`TaskStop`, `WebFetch` (optional SSRF policy via `createWebFetchTool`), `AskUserQuestion`, `ToolSearch` (deferred-tool activation), `View` (Gemini image QA — DeepSeek only, see [Image handling](#image-handling-deepseek)). Bring your own via `ToolRegistry`. Grep shells out to ripgrep (`rg`) so install it if you want the tool active; the SDK surfaces a structured error pointing to the install path when missing. Tool primitives are also importable from the `maestro-agent-sdk/tools` subpath when you don't need the rest of the runtime.
 - **MCP** — built-in client pool (stdio + SSE) so any MCP server (`@modelcontextprotocol/sdk`) shows up as tools.
-- **Skills** — per-workspace `.skills/<skillKey>/<name>/skill.md` packages with FTS-style indexing, on-demand body load (`skill_view`), and agent-autonomous authoring (`skill_write`).
 - **Memory** — automatic context compression (summarization + pruning) when the token budget is hit. Reuses the agent's own model for compaction — no separate model knob.
-- **Session persistence** — multi-turn resume via `~/.maestro/sessions/<sessionId>.jsonl`, with a `_meta` header capturing `cwd`, `skillKey`, `userId`, and host metadata for forensics.
+- **Session persistence** — multi-turn resume via `~/.maestro/sessions/<sessionId>.jsonl`, with a `_meta` header capturing `cwd`, `userId`, and host metadata for forensics.
 - **Host integration via DI** — `setLogger`, `setMcpResolver`, `setConversationReader` let you embed without inheriting any one host's opinions. FS policy (path allowlists, owner checks) is a host concern — register a `PreToolUseHook` via `ToolRegistry.use()`.
 
 ## Install
@@ -67,7 +66,12 @@ const agent = new AIAgent(provider, tools, {
   effort: "medium",                 // DeepSeek maps this to `reasoning_effort`
 });
 
-for await (const event of runConversation(agent, "Summarize today's news.")) {
+// `runConversation` takes the full message history, not a bare string —
+// the caller owns this array and it mutates in place as the turn runs, so
+// you can persist it (or the next prompt's array) for multi-turn resume.
+const messages = [{ role: "user" as const, content: "Summarize today's news." }];
+
+for await (const event of runConversation(agent, messages)) {
   if (event.type === "text_delta") process.stdout.write(event.content);
   if (event.type === "tool_use") console.error(`\n[tool] ${event.name}`);
 }
@@ -134,8 +138,8 @@ tools.register(createGeminiImageQATool({ apiKey: process.env.GEMINI_API_KEY }));
 > DeepSeek `high`; `max` is reserved for the deepest DeepSeek reasoning tier.
 > `effort` also propagates to spawned sub-agents as `parentEffort`.
 
-More runnable scripts live under [`examples/`](./examples) — DeepSeek, a
-custom-tool walkthrough, and a `skill_write` demo.
+More runnable scripts live under [`examples/`](./examples) — DeepSeek and a
+custom-tool walkthrough.
 
 ## Configuration
 
@@ -143,9 +147,7 @@ Per-call options on `AgentQueryOptions`:
 
 | Option | Required | Purpose |
 |---|---|---|
-| `cwd` | ✓ | Workspace root. Drives `.skills/` location, rollout `_meta`, and the `mkdir` invariant. |
-| `skillKey` | — | Named skill profile within `<cwd>/.skills/`. Omit for `default`. |
-| `allowedSkills` | — | Per-call name whitelist applied before curation. |
+| `cwd` | ✓ | Session working-directory hint. `mkdir -p`'d so resume flows can stat the path, and stamped into the rollout `_meta` header for forensics. Not auto-injected into tool calls — built-in tools still require absolute paths. |
 | `sessionMetadata` | — | Opaque host bag round-tripped via the rollout `_meta` header. |
 
 The SDK resolves its data directory at module load. Override via env var
@@ -228,7 +230,7 @@ Each session JSONL at `~/.maestro/sessions/<sessionId>.jsonl` carries a
 `_meta` header line for forensics and host-side indexing:
 
 ```jsonl
-{"_meta":{"version":1,"cwd":"/path","skillKey":"legal","userId":"...","createdAt":"2026-05-18T...","sdkVersion":"0.1.x","skillsDir":"...","metadata":{...}}}
+{"_meta":{"version":1,"cwd":"/path","userId":"...","createdAt":"2026-05-18T...","sdkVersion":"0.1.x","metadata":{...}}}
 {"role":"user","content":"..."}
 {"role":"assistant","content":[...]}
 ```
@@ -278,7 +280,7 @@ Refer to the architecture chart at the top of this README. Top → bottom is cal
 | ------------------------------------------------ | ----------------- | ----------------- | ------------- | --------------- |
 | **Built-in harness** (tool loop · context · agent loop) | ✓ Claude Code     | ✓ Codex CLI       | ✓             | ✓               |
 | **Pure library distribution** (npm/pip import only)     | ✗ needs `claude`  | ✗ needs `codex`   | ✗ CLI only    | ✓               |
-| **Maintained provider surface**                         | Claude            | OpenAI            | varies        | DeepSeek V4     |
+| **Maintained provider surface**                         | Claude            | OpenAI            | varies        | DeepSeek V4, Kimi K3/K2.7 |
 | **Library runtime** (embed anywhere)                    | ✗                 | ✗                 | ✗             | ✓               |
 | **Ships standalone CLI** (runs as its own product)      | ✓ Claude Code     | ✓ Codex CLI       | ✓             | ✗ embedded-only |
 
@@ -317,32 +319,6 @@ setMcpResolver((opts) => ({
 setConversationReader((userId, topic, groupId) => myStore.read({ userId, topic, groupId }));
 ```
 
-
-## Skills — drop a directory, get indexed context
-
-Skills are `SKILL.md` (or `skill.md`) files inside `<cwd>/.skills/<skillKey>/<name>/`. The SDK walks that tree on first turn, parses each file's YAML frontmatter, and appends a `## Skills (mandatory)` block to the system prompt with one `name + 60-char description` line per skill. Bodies stay on disk — the model calls `skill_view(name)` to load the full markdown on demand. Index is cached per (root, mtime, TTL) so subsequent turns pay no walk cost.
-
-```ts
-import { maestroProvider } from "maestro-agent-sdk";
-
-// `maestroProvider` is the batteries-included entry point: it builds the
-// ToolRegistry, wires builtin tools + skills + MCP, and drives the loop.
-for await (const event of maestroProvider({
-  cwd: "/path/to/workspace",  // .skills/ resolved relative to this
-  skillKey: "legal",          // → /path/to/workspace/.skills/legal/<name>/SKILL.md
-  prompt: "Draft a contract clause for ...",
-  userId: "alice",
-  session: "thread-42",
-  // skill_view + skill_write tools are auto-registered; the model picks
-  // which skill body to load per turn.
-})) {
-  if (event.type === "text_delta") process.stdout.write(event.content);
-}
-```
-
-**Creating skills:** `skill_write(name, body)` → writes `SKILL.md` into the named directory; the index hot-reloads.
-**Loading skills:** `skill_view(name)` → returns the full markdown body to the model.
-**Security:** every `SKILL.md` is scanned at index-time for prompt-injection, exfiltration, and destructive shell patterns. A flagged file is dropped from the catalog with a logged reason.
 
 ## Hooks & Guardrails — LLM pre/post + tool hooks
 
@@ -488,7 +464,7 @@ bun install         # also supported
 npm install         # alternative
 npm run typecheck   # tsc --noEmit
 npm run build       # tsc + tsc-alias → dist/
-npm test            # vitest, 437 tests (+11 skipped without ripgrep)
+npm test            # vitest, 481 tests (+11 skipped without ripgrep)
 ```
 
 ## License

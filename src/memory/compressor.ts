@@ -7,12 +7,8 @@ import { ACTIVE_TASK_TEMPLATE, wrapCompactedSummary } from "@/memory/active-task
 import { pruneMessages } from "@/memory/prune";
 import { estimateTokens } from "@/memory/token-estimate";
 import { logger } from "@/platform/logger";
-import type {
-  Provider,
-  ProviderContentBlock,
-  ProviderMessage,
-  ProviderToolSchema,
-} from "@/providers/base";
+import type { Provider, ProviderContentBlock, ProviderMessage } from "@/providers/base";
+import { defineTool } from "@/providers/base";
 
 /**
  * Maestro context auto-compaction (OpenCode-style incremental).
@@ -614,7 +610,7 @@ export async function compressIfNeeded(
       writeFileSync(tmpFile, fileText, "utf-8");
       const totalLines = fileText.split("\n").length;
 
-      const readTool: ProviderToolSchema = {
+      const readTool = defineTool({
         name: "read_compaction_log",
         description: `Read a chunk of the compaction log file. The file contains ${totalLines} lines of linearized conversation messages.
 Each line is prefixed with the role: [user], [assistant], [tool_result id=...], etc.
@@ -630,7 +626,7 @@ Use offset (1-based line number) and limit to read portions sequentially. Start 
           },
           required: ["offset"],
         },
-      };
+      });
 
       // Mini tool loop: aux reads file in chunks and produces summary.
       const basePrompt = previousSummary

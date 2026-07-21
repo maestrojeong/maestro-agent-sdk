@@ -23,8 +23,8 @@ afterEach(() => {
 
 describe("readTool", () => {
   test("schema name is exactly 'Read' — claude SDK parity", () => {
-    expect(readTool.schema.name).toBe("Read");
-    expect(readTool.schema.input_schema.required).toContain("file_path");
+    expect(readTool.schema.function.name).toBe("Read");
+    expect(readTool.schema.function.parameters.required).toContain("file_path");
   });
 
   test("returns line-numbered content for an absolute path", async () => {

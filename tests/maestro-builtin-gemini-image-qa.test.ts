@@ -30,10 +30,10 @@ afterEach(() => {
 describe("View Gemini image QA tool", () => {
   test("schema exposes image_path + question", () => {
     const tool = createGeminiImageQATool({ apiKey: "gem-test" });
-    expect(tool.schema.name).toBe("View");
-    expect(tool.schema.input_schema.required).toEqual(["image_path", "question"]);
-    expect(tool.schema.input_schema.properties).toHaveProperty("image_path");
-    expect(tool.schema.input_schema.properties).toHaveProperty("question");
+    expect(tool.schema.function.name).toBe("View");
+    expect(tool.schema.function.parameters.required).toEqual(["image_path", "question"]);
+    expect(tool.schema.function.parameters.properties).toHaveProperty("image_path");
+    expect(tool.schema.function.parameters.properties).toHaveProperty("question");
   });
 
   test("calls Gemini generateContent with inline image data and returns text", async () => {

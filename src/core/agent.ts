@@ -67,9 +67,19 @@ export interface AIAgentConfig {
    * Optional override for the compaction (auxiliary) LLM model id. When set,
    * `compressIfNeeded` routes its summary call through this model instead of
    * the v0.1.28+ default — the intra-provider cheapest sibling resolved by
-   * `resolveAuxModel(model)`. Useful when the host wants compaction to run
-   * on a totally different provider (pair with a host-side aux provider
-   * swap if needed).
+   * `resolveAuxModel(model)`.
+   *
+   * IMPORTANT (as of v0.1.47): this only overrides the MODEL STRING sent to
+   * `agent.provider` — the aux call always uses the exact same `Provider`
+   * instance as the main call (`loop.ts` passes `auxProvider: agent.provider`
+   * unconditionally). There is currently no mechanism to route aux calls
+   * through a genuinely different provider (e.g. Kimi main + DeepSeek aux).
+   * Setting `auxModel` to a model id belonging to a different provider than
+   * `AIAgentConfig.model` will send that model string to the WRONG
+   * provider's endpoint and most likely get rejected with a 400. A host that
+   * wants cross-provider aux routing must build that wrapper itself (e.g. a
+   * `Provider` implementation whose `complete`/`stream` dispatch to
+   * different underlying providers based on the requested model).
    *
    * Leave omitted for the default mapping: gpt-5.5 → gpt-5.4-mini,
    * opus → haiku, deepseek-v4-pro → deepseek-v4-flash. Cheap tiers

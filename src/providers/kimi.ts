@@ -1,3 +1,4 @@
+import { logger } from "@/platform/logger";
 import type {
   MaestroToolResultBlock,
   Provider,
@@ -6,7 +7,6 @@ import type {
   ProviderMessage,
   ProviderResponse,
   ProviderStreamChunk,
-  ProviderToolSchema,
 } from "@/providers/base";
 import { type HttpResponseLike, type NodeFetchInit, nodeFetch } from "@/providers/node-fetch";
 import type { EffortLevel, TokenUsage } from "@/types";
@@ -54,15 +54,6 @@ interface OpenAIChatMessage {
   tool_calls?: OpenAIToolCall[];
   tool_call_id?: string;
   name?: string;
-}
-
-interface OpenAITool {
-  type: "function";
-  function: {
-    name: string;
-    description: string;
-    parameters: Record<string, unknown>;
-  };
 }
 
 interface OpenAIUsage {
@@ -238,6 +229,17 @@ export class KimiProvider implements Provider {
       if (event.usage) usage = mapUsage(event.usage, contextWindow);
     }
 
+    // Emit thinking BEFORE the tool_use flush (see deepseek.ts for the full
+    // rationale) so streamed block order matches the non-streaming path's
+    // [thinking, text, tool_use] and history stays identical regardless of
+    // streaming mode.
+    if (reasoningSeen && reasoningBuf.length > 0) {
+      yield {
+        type: "thinking_complete",
+        block: { type: "thinking", thinking: reasoningBuf },
+      };
+    }
+
     const indexes = [...toolAccum.keys()].sort((a, b) => a - b);
     for (const idx of indexes) {
       const entry = toolAccum.get(idx);
@@ -253,13 +255,6 @@ export class KimiProvider implements Provider {
         }
       }
       yield { type: "tool_use_complete", id: entry.id, name: entry.name };
-    }
-
-    if (reasoningSeen && reasoningBuf.length > 0) {
-      yield {
-        type: "thinking_complete",
-        block: { type: "thinking", thinking: reasoningBuf },
-      };
     }
 
     yield { type: "message_complete", stopReason, usage };
@@ -296,7 +291,10 @@ function buildRequestBody(opts: ProviderCompleteOptions, stream: boolean): Recor
     body.max_tokens = opts.maxTokens ?? 4096;
   }
   if (opts.tools && opts.tools.length > 0) {
-    body.tools = translateToolsToOpenAI(opts.tools);
+    // v0.1.47: `ProviderToolSchema` IS the OpenAI Chat Completions wire
+    // shape now (see providers/base.ts's `defineTool`) — no per-call
+    // translation needed (see deepseek.ts's equivalent comment).
+    body.tools = opts.tools;
   }
   if (stream) {
     body.stream = true;
@@ -375,8 +373,11 @@ function openAiChoiceToBlocks(choice: OpenAIChoice): ProviderContentBlock[] {
       if (tc.function?.arguments) {
         try {
           input = JSON.parse(tc.function.arguments);
-        } catch {
-          // Defensive — malformed JSON arguments fall through with empty input.
+        } catch (e) {
+          logger.warn(
+            { err: e, toolName: tc.function?.name, raw: tc.function.arguments.slice(0, 200) },
+            "kimi complete: tool_use input_json parse failed — using empty input",
+          );
         }
       }
       blocks.push({
@@ -388,17 +389,6 @@ function openAiChoiceToBlocks(choice: OpenAIChoice): ProviderContentBlock[] {
     }
   }
   return blocks;
-}
-
-export function translateToolsToOpenAI(tools: readonly ProviderToolSchema[]): OpenAITool[] {
-  return tools.map((t) => ({
-    type: "function",
-    function: {
-      name: t.name,
-      description: t.description,
-      parameters: t.input_schema as unknown as Record<string, unknown>,
-    },
-  }));
 }
 
 /**
@@ -450,7 +440,7 @@ export function translateMessagesToOpenAI(
           out.push({
             role: "tool",
             tool_call_id: block.tool_use_id,
-            content: toolResultToOpenAI(block.content),
+            content: toolResultToOpenAI(block.content, block.is_error),
           });
         }
       }
@@ -495,6 +485,26 @@ export function translateMessagesToOpenAI(
   return out;
 }
 
+/**
+ * Translate a Maestro `image` block source into an OpenAI-shaped content
+ * part. Degrades to a text placeholder (never throws) for any source Kimi
+ * can't render — same contract as DeepSeek's unconditional image→placeholder
+ * degrade (deepseek.ts's `toolResultToOpenAI`/user-block image handling).
+ *
+ * This USED to throw here instead of degrading. That was fine for a *live*
+ * turn a host just constructed (fail fast, catch the bug immediately), but
+ * `translateMessagesToOpenAI` re-renders the ENTIRE canonical history on
+ * every single call — including old turns. If any historical image block in
+ * a session ever has an unsupported shape (a public `https://` URL, a
+ * malformed base64 source with missing data — e.g. from a session
+ * hand-constructed by a host, or resumed after being built on a
+ * vision-capable provider that accepts shapes Kimi doesn't), throwing here
+ * doesn't just fail once — it permanently breaks *every* subsequent turn of
+ * that session under Kimi, since the same bad historical block gets
+ * re-translated (and re-thrown) on every future call. Degrading, like
+ * DeepSeek does, keeps a session usable and just loses that one image's
+ * visibility instead of bricking the whole conversation.
+ */
 function imageBlockToPart(source: {
   type: "base64" | "url";
   media_type?: string;
@@ -503,24 +513,34 @@ function imageBlockToPart(source: {
 }): OpenAIContentPart {
   if (source.type === "url") {
     if (!source.url) {
-      throw new Error("Kimi image URL source is missing its url");
+      return imageDegradePlaceholder("missing its url");
     }
     if (!source.url.startsWith("ms://") && !source.url.startsWith("data:")) {
-      throw new Error(
-        "Kimi API does not support public image URLs; provide a base64 image or an ms:// file reference",
+      return imageDegradePlaceholder(
+        "Kimi does not support public image URLs — provide a base64 image or an ms:// file reference",
       );
     }
     return { type: "image_url", image_url: { url: source.url } };
   }
   if (!source.data) {
-    throw new Error("Kimi base64 image source is missing its data");
+    return imageDegradePlaceholder("missing its base64 data");
   }
   const mediaType = source.media_type ?? "image/png";
   return { type: "image_url", image_url: { url: `data:${mediaType};base64,${source.data}` } };
 }
 
+function imageDegradePlaceholder(reason: string): OpenAIContentPart {
+  logger.warn({ reason }, "kimi: image block cannot be rendered — degrading to text placeholder");
+  return { type: "text", text: `[Image attached — cannot render on Kimi: ${reason}.]` };
+}
+
+// See deepseek.ts's condenseUserParts for why this collapses on "every part
+// is text" rather than "exactly one part" — the latter is effectively
+// always false given how provider.ts builds user turns.
 function condenseUserParts(parts: OpenAIContentPart[]): string | OpenAIContentPart[] {
-  if (parts.length === 1 && parts[0].type === "text") return parts[0].text;
+  if (parts.every((p) => p.type === "text")) {
+    return parts.map((p) => (p as { type: "text"; text: string }).text).join("\n");
+  }
   return parts;
 }
 
@@ -532,8 +552,14 @@ function condenseUserParts(parts: OpenAIContentPart[]): string | OpenAIContentPa
  */
 function toolResultToOpenAI(
   content: string | MaestroToolResultBlock[],
+  isError?: boolean,
 ): string | OpenAIContentPart[] {
-  if (typeof content === "string") return content;
+  // See deepseek.ts's toolResultToOpenAI for the full rationale and the
+  // v0.1.47 note on this now firing for real MCP tool failures too (via
+  // mcp/client.ts + mcp/pool.ts + loop.ts's ToolExecuteError plumbing), not
+  // just the internal aux-compaction sub-loop's synthetic result.
+  const prefix = isError ? "[tool error] " : "";
+  if (typeof content === "string") return `${prefix}${content}`;
   const parts: OpenAIContentPart[] = [];
   for (const b of content) {
     if (b.type === "text") {
@@ -549,7 +575,10 @@ function toolResultToOpenAI(
     }
   }
   if (parts.every((p) => p.type === "text")) {
-    return parts.map((p) => (p as { type: "text"; text: string }).text).join("\n");
+    return `${prefix}${parts.map((p) => (p as { type: "text"; text: string }).text).join("\n")}`;
+  }
+  if (prefix.length > 0) {
+    parts.unshift({ type: "text", text: prefix.trimEnd() });
   }
   return parts;
 }
@@ -604,8 +633,11 @@ async function* parseSseStream(
           if (dataLine === "[DONE]") return;
           try {
             yield JSON.parse(dataLine) as OpenAIStreamEvent;
-          } catch {
-            // Skip malformed frames.
+          } catch (e) {
+            logger.warn(
+              { err: e, raw: dataLine.slice(0, 200) },
+              "kimi stream: malformed SSE data frame — skipping",
+            );
           }
         }
         boundary = /\r?\n\r?\n/.exec(buf);
