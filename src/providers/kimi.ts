@@ -1,3 +1,4 @@
+import { logger } from "@/platform/logger";
 import type {
   MaestroToolResultBlock,
   Provider,
@@ -238,6 +239,17 @@ export class KimiProvider implements Provider {
       if (event.usage) usage = mapUsage(event.usage, contextWindow);
     }
 
+    // Emit thinking BEFORE the tool_use flush (see deepseek.ts for the full
+    // rationale) so streamed block order matches the non-streaming path's
+    // [thinking, text, tool_use] and history stays identical regardless of
+    // streaming mode.
+    if (reasoningSeen && reasoningBuf.length > 0) {
+      yield {
+        type: "thinking_complete",
+        block: { type: "thinking", thinking: reasoningBuf },
+      };
+    }
+
     const indexes = [...toolAccum.keys()].sort((a, b) => a - b);
     for (const idx of indexes) {
       const entry = toolAccum.get(idx);
@@ -253,13 +265,6 @@ export class KimiProvider implements Provider {
         }
       }
       yield { type: "tool_use_complete", id: entry.id, name: entry.name };
-    }
-
-    if (reasoningSeen && reasoningBuf.length > 0) {
-      yield {
-        type: "thinking_complete",
-        block: { type: "thinking", thinking: reasoningBuf },
-      };
     }
 
     yield { type: "message_complete", stopReason, usage };
@@ -375,8 +380,11 @@ function openAiChoiceToBlocks(choice: OpenAIChoice): ProviderContentBlock[] {
       if (tc.function?.arguments) {
         try {
           input = JSON.parse(tc.function.arguments);
-        } catch {
-          // Defensive — malformed JSON arguments fall through with empty input.
+        } catch (e) {
+          logger.warn(
+            { err: e, toolName: tc.function?.name, raw: tc.function.arguments.slice(0, 200) },
+            "kimi complete: tool_use input_json parse failed — using empty input",
+          );
         }
       }
       blocks.push({
@@ -450,7 +458,7 @@ export function translateMessagesToOpenAI(
           out.push({
             role: "tool",
             tool_call_id: block.tool_use_id,
-            content: toolResultToOpenAI(block.content),
+            content: toolResultToOpenAI(block.content, block.is_error),
           });
         }
       }
@@ -519,8 +527,13 @@ function imageBlockToPart(source: {
   return { type: "image_url", image_url: { url: `data:${mediaType};base64,${source.data}` } };
 }
 
+// See deepseek.ts's condenseUserParts for why this collapses on "every part
+// is text" rather than "exactly one part" — the latter is effectively
+// always false given how provider.ts builds user turns.
 function condenseUserParts(parts: OpenAIContentPart[]): string | OpenAIContentPart[] {
-  if (parts.length === 1 && parts[0].type === "text") return parts[0].text;
+  if (parts.every((p) => p.type === "text")) {
+    return parts.map((p) => (p as { type: "text"; text: string }).text).join("\n");
+  }
   return parts;
 }
 
@@ -532,8 +545,13 @@ function condenseUserParts(parts: OpenAIContentPart[]): string | OpenAIContentPa
  */
 function toolResultToOpenAI(
   content: string | MaestroToolResultBlock[],
+  isError?: boolean,
 ): string | OpenAIContentPart[] {
-  if (typeof content === "string") return content;
+  // See deepseek.ts's toolResultToOpenAI for why this prefix exists: OpenAI
+  // `tool` messages have no equivalent of Anthropic's `tool_result.is_error`
+  // flag, so without it a failed MCP tool call reads as a success.
+  const prefix = isError ? "[tool error] " : "";
+  if (typeof content === "string") return `${prefix}${content}`;
   const parts: OpenAIContentPart[] = [];
   for (const b of content) {
     if (b.type === "text") {
@@ -549,7 +567,10 @@ function toolResultToOpenAI(
     }
   }
   if (parts.every((p) => p.type === "text")) {
-    return parts.map((p) => (p as { type: "text"; text: string }).text).join("\n");
+    return `${prefix}${parts.map((p) => (p as { type: "text"; text: string }).text).join("\n")}`;
+  }
+  if (prefix.length > 0) {
+    parts.unshift({ type: "text", text: prefix.trimEnd() });
   }
   return parts;
 }
@@ -604,8 +625,11 @@ async function* parseSseStream(
           if (dataLine === "[DONE]") return;
           try {
             yield JSON.parse(dataLine) as OpenAIStreamEvent;
-          } catch {
-            // Skip malformed frames.
+          } catch (e) {
+            logger.warn(
+              { err: e, raw: dataLine.slice(0, 200) },
+              "kimi stream: malformed SSE data frame — skipping",
+            );
           }
         }
         boundary = /\r?\n\r?\n/.exec(buf);

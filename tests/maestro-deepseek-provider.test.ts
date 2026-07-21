@@ -214,6 +214,26 @@ describe("translateMessagesToOpenAI", () => {
     ]);
   });
 
+  test("regression: tool_result.is_error is surfaced with a prefix (was silently dropped)", () => {
+    // OpenAI `tool` messages have no field equivalent to Anthropic's
+    // `tool_result.is_error`. Without translating it into the content text,
+    // a failed MCP tool call (isError: true) reads as an ordinary success.
+    const msgs: ProviderMessage[] = [
+      {
+        role: "user",
+        content: [
+          { type: "tool_result", tool_use_id: "call_1", content: "boom", is_error: true },
+          { type: "tool_result", tool_use_id: "call_2", content: "ok" },
+        ],
+      },
+    ];
+    const out = translateMessagesToOpenAI("", msgs);
+    expect(out).toEqual([
+      { role: "tool", tool_call_id: "call_1", content: "[tool error] boom" },
+      { role: "tool", tool_call_id: "call_2", content: "ok" },
+    ]);
+  });
+
   test("user message with text + tool_result preserves block order", () => {
     const msgs: ProviderMessage[] = [
       {
@@ -554,6 +574,115 @@ describe("DeepseekProvider.stream (mocked SSE)", () => {
     ]);
   });
 
+  test("regression: arguments chunk arriving before id/name is not dropped", async () => {
+    // Reproduces the historical bug where a tool_calls delta carrying only
+    // `function.arguments` (no id/name yet) got buffered into `entry.args`
+    // but never emitted as a delta, because emission was gated on
+    // `startEmitted` which was still false. The bytes silently vanished and
+    // the final JSON.parse produced `{}` — dispatching e.g. Bash/Write with
+    // no arguments at all.
+    process.env.DEEPSEEK_API_KEY = "sk-test-xxx";
+    globalThis.fetch = vi.fn(async () => {
+      return sseResponse([
+        // arguments arrive first, before id/name — no startEmitted yet.
+        frame({
+          choices: [
+            { index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: '{"pa' } }] } },
+          ],
+        }),
+        // id/name show up in a later chunk, alongside more arguments.
+        frame({
+          choices: [
+            {
+              index: 0,
+              delta: {
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: "call_1",
+                    type: "function",
+                    function: { name: "Bash", arguments: 'th":"/x"}' },
+                  },
+                ],
+              },
+              finish_reason: null,
+            },
+          ],
+        }),
+        frame({ choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] }),
+        "data: [DONE]\n\n",
+      ]);
+    }) as unknown as typeof fetch;
+
+    const provider = DeepseekProvider.fromEnv();
+    const events = [];
+    for await (const ev of provider.stream({
+      model: "deepseek-v4-flash",
+      messages: [{ role: "user", content: "hi" }],
+      system: "",
+    })) {
+      events.push(ev);
+    }
+    const deltas = events.filter((e) => e.type === "tool_use_input_delta");
+    const joined = deltas.map((d) => (d as { partial_json: string }).partial_json).join("");
+    expect(joined).toBe('{"path":"/x"}');
+    expect(JSON.parse(joined)).toEqual({ path: "/x" });
+  });
+
+  test("regression: thinking_complete is emitted before tool_use events", async () => {
+    // The stream used to flush all tool_use_complete events and only then
+    // emit thinking_complete. Combined with loop.ts's block-order repair
+    // logic (which stops scanning at the first non-thinking block), that
+    // produced [text, tool_use, thinking] in history for a streamed turn
+    // vs. [thinking, text, tool_use] for a non-streamed turn — the same
+    // response landing in history with a different block order depending
+    // on whether streaming was used.
+    process.env.DEEPSEEK_API_KEY = "sk-test-xxx";
+    globalThis.fetch = vi.fn(async () => {
+      return sseResponse([
+        frame({
+          choices: [{ index: 0, delta: { reasoning_content: "thinking..." }, finish_reason: null }],
+        }),
+        frame({
+          choices: [
+            {
+              index: 0,
+              delta: {
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: "call_1",
+                    type: "function",
+                    function: { name: "echo", arguments: "{}" },
+                  },
+                ],
+              },
+              finish_reason: "tool_calls",
+            },
+          ],
+        }),
+        "data: [DONE]\n\n",
+      ]);
+    }) as unknown as typeof fetch;
+
+    const provider = DeepseekProvider.fromEnv();
+    const events = [];
+    for await (const ev of provider.stream({
+      model: "deepseek-v4-flash",
+      messages: [{ role: "user", content: "hi" }],
+      system: "",
+    })) {
+      events.push(ev);
+    }
+    // loop.ts only pushes into `assistantBlocks` on `tool_use_complete` (not
+    // `tool_use_start`, which just opens an input buffer), so that's the
+    // pair whose relative order actually determines stored history shape.
+    const relevantTypes = events
+      .map((e) => e.type)
+      .filter((t) => t === "thinking_complete" || t === "tool_use_complete");
+    expect(relevantTypes).toEqual(["thinking_complete", "tool_use_complete"]);
+  });
+
   test("handles parallel tool_calls with distinct indexes", async () => {
     process.env.DEEPSEEK_API_KEY = "sk-test-xxx";
     globalThis.fetch = vi.fn(async () => {
@@ -658,14 +787,15 @@ describe("DeepSeek multimodal translation (v0.1.18+)", () => {
       },
     ];
     const out = translateMessagesToOpenAI("", messages);
-    // Two text blocks stay as array — condenseUserParts only collapses a
-    // single text part (two parts = array retained).
-    expect(Array.isArray(out[0].content)).toBe(true);
-    const textParts = out[0].content as Array<{ type: string; text?: string }>;
-    expect(textParts).toHaveLength(2);
-    expect(textParts[0]).toEqual({ type: "text", text: "what is in this picture?" });
-    expect(textParts[1].text).toContain("Image attached");
-    expect(textParts[1].text).toContain("not visible to DeepSeek");
+    // Both blocks end up as text (the image becomes a text placeholder), so
+    // condenseUserParts collapses them into a single joined string — it
+    // collapses whenever every part is text, not just when there's exactly
+    // one part.
+    expect(typeof out[0].content).toBe("string");
+    const content = out[0].content as string;
+    expect(content).toContain("what is in this picture?");
+    expect(content).toContain("Image attached");
+    expect(content).toContain("not visible to DeepSeek");
   });
 
   test("user-message URL image → text placeholder", () => {

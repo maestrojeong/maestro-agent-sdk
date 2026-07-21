@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.1.47] - 2026-07-20
+
+### Fixed
+- **DeepSeek streaming: tool-call arguments arriving before `id`/`name` are no longer dropped.** The DeepSeek SSE tool-call accumulator only started emitting `tool_use_input_delta` chunks once a `startEmitted` flag flipped true, so any `arguments` bytes that arrived in an earlier chunk (before the model emitted the tool's `id`/`name`) were buffered but never sent as a delta — truncating the JSON and causing the tool to dispatch with `{}` (e.g. an empty-argument `Bash`/`Write` call). Ported Kimi's `emittedArgsLength` cursor, which already tracked and fixed this correctly, into the DeepSeek adapter.
+- **Streaming vs. non-streaming history block order now matches for both providers.** Both adapters flushed `tool_use_complete` before `thinking_complete`, so a streamed turn's `assistantBlocks` ended up as `[text, tool_use, thinking]` while the non-streaming path produced `[thinking, text, tool_use]` for the identical response — the agent loop's block-order repair only scans leading `thinking` blocks and bails on the first non-thinking one. A resumed session could therefore see a different history than the one the model actually produced, or than a non-streamed run of the same turn would have stored. `thinking_complete` is now emitted before the tool-call flush in both `deepseek.ts` and `kimi.ts`.
+- **`tool_result.is_error` is no longer silently dropped when translating to OpenAI's wire format.** Anthropic's `tool_result` carries a structural `is_error` flag; OpenAI `tool` messages have no equivalent field, and both adapters previously ignored it entirely. A failed MCP tool call (which reports failure via `isError: true` rather than error text) read as an ordinary success to DeepSeek/Kimi models. Failed results are now prefixed with `[tool error] ` in the translated content.
+- **`condenseUserParts` now actually collapses text-only user turns.** The helper only collapsed a user message into a plain string when it had exactly one text part, but every user turn built by `provider.ts` carries at least two parts (the prompt plus a system-reminder block), so the condition was effectively always false and the array form — meant to avoid tripping strict server-side content validators — was sent on essentially every turn. It now collapses whenever every part is text, regardless of count.
+- **DeepSeek's SSE parser now handles CRLF frame boundaries.** `parseSseStream` in `deepseek.ts` only split events on a literal `"\n\n"`, unlike `kimi.ts`'s `\r?\n\r?\n` regex; a CRLF-normalizing proxy between the client and the DeepSeek origin would silently stall the entire stream (no boundary ever matches). Ported Kimi's regex-based split.
+- Malformed tool-call JSON (in both the streaming SSE parser and the non-streaming response path, across both providers) is now logged via `logger.warn` instead of being silently swallowed, making an unexpectedly empty-argument tool call diagnosable.
+
 ## [0.1.46] - 2026-07-19
 
 ### Added

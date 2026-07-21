@@ -242,6 +242,23 @@ describe("translateMessagesToOpenAI", () => {
       { role: "tool", tool_call_id: "call_2", content: "result 2" },
     ]);
   });
+
+  test("regression: tool_result.is_error is surfaced with a prefix (was silently dropped)", () => {
+    const msgs: ProviderMessage[] = [
+      {
+        role: "user",
+        content: [
+          { type: "tool_result", tool_use_id: "call_1", content: "boom", is_error: true },
+          { type: "tool_result", tool_use_id: "call_2", content: "ok" },
+        ],
+      },
+    ];
+    const out = translateMessagesToOpenAI("", msgs, false);
+    expect(out).toEqual([
+      { role: "tool", tool_call_id: "call_1", content: "[tool error] boom" },
+      { role: "tool", tool_call_id: "call_2", content: "ok" },
+    ]);
+  });
 });
 
 // ─── Kimi-specific: native vision support (image_url, not text placeholder) ──
@@ -628,5 +645,52 @@ describe("KimiProvider.stream (mocked SSE)", () => {
       { type: "tool_use_input_delta", id: "call_late", partial_json: '{"msg":"hi"}' },
       { type: "tool_use_complete", id: "call_late", name: "echo" },
     ]);
+  });
+
+  test("regression: thinking_complete is emitted before tool_use_complete", async () => {
+    // Same block-order bug as deepseek.ts — see that file's equivalent test
+    // for the full rationale. loop.ts only pushes into `assistantBlocks` on
+    // `tool_use_complete`, so that's the event whose order relative to
+    // `thinking_complete` determines the stored history shape.
+    process.env.MOONSHOT_API_KEY = "sk-test-xxx";
+    globalThis.fetch = vi.fn(async () => {
+      return sseResponse([
+        frame({
+          choices: [{ index: 0, delta: { reasoning_content: "thinking..." }, finish_reason: null }],
+        }),
+        frame({
+          choices: [
+            {
+              index: 0,
+              delta: {
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: "call_1",
+                    type: "function",
+                    function: { name: "echo", arguments: "{}" },
+                  },
+                ],
+              },
+              finish_reason: "tool_calls",
+            },
+          ],
+        }),
+        "data: [DONE]\n\n",
+      ]);
+    }) as unknown as typeof fetch;
+
+    const events = [];
+    for await (const event of KimiProvider.fromEnv().stream({
+      model: "kimi-k2.7-code",
+      messages: [{ role: "user", content: "hi" }],
+      system: "",
+    })) {
+      events.push(event);
+    }
+    const relevantTypes = events
+      .map((e) => e.type)
+      .filter((t) => t === "thinking_complete" || t === "tool_use_complete");
+    expect(relevantTypes).toEqual(["thinking_complete", "tool_use_complete"]);
   });
 });
