@@ -141,6 +141,96 @@ describe("View Gemini image QA tool", () => {
     expect(parsed.error).toContain("HTTP 429");
     expect(parsed.body).toContain("rate limited");
   });
+
+  describe("model selection: GEMINI_IMAGE_QA_MODEL env var + Flash-only allowlist", () => {
+    const ORIGINAL_ENV_MODEL = process.env.GEMINI_IMAGE_QA_MODEL;
+
+    afterEach(() => {
+      if (ORIGINAL_ENV_MODEL === undefined) {
+        delete process.env.GEMINI_IMAGE_QA_MODEL;
+      } else {
+        process.env.GEMINI_IMAGE_QA_MODEL = ORIGINAL_ENV_MODEL;
+      }
+    });
+
+    async function runWithModel(opts: { model?: string; envModel?: string }): Promise<{
+      capturedUrl: string;
+      out: string;
+    }> {
+      if (opts.envModel === undefined) {
+        delete process.env.GEMINI_IMAGE_QA_MODEL;
+      } else {
+        process.env.GEMINI_IMAGE_QA_MODEL = opts.envModel;
+      }
+      const imagePath = join(tmp, "tiny.png");
+      writeFileSync(imagePath, TINY_PNG);
+      let capturedUrl = "";
+      const fetchMock = vi.fn(async (url: string | URL | Request) => {
+        capturedUrl = String(url);
+        return new Response(
+          JSON.stringify({ candidates: [{ content: { parts: [{ text: "ok" }] } }] }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      });
+      const out = await createGeminiImageQATool({
+        apiKey: "gem-test",
+        model: opts.model,
+        fetchFn: fetchMock as unknown as typeof fetch,
+      }).execute({ image_path: imagePath, question: "describe" });
+      return { capturedUrl, out: out as string };
+    }
+
+    test("GEMINI_IMAGE_QA_MODEL env var picks the model when opts.model is omitted", async () => {
+      const { capturedUrl, out } = await runWithModel({ envModel: "gemini-3.6-flash" });
+      expect(capturedUrl).toBe(
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent",
+      );
+      expect(out).toBe("ok");
+    });
+
+    test("opts.model wins over the env var when both are set", async () => {
+      process.env.GEMINI_IMAGE_QA_MODEL = "gemini-3.6-flash";
+      const { capturedUrl } = await runWithModel({
+        model: "gemini-2.5-flash",
+        envModel: "gemini-3.6-flash",
+      });
+      expect(capturedUrl).toContain("gemini-2.5-flash:generateContent");
+    });
+
+    test("falls back to the built-in default when neither opts.model nor the env var is set", async () => {
+      const { capturedUrl } = await runWithModel({});
+      expect(capturedUrl).toBe(
+        `https://generativelanguage.googleapis.com/v1beta/models/${__GEMINI_IMAGE_QA_DEFAULT_MODEL}:generateContent`,
+      );
+    });
+
+    test("rejects Pro/Ultra models with a structured error (Flash-only policy)", async () => {
+      const { out } = await runWithModel({ model: "gemini-3.1-pro" });
+      const parsed = JSON.parse(out);
+      expect(parsed.error).toContain("gemini-3.1-pro");
+      expect(parsed.error).toContain("not a Gemini Flash model");
+    });
+
+    test("rejects Flash-Lite variants with a structured error", async () => {
+      const { out } = await runWithModel({ model: "gemini-3.5-flash-lite" });
+      const parsed = JSON.parse(out);
+      expect(parsed.error).toContain("gemini-3.5-flash-lite");
+      expect(parsed.error).toContain("Flash-Lite variant");
+    });
+
+    test("rejects a Flash-Lite variant set via the env var too", async () => {
+      const { out } = await runWithModel({ envModel: "gemini-2.5-flash-lite" });
+      const parsed = JSON.parse(out);
+      expect(parsed.error).toContain("Flash-Lite variant");
+    });
+
+    test("accepts non-Lite Flash models regardless of generation", async () => {
+      for (const model of ["gemini-2.5-flash", "gemini-3.6-flash", "gemini-3.5-flash"]) {
+        const { out } = await runWithModel({ model });
+        expect(out).toBe("ok");
+      }
+    });
+  });
 });
 
 describe("DeepSeek-only View registration policy", () => {

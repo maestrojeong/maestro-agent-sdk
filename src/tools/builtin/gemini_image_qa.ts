@@ -18,6 +18,17 @@ const IMAGE_MEDIA_TYPES: Record<string, string> = {
 
 export interface GeminiImageQAToolOptions {
   apiKey?: string;
+  /**
+   * Gemini model id, e.g. `"gemini-2.5-flash"` or `"gemini-3.6-flash"`.
+   * Falls back to `GEMINI_IMAGE_QA_MODEL` env var, then
+   * `DEFAULT_GEMINI_IMAGE_QA_MODEL` — so a host can swap models via
+   * env var alone, with no code change or SDK bump.
+   *
+   * Restricted to Gemini Flash models only — Pro/Ultra tiers and
+   * Flash-Lite variants (model id contains "lite") are rejected at
+   * call time with a structured error. See `assertAllowedGeminiModel`'s
+   * docstring for the rationale.
+   */
   model?: string;
   fetchFn?: typeof fetch;
   timeoutMs?: number;
@@ -124,6 +135,10 @@ export function createGeminiImageQATool(opts: GeminiImageQAToolOptions = {}): To
       }
 
       const model = normalizeGeminiModel(opts.model ?? process.env.GEMINI_IMAGE_QA_MODEL);
+      const flashCheck = assertAllowedGeminiModel(model);
+      if (!flashCheck.ok) {
+        return JSON.stringify({ error: flashCheck.error });
+      }
       const url = `${GEMINI_API_BASE_URL}/${encodeURIComponent(model)}:generateContent`;
       const body = {
         contents: [
@@ -204,6 +219,45 @@ function normalizeGeminiModel(model: string | undefined): string {
   return raw.startsWith("models/") ? raw.slice("models/".length) : raw;
 }
 
+/**
+ * Restrict the View tool to Gemini Flash models — NOT Pro/Ultra (cost —
+ * this is a lightweight image-QA fallback, not a primary reasoning path)
+ * and NOT Flash-Lite (quality — Flash-Lite trades accuracy for throughput
+ * in a way that isn't worth it for a low-volume, per-call vision fallback).
+ * `opts.model` / `GEMINI_IMAGE_QA_MODEL` can pick any Flash release (e.g.
+ * `gemini-2.5-flash`, `gemini-3.6-flash`), but not `-lite` variants or
+ * Pro/Ultra tiers.
+ *
+ * Match is substring-based (case-insensitive) rather than an exact-id
+ * allowlist so a new Flash release (Google ships these often — see
+ * `gemini-3.6-flash`, GA July 2026) doesn't need an SDK update to become
+ * usable. `gemini-2.5-flash` (this tool's current default) is scheduled
+ * to shut down 2026-10-16 — override via `GEMINI_IMAGE_QA_MODEL` ahead of
+ * that date.
+ */
+function assertAllowedGeminiModel(model: string): { ok: true } | { ok: false; error: string } {
+  const lower = model.toLowerCase();
+  if (lower.includes("lite")) {
+    return {
+      ok: false,
+      error:
+        `View: model '${model}' is a Flash-Lite variant, which is not allowed for this tool — ` +
+        `set GEMINI_IMAGE_QA_MODEL (or pass { model } to createGeminiImageQATool) to a non-Lite ` +
+        `Flash model instead (e.g. "${DEFAULT_GEMINI_IMAGE_QA_MODEL}").`,
+    };
+  }
+  if (!lower.includes("flash")) {
+    return {
+      ok: false,
+      error:
+        `View: model '${model}' is not a Gemini Flash model — this tool only allows Flash ` +
+        `(not Pro/Ultra) for cost reasons. Set GEMINI_IMAGE_QA_MODEL (or pass { model } to ` +
+        `createGeminiImageQATool) to a Flash model instead (e.g. "${DEFAULT_GEMINI_IMAGE_QA_MODEL}").`,
+    };
+  }
+  return { ok: true };
+}
+
 function extractGeminiText(data: GeminiGenerateContentResponse): string {
   const parts: string[] = [];
   for (const candidate of data.candidates ?? []) {
@@ -226,3 +280,4 @@ async function safeText(response: Response): Promise<string> {
 
 export const __GEMINI_IMAGE_QA_DEFAULT_MODEL = DEFAULT_GEMINI_IMAGE_QA_MODEL;
 export const __GEMINI_IMAGE_QA_MAX_IMAGE_BYTES = MAX_IMAGE_BYTES;
+export const __assertAllowedGeminiModel = assertAllowedGeminiModel;
