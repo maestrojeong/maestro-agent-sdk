@@ -59,6 +59,17 @@ describe("KimiProvider.fromEnv", () => {
     expect(p).toBeInstanceOf(KimiProvider);
   });
 
+  test("accepts a per-call override without an environment key", () => {
+    delete process.env.MOONSHOT_API_KEY;
+    const p = KimiProvider.fromEnv("sk-tenant-xxx");
+    expect(p).toBeInstanceOf(KimiProvider);
+  });
+
+  test("rejects an explicitly empty override instead of using the environment key", () => {
+    process.env.MOONSHOT_API_KEY = "sk-global-xxx";
+    expect(() => KimiProvider.fromEnv("   ")).toThrow(/MOONSHOT_API_KEY/);
+  });
+
   test("honors MOONSHOT_BASE_URL without duplicating trailing slashes", async () => {
     process.env.MOONSHOT_API_KEY = "sk-test-xxx";
     process.env.MOONSHOT_BASE_URL = "https://proxy.example/v1/";

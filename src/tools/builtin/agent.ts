@@ -52,6 +52,7 @@ export interface AgentToolFactoryOptions {
     | "parentSessionId"
     | "parentSystemPrompt"
     | "parentModel"
+    | "apiKeyOverrides"
     | "parentEffort"
     | "parentAbortSignal"
     | "extraTools"
@@ -129,6 +130,7 @@ export function createAgentTool(opts: AgentToolFactoryOptions): ToolHandler {
         parentSessionId: opts.parent.parentSessionId,
         parentSystemPrompt: opts.parent.parentSystemPrompt,
         parentModel: opts.parent.parentModel,
+        ...(opts.parent.apiKeyOverrides ? { apiKeyOverrides: opts.parent.apiKeyOverrides } : {}),
         ...(opts.parent.parentEffort ? { parentEffort: opts.parent.parentEffort } : {}),
         ...(opts.parent.parentAbortSignal
           ? { parentAbortSignal: opts.parent.parentAbortSignal }

@@ -935,7 +935,7 @@ ${previousSummary ? `Previous summary for context:\n${previousSummary}` : ""}`,
       const effectiveTarget =
         target !== undefined && Number.isFinite(target) && target > 0 ? target : 50_000;
       if (target === 0) return pruned;
-      const notice = "[메모리 압축 실패로 이전 대화 일부가 잘렸습니다. 최근 대화만 모델에 전달됨.]";
+      const notice = "[compression failed — only recent context sent]";
       if (opts.onEmergencyTrim) {
         try {
           opts.onEmergencyTrim(notice);

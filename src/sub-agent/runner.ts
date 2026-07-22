@@ -21,7 +21,7 @@ import { webFetchTool } from "@/tools/builtin/web_fetch";
 import { createWriteTool } from "@/tools/builtin/write";
 import { getFileStateTracker } from "@/tools/file-state";
 import { type ToolHandler, ToolRegistry } from "@/tools/registry";
-import type { EffortLevel, TokenUsage } from "@/types";
+import type { EffortLevel, ProviderApiKeyOverrides, TokenUsage } from "@/types";
 
 /**
  * Sub-agent runner — spawns a fresh maestro loop for a delegated task.
@@ -65,6 +65,8 @@ export interface RunSubAgentOptions {
   parentSystemPrompt: string;
   /** Parent's resolved model id (full, alias already expanded). */
   parentModel: string;
+  /** Per-call provider credentials inherited from the parent invocation. */
+  apiKeyOverrides?: ProviderApiKeyOverrides;
   /** Parent's effort level. Passed through to the provider (Anthropic:
    *   thinking budget; DeepSeek: reasoning_effort). */
   parentEffort?: EffortLevel;
@@ -227,6 +229,14 @@ function buildToolRegistry(
 
 export { buildToolRegistry as __buildToolRegistryForTest };
 
+function providerForSubAgent(
+  opts: Pick<RunSubAgentOptions, "parentModel" | "apiKeyOverrides">,
+): Provider {
+  return providerForModel(opts.parentModel, opts.apiKeyOverrides);
+}
+
+export { providerForSubAgent as __providerForSubAgentForTest };
+
 /**
  * Run a sub-agent to completion. Returns its final text + accumulated
  * usage; the caller (Agent tool) decides how to surface that to the
@@ -243,7 +253,7 @@ export async function runSubAgent(opts: RunSubAgentOptions): Promise<RunSubAgent
   const subSessionId = randomUUID();
   let provider: Provider;
   try {
-    provider = providerForModel(opts.parentModel);
+    provider = providerForSubAgent(opts);
   } catch (e) {
     return {
       text: `[sub-agent failed to start: ${e instanceof Error ? e.message : String(e)}]`,

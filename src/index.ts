@@ -170,6 +170,7 @@ export type {
   GuardrailResult,
   LlmPostHook,
   LlmPreHook,
+  ProviderApiKeyOverrides,
   TaskSnapshot,
   TokenUsage,
   UnifiedEvent,

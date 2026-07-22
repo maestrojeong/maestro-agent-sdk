@@ -4,9 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { defineTool } from "@/providers/base";
+import { DeepseekProvider } from "@/providers/deepseek";
 import { maestroSessionPath } from "@/session-store";
 import {
   __buildToolRegistryForTest,
+  __providerForSubAgentForTest,
   SUBAGENT_CAPABILITIES,
   type SubagentType,
 } from "@/sub-agent/runner";
@@ -115,6 +117,23 @@ describe("Sub-agent isolation invariants", () => {
     parent.recordRead("/some/path", 1, 1);
     expect(parent.has("/some/path")).toBe(true);
     expect(child.has("/some/path")).toBe(false);
+  });
+});
+
+describe("Sub-agent provider credentials", () => {
+  test("inherits the parent's per-call API key override", () => {
+    const originalKey = process.env.DEEPSEEK_API_KEY;
+    try {
+      delete process.env.DEEPSEEK_API_KEY;
+      const provider = __providerForSubAgentForTest({
+        parentModel: "deepseek-v4-pro",
+        apiKeyOverrides: { deepseek: "sk-tenant-xxx" },
+      });
+      expect(provider).toBeInstanceOf(DeepseekProvider);
+    } finally {
+      if (originalKey === undefined) delete process.env.DEEPSEEK_API_KEY;
+      else process.env.DEEPSEEK_API_KEY = originalKey;
+    }
   });
 });
 

@@ -191,6 +191,12 @@ export interface AgentHooks {
   }) => void | Promise<void>;
 }
 
+/** Per-call credentials for Maestro's built-in model providers. */
+export interface ProviderApiKeyOverrides {
+  deepseek?: string;
+  moonshot?: string;
+}
+
 /**
  * Options accepted by `maestroProvider(...)` — the host-facing entry point.
  *
@@ -423,4 +429,15 @@ export interface AgentQueryOptions {
    * Can `allow`, `reject_content` (rewrite the result), or `tripwire`.
    */
   llmPostHook?: LlmPostHook;
+  /**
+   * Per-call credential override for Maestro's DeepSeek/Kimi providers.
+   *
+   * `providerForModel` falls back to `DEEPSEEK_API_KEY` / `MOONSHOT_API_KEY`
+   * process env vars when the matching field here is omitted. Set this when
+   * the host resolves credentials per-user (a secrets vault, a multi-tenant
+   * key store) rather than from the process's own environment — passing the
+   * key explicitly avoids mutating `process.env`, which would race across
+   * concurrent calls for different users in the same process.
+   */
+  apiKeyOverrides?: ProviderApiKeyOverrides;
 }

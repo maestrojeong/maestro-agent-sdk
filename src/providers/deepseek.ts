@@ -118,8 +118,10 @@ export class DeepseekProvider implements Provider {
     private readonly contextWindow: number = DEEPSEEK_V4_CONTEXT_WINDOW,
   ) {}
 
-  static fromEnv(): DeepseekProvider {
-    const apiKey = process.env.DEEPSEEK_API_KEY;
+  /** @param overrideApiKey Caller-supplied key, tried before `DEEPSEEK_API_KEY` env. */
+  static fromEnv(overrideApiKey?: string): DeepseekProvider {
+    const apiKey =
+      overrideApiKey === undefined ? process.env.DEEPSEEK_API_KEY?.trim() : overrideApiKey.trim();
     if (!apiKey) {
       throw new Error("Maestro DeepseekProvider: DEEPSEEK_API_KEY env var is not set");
     }

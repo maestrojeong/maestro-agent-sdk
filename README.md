@@ -151,14 +151,24 @@ Per-call options on `AgentQueryOptions`:
 | `sessionMetadata` | — | Opaque host bag round-tripped via the rollout `_meta` header. |
 
 The SDK resolves its data directory at module load. Override via env var
-**before** importing any SDK module (the value is captured once):
+**before** importing any SDK module (the value is captured once). Full list
+with descriptions in [`.env.example`](./.env.example) — copy it to `.env`
+(the SDK does not auto-load `.env` files; wire in `dotenv` or similar
+yourself if you want that):
 
 | Env var | Default | What it does |
 |---|---|---|
-| `MAESTRO_DATA_DIR` | `~/.maestro` | Where session JSONLs and todo stores live. `maestroSessionsDir()` resolves to `<DATA_DIR>/sessions`. |
+| `DEEPSEEK_API_KEY` | — | Required for `deepseek-v4-*` models. |
 | `MOONSHOT_API_KEY` | — | Enables Kimi K3 and K2.7 Code requests. |
 | `MOONSHOT_BASE_URL` | `https://api.moonshot.ai/v1` | Overrides the Kimi API base URL for regional endpoints or proxies. |
+| `MAESTRO_DATA_DIR` | `~/.maestro` | Where session JSONLs and todo stores live. `maestroSessionsDir()` resolves to `<DATA_DIR>/sessions`. |
 | `GEMINI_API_KEY` | — | Enables the `View` image-QA tool when using a DeepSeek model. See [Image handling](#image-handling-deepseek). |
+| `GEMINI_IMAGE_QA_MODEL` | `gemini-2.5-flash` | Model for the `View` tool. **Flash-only** — Pro/Ultra tiers and any `*-lite` variant are rejected at call time. |
+| `MAESTRO_CONTEXT_WINDOW` | (provider's native window) | Overrides the context window used for compaction/hard-cap thresholds — testing/tuning only. |
+| `MAESTRO_MCP_POOL_IDLE_TTL_MS` | `300000` (5 min) | Idle TTL before an unused cached MCP client is evicted. |
+| `MAESTRO_MCP_POOL_MAX` | `16` | Hard cap on cached MCP clients (LRU eviction past this). |
+| `MAESTRO_SUBAGENT_MAX_TOKENS` | (derived from parent model) | Overrides a spawned sub-agent's max output tokens. |
+| `MAESTRO_SDK_SILENT_BOOTSTRAP` | — | Set to `1` to suppress the SDK's bootstrap log line on stdout (useful for stdio MCP hosts). |
 
 Everything else is per-call: pass `cwd`, `model`, `effort`, etc. through
 `AIAgentConfig` / `AgentQueryOptions`. The memory compressor reuses the

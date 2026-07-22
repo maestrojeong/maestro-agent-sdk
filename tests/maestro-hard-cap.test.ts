@@ -198,7 +198,7 @@ describe("runConversation hard cap wiring", () => {
 
     // The defense surfaces a status event so the host can see it fired.
     expect(
-      events.some((e) => e.type === "status" && e.content.includes("컨텍스트 한도 초과 방어")),
+      events.some((e) => e.type === "status" && e.content.includes("oversize tool output")),
     ).toBe(true);
   });
 

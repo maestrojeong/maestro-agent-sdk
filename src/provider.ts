@@ -54,7 +54,7 @@ import { webFetchTool } from "@/tools/builtin/web_fetch";
 import { createWriteTool } from "@/tools/builtin/write";
 import { getFileStateTracker } from "@/tools/file-state";
 import { ToolRegistry } from "@/tools/registry";
-import type { AgentQueryOptions, TokenUsage, UnifiedEvent } from "@/types";
+import type { AgentQueryOptions, ProviderApiKeyOverrides, TokenUsage, UnifiedEvent } from "@/types";
 
 /**
  * Maestro SDK provider (TS port of Maestro Agent v0.13.0).
@@ -310,7 +310,7 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
   // the MCP pool before bailing so we don't leak subprocesses.
   let provider: Provider;
   try {
-    provider = providerForModel(resolvedModel);
+    provider = providerForModel(resolvedModel, opts.apiKeyOverrides);
   } catch (e) {
     if (mcpPool) {
       await mcpPool.close().catch((err) => {
@@ -467,6 +467,7 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
         parentSessionId: sessionId,
         parentSystemPrompt: augmentedSystemPrompt,
         parentModel: resolvedModel,
+        ...(opts.apiKeyOverrides ? { apiKeyOverrides: opts.apiKeyOverrides } : {}),
         ...(resolvedEffort ? { parentEffort: resolvedEffort } : {}),
         ...(opts.abortController?.signal ? { parentAbortSignal: opts.abortController.signal } : {}),
         ...(mcpToolHandlers.length > 0 ? { extraTools: mcpToolHandlers } : {}),
@@ -755,14 +756,17 @@ export function wrapUpOverlayLine(remaining: number, max: number): string | null
   return "[wrap-up zone] Tools are now disabled and the thinking budget is trimmed. No further tool calls are possible — synthesize the final answer from existing context.";
 }
 
-export function providerForModel(resolvedModel: string): Provider {
+export function providerForModel(
+  resolvedModel: string,
+  apiKeyOverrides?: ProviderApiKeyOverrides,
+): Provider {
   if (resolvedModel === "kimi-k3" || resolvedModel === "kimi-k2.7-code") {
-    return KimiProvider.fromEnv();
+    return KimiProvider.fromEnv(apiKeyOverrides?.moonshot);
   }
   if (resolvedModel.startsWith("kimi-")) {
     throw new Error(`Maestro: unsupported Kimi model '${resolvedModel}'`);
   }
-  return DeepseekProvider.fromEnv();
+  return DeepseekProvider.fromEnv(apiKeyOverrides?.deepseek);
 }
 
 /**
