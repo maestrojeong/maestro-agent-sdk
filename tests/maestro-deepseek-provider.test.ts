@@ -50,6 +50,17 @@ describe("DeepseekProvider.fromEnv", () => {
     const p = DeepseekProvider.fromEnv();
     expect(p).toBeInstanceOf(DeepseekProvider);
   });
+
+  test("accepts a per-call override without an environment key", () => {
+    delete process.env.DEEPSEEK_API_KEY;
+    const p = DeepseekProvider.fromEnv("sk-tenant-xxx");
+    expect(p).toBeInstanceOf(DeepseekProvider);
+  });
+
+  test("rejects an explicitly empty override instead of using the environment key", () => {
+    process.env.DEEPSEEK_API_KEY = "sk-global-xxx";
+    expect(() => DeepseekProvider.fromEnv("   ")).toThrow(/DEEPSEEK_API_KEY/);
+  });
 });
 
 describe("effortForDeepseek", () => {

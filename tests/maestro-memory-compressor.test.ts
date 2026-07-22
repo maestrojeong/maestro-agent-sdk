@@ -378,7 +378,7 @@ describe("compressIfNeeded — fallbacks and safety", () => {
     });
 
     expect(captured).toBeDefined();
-    expect(captured).toContain("이전 대화");
+    expect(captured).toContain("compression failed");
 
     expect(out[0].role).toBe("user");
     expect(typeof out[0].content === "string" && out[0].content).toContain(

@@ -102,8 +102,10 @@ export class KimiProvider implements Provider {
     private readonly apiUrl: string = `${DEFAULT_KIMI_BASE_URL}/chat/completions`,
   ) {}
 
-  static fromEnv(): KimiProvider {
-    const apiKey = process.env.MOONSHOT_API_KEY?.trim();
+  /** @param overrideApiKey Caller-supplied key, tried before `MOONSHOT_API_KEY` env. */
+  static fromEnv(overrideApiKey?: string): KimiProvider {
+    const apiKey =
+      overrideApiKey === undefined ? process.env.MOONSHOT_API_KEY?.trim() : overrideApiKey.trim();
     if (!apiKey) {
       throw new Error("Maestro KimiProvider: MOONSHOT_API_KEY env var is not set");
     }
