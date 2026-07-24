@@ -28,6 +28,10 @@ export { compileGlob, globTool } from "@/tools/builtin/glob";
 export { grepTool } from "@/tools/builtin/grep";
 export { createReadTool, readTool } from "@/tools/builtin/read";
 export {
+  createReadToolOutputTool,
+  type ReadToolOutputToolOptions,
+} from "@/tools/builtin/read_tool_output";
+export {
   createTaskCreateTool,
   createTaskGetTool,
   createTaskListTool,

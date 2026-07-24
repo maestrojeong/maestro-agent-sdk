@@ -20,7 +20,7 @@ A provider-backed agent runtime. Inject your own logger/MCP resolver/hooks, and 
 - **Agent loop** — provider-driven tool-calling loop with iteration cap, abort signal, LLM pre/post guardrail hooks, and event stream.
 - **DeepSeek provider** — first-class adapter for DeepSeek V4 with a provider-neutral message schema under the loop.
 - **Kimi provider** — K3 and K2.7 Code support with preserved thinking, native vision, streaming, and tool calls.
-- **Built-in tools** — `Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`, `Agent` (sub-agent delegation), `TaskCreate`/`TaskUpdate`/`TaskList`/`TaskGet`/`TaskOutput`/`TaskStop`, `WebFetch`, `ToolSearch` (deferred-tool activation), `View` (Gemini image QA — DeepSeek only, see [Image handling](#image-handling-deepseek)). Bring your own via `ToolRegistry`. Glob and Grep shell out to ripgrep (`rg`), so install it if you want those tools active. Tool primitives are also importable from the `maestro-agent-sdk/tools` subpath when you don't need the rest of the runtime.
+- **Built-in tools** — `Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`, `Agent` (sub-agent delegation), `TaskCreate`/`TaskUpdate`/`TaskList`/`TaskGet`/`TaskOutput`/`TaskStop`, `WebFetch`, `ToolSearch` (deferred-tool activation), `ReadToolOutput` (enabled with persisted tool-result truncation), `View` (Gemini image QA — DeepSeek only, see [Image handling](#image-handling-deepseek)). Bring your own via `ToolRegistry`. Glob and Grep shell out to ripgrep (`rg`), so install it if you want those tools active. Tool primitives are also importable from the `maestro-agent-sdk/tools` subpath when you don't need the rest of the runtime.
 - **MCP** — built-in client pool (stdio + SSE) so any MCP server (`@modelcontextprotocol/sdk`) shows up as tools.
 - **Memory** — automatic context compression (summarization + pruning) when the token budget is hit. Reuses the agent's own model for compaction — no separate model knob.
 - **Session persistence** — multi-turn resume via `~/.maestro/sessions/<sessionId>.jsonl`, with a `_meta` header capturing `cwd`, `userId`, and host metadata for forensics.
@@ -402,6 +402,35 @@ for await (const event of maestroProvider({
 Use `disallowedTools` when a tool should be unavailable for the whole call.
 Use `toolHooks` for finer runtime policy, such as path allowlists or command
 inspection.
+
+### Persisted tool outputs
+
+Large string results can be truncated for model context while retaining the full
+output for seven days:
+
+```ts
+for await (const event of maestroProvider({
+  agent: "maestro",
+  cwd: "/workspace",
+  systemPrompt: "You are a coding agent.",
+  prompt: "Run the test suite and inspect every failure.",
+  toolResultTruncation: {
+    enabled: true,
+    maxBytes: 64 * 1024,
+    saveFullOutput: true,
+  },
+})) {
+  if (event.type === "tool_result" && event.metadata?.outputRef) {
+    console.error(event.metadata.outputRef);
+  }
+}
+```
+
+Truncated model content includes an opaque `maestro://tool-output/<id>` reference.
+When persistence is enabled, `maestroProvider()` automatically registers
+`ReadToolOutput`, allowing the model to retrieve the full result in bounded
+chunks. Absolute paths remain in `metadata.outputPath` for backward compatibility
+but are never included in model content.
 
 ### Tool hooks — per-tool pre/post
 

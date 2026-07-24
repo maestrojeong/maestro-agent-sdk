@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.1.51] - 2026-07-24
+
+### Added
+- Persist full tool results behind opaque `maestro://tool-output/<id>`
+  references when model-context truncation and `saveFullOutput` are enabled.
+- Automatically register the bounded `ReadToolOutput` tool so the model can
+  retrieve persisted results in UTF-8-safe chunks without seeing filesystem
+  paths.
+
+### Fixed
+- Remove expired date directories during tool-output retention cleanup instead
+  of leaving persisted outputs on disk indefinitely.
+- Reject malformed output references and symbolic-link targets during stored
+  output lookup.
+
 ## [0.1.50] - 2026-07-24
 
 ### Added

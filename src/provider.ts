@@ -35,6 +35,7 @@ import { createGeminiImageQATool } from "@/tools/builtin/gemini_image_qa";
 import { globTool } from "@/tools/builtin/glob";
 import { grepTool } from "@/tools/builtin/grep";
 import { createReadTool } from "@/tools/builtin/read";
+import { createReadToolOutputTool } from "@/tools/builtin/read_tool_output";
 import {
   createTaskCreateTool,
   createTaskGetTool,
@@ -190,6 +191,16 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
   // so Edit can't mutate a path that hasn't been Read in this session.
   // Glob and Grep shell out to ripgrep — both are read-only and parallelSafe.
   tools.register(createReadTool({ tracker: fileTracker }));
+  if (opts.toolResultTruncation?.enabled && opts.toolResultTruncation.saveFullOutput) {
+    tools.register(
+      createReadToolOutputTool({
+        outputDir: opts.toolResultTruncation.outputDir,
+        // Leave room for the output range/continuation header so this
+        // bounded read does not immediately create another stored output.
+        maxBytes: Math.max(1, Math.floor((opts.toolResultTruncation.maxBytes ?? 64 * 1024) / 2)),
+      }),
+    );
+  }
   tools.register(createWriteTool({ tracker: fileTracker }));
   tools.register(createEditTool({ tracker: fileTracker }));
   tools.register(globTool);
