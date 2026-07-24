@@ -23,6 +23,13 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
 
+      # Glob/Grep shell out to ripgrep (see src/tools/builtin/glob.ts,
+      # src/tools/builtin/grep.ts) — ubuntu-latest runners don't ship it
+      # by default, unlike most local dev machines (Homebrew/apt already
+      # have it), so tests would otherwise fail with ENOENT here only.
+      - name: Install ripgrep
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
       - name: Install dependencies
         run: npm ci
 
