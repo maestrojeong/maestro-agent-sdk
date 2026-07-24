@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, type Stats, statSync } from "node:fs";
 import { extname, isAbsolute } from "node:path";
 import type { MaestroToolResultBlock } from "@/providers/base";
@@ -163,7 +164,7 @@ export function createReadTool(opts: ReadToolOptions = {}): ToolHandler {
         // We still record the file in the tracker even though Edit on an
         // image is unusual — keeps the contract uniform and lets a future
         // Write tool that touches the file get the same drift check.
-        tracker?.recordRead(filePath, stat.mtimeMs, stat.size);
+        tracker?.recordRead(filePath, stat.mtimeMs, stat.size, fileIdentity(stat, bytes));
         const mediaType = IMAGE_MEDIA_TYPES[ext] ?? "application/octet-stream";
         const block: MaestroToolResultBlock = {
           type: "image",
@@ -203,13 +204,16 @@ export function createReadTool(opts: ReadToolOptions = {}): ToolHandler {
             error: `Read: PDF text extraction failed: ${e instanceof Error ? e.message : String(e)}`,
           });
         }
-        tracker?.recordRead(filePath, stat.mtimeMs, stat.size);
+        if (tracker) {
+          const bytes = readFileSync(filePath);
+          tracker.recordRead(filePath, stat.mtimeMs, stat.size, fileIdentity(stat, bytes));
+        }
         return extracted;
       }
 
-      let raw: string;
+      let rawBytes: Buffer;
       try {
-        raw = readFileSync(filePath, "utf-8");
+        rawBytes = readFileSync(filePath);
       } catch (e) {
         return JSON.stringify({
           error: `Read: read failed: ${e instanceof Error ? e.message : String(e)}`,
@@ -219,7 +223,8 @@ export function createReadTool(opts: ReadToolOptions = {}): ToolHandler {
       // Record post-stat state for the Read-before-Edit gate. We record even
       // when the model paginated (offset/limit) — the gate cares about whether
       // a Read was performed, not which slice was requested.
-      tracker?.recordRead(filePath, stat.mtimeMs, stat.size);
+      tracker?.recordRead(filePath, stat.mtimeMs, stat.size, fileIdentity(stat, rawBytes));
+      const raw = rawBytes.toString("utf-8");
 
       // Anthropic's Read result encodes lines as `     <n>\t<content>` where
       // `<n>` is right-aligned in a 6-char field. Matching the format exactly
@@ -241,6 +246,14 @@ export function createReadTool(opts: ReadToolOptions = {}): ToolHandler {
 
       return formatted;
     },
+  };
+}
+
+function fileIdentity(stat: Stats, bytes: Uint8Array): { hash: string; dev: number; ino: number } {
+  return {
+    hash: createHash("sha256").update(bytes).digest("hex"),
+    dev: stat.dev,
+    ino: stat.ino,
   };
 }
 

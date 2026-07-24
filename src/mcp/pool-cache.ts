@@ -76,7 +76,7 @@ let clientFactory: ClientFactory = (name, spec) => new MaestroMcpClient(name, sp
 /**
  * Build a stable hash of a server spec. We hash command + args + transport
  * url + sorted env keys (values excluded — they often contain per-turn
- * variables like depth, group ids; would defeat caching).
+ * variables like depth, group ids; would defeat caching) + per-tool timeout.
  *
  * Two callers with the same hash get the same client back — caller is
  * responsible for ensuring that's semantically correct (i.e. they pass the
@@ -91,6 +91,10 @@ export function hashSpec(spec: MaestroMcpServerSpec): string {
     // env values vary per turn (e.g. session-comm --depth). Hash only the keys
     // so an env-mutating caller still gets a cache hit on the same shape.
     envKeys: spec.env ? Object.keys(spec.env).sort() : [],
+    // Per-tool request timeout affects callTool behavior, so it must be part
+    // of the cache key — otherwise two specs differing only in `timeout`
+    // would collide and silently reuse whichever was spawned first.
+    timeout: spec.timeout ?? null,
   };
   return createHash("sha256").update(JSON.stringify(normalized)).digest("hex").slice(0, 16);
 }

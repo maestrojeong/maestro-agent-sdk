@@ -6,7 +6,7 @@ import type {
   PreToolUseDecision,
   ToolHandler,
 } from "@/tools/registry";
-import { isToolExecuteError, ToolRegistry } from "@/tools/registry";
+import { isToolExecuteError, ToolRegistry, unwrapToolExecuteResult } from "@/tools/registry";
 
 /**
  * Tests for the PreToolUse / PostToolUse hook chain.
@@ -205,6 +205,20 @@ describe("ToolRegistry hook chain", () => {
     const parsed = JSON.parse(out.content as string) as { error: string };
     expect(parsed.error).toBe("boom");
     expect(preFired).toBe(true);
+  });
+
+  test("pre hook exceptions fail closed as structured tool errors", async () => {
+    const registry = new ToolRegistry();
+    registry.register(makeEcho());
+    registry.use({
+      pre: () => {
+        throw new Error("policy unavailable");
+      },
+    });
+
+    const result = await registry.dispatch("echo", {});
+    expect(isToolExecuteError(result)).toBe(true);
+    expect(unwrapToolExecuteResult(result).content).toContain("policy unavailable");
   });
 
   test("__hookCount reports registration count", () => {

@@ -122,12 +122,6 @@ export { type ConversationReader, setConversationReader } from "@/storage/conver
 export { createAgentTool } from "@/tools/builtin/agent";
 // ─── Built-in tools ──────────────────────────────────────────────────────────
 export { bashTool, createBashTool } from "@/tools/builtin/bash";
-export {
-  type BackgroundBashRegistry,
-  createBackgroundBashRegistry,
-  createBashOutputTool,
-  createKillBashTool,
-} from "@/tools/builtin/bash_background";
 export { createEditTool } from "@/tools/builtin/edit";
 export { createGeminiImageQATool } from "@/tools/builtin/gemini_image_qa";
 export { compileGlob, globTool } from "@/tools/builtin/glob";
@@ -139,7 +133,11 @@ export {
   createTaskListTool,
   createTaskUpdateTool,
 } from "@/tools/builtin/tasks";
-export { webFetchTool } from "@/tools/builtin/web_fetch";
+export {
+  createWebFetchTool,
+  type WebFetchToolOptions,
+  webFetchTool,
+} from "@/tools/builtin/web_fetch";
 export { createWriteTool } from "@/tools/builtin/write";
 export { dropFileStateTracker, getFileStateTracker } from "@/tools/file-state";
 // ─── Tool registry + hook surface ────────────────────────────────────────────

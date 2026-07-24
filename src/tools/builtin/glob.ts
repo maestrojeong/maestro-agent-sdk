@@ -1,5 +1,6 @@
-import { readdirSync, type Stats, statSync } from "node:fs";
-import { isAbsolute, join, normalize, relative, sep } from "node:path";
+import { spawn } from "node:child_process";
+import { lstatSync, type Stats, statSync } from "node:fs";
+import { isAbsolute, join, normalize } from "node:path";
 import { defineTool } from "@/providers/base";
 import type { ToolHandler } from "@/tools/registry";
 
@@ -20,11 +21,10 @@ import type { ToolHandler } from "@/tools/registry";
  *   - `?`     — exactly one char within one segment (no `/`)
  *   - Other characters match literally; regex metacharacters are escaped.
  *
- * Implementation: compile the pattern to a regex once, then walk the
- * directory tree and test the relative path of each file. Deliberately
- * does NOT skip dotfiles or build directories — the user's pattern is
- * authoritative, and silently filtering would surprise them when
- * `**\/*.ts` doesn't list files in `.next/` even though they're there.
+ * Implementation: ripgrep discovers files using its native glob engine.
+ * `--no-ignore --hidden` preserves the original behavior of including ignored
+ * and dot-prefixed files, while rg's default no-follow behavior prevents
+ * symlink loops and traversal outside the requested root.
  *
  * Bounds:
  *   - 10,000-file ceiling so a pathological pattern (`**\/*`) in a giant
@@ -36,8 +36,7 @@ import type { ToolHandler } from "@/tools/registry";
 /** Hard cap on results so a pathological pattern doesn't blow out context. */
 const MAX_RESULTS = 10_000;
 
-/** Hard cap on wall time spent walking — prevents the loop pinning on a
- *  pathological filesystem. */
+/** Hard cap on wall time spent walking. */
 const WALK_TIMEOUT_MS = 30_000;
 
 export const globTool: ToolHandler = {
@@ -125,68 +124,27 @@ export const globTool: ToolHandler = {
       });
     }
 
-    let regex: RegExp;
     try {
-      regex = compileGlob(pattern);
+      compileGlob(pattern);
     } catch (e) {
       return JSON.stringify({
         error: `Glob: failed to compile pattern '${pattern}': ${e instanceof Error ? e.message : String(e)}`,
       });
     }
 
+    const discovery = await discoverWithRipgrep(root, normalizeRipgrepGlob(pattern));
+    if ("error" in discovery) return JSON.stringify({ error: discovery.error });
+
     const matches: Array<{ abs: string; mtime: number }> = [];
-    const startedAt = Date.now();
-    let truncated = false;
-    let timedOut = false;
-
-    function shouldStop(): boolean {
-      if (matches.length >= MAX_RESULTS) {
-        truncated = true;
-        return true;
-      }
-      if (Date.now() - startedAt > WALK_TIMEOUT_MS) {
-        timedOut = true;
-        return true;
-      }
-      return false;
-    }
-
-    function walk(dir: string): void {
-      if (shouldStop()) return;
-      let names: string[];
+    for (const relativePath of discovery.paths) {
+      const abs = join(root, relativePath);
       try {
-        // `readdirSync` without `withFileTypes` returns a string[], which we
-        // narrow with statSync per entry — avoids the Dirent generic variance
-        // (Node's @types declare both `Dirent<NonSharedBuffer>` and
-        // `Dirent<string>` overloads, and TS can't always pick the right one).
-        names = readdirSync(dir);
+        const stat = lstatSync(abs);
+        if (stat.isFile()) matches.push({ abs, mtime: stat.mtimeMs });
       } catch {
-        // Unreadable directory (perm denied, vanished) — skip silently.
-        return;
-      }
-      for (const name of names) {
-        if (shouldStop()) return;
-        const abs = join(dir, name);
-        let stat: Stats;
-        try {
-          stat = statSync(abs);
-        } catch {
-          continue;
-        }
-        if (stat.isDirectory()) {
-          walk(abs);
-          continue;
-        }
-        if (!stat.isFile()) continue;
-        // Match against the path relative to root, with forward slashes for
-        // cross-platform pattern stability.
-        const rel = relative(root, abs).split(sep).join("/");
-        if (!regex.test(rel)) continue;
-        matches.push({ abs, mtime: stat.mtimeMs });
+        // File disappeared after discovery.
       }
     }
-
-    walk(root);
     matches.sort((a, b) => b.mtime - a.mtime);
     const paths = matches.map((m) => m.abs);
 
@@ -195,7 +153,7 @@ export const globTool: ToolHandler = {
         ok: true,
         count: 0,
         paths: [],
-        note: timedOut ? "Walk timed out after 30s with no matches." : "No matches.",
+        note: "No matches.",
       });
     }
 
@@ -204,11 +162,98 @@ export const globTool: ToolHandler = {
       count: paths.length,
       paths,
     };
-    if (truncated) payload.truncated = true;
-    if (timedOut) payload.timedOut = true;
+    if (discovery.truncated) payload.truncated = true;
     return JSON.stringify(payload);
   },
 };
+
+async function discoverWithRipgrep(
+  root: string,
+  pattern: string,
+): Promise<{ paths: string[]; truncated: boolean } | { error: string }> {
+  return new Promise((resolve) => {
+    const child = spawn("rg", ["--files", "--no-ignore", "--hidden", "--null", "--glob", pattern], {
+      cwd: root,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const paths: string[] = [];
+    let pending = Buffer.alloc(0);
+    let stderr = "";
+    let truncated = false;
+    let timedOut = false;
+    let settled = false;
+
+    const finish = (result: { paths: string[]; truncated: boolean } | { error: string }): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, WALK_TIMEOUT_MS);
+
+    child.stdout.on("data", (chunk: Buffer) => {
+      pending = Buffer.concat([pending, chunk]);
+      let nul = pending.indexOf(0);
+      while (nul !== -1) {
+        const path = pending.subarray(0, nul).toString("utf-8");
+        pending = pending.subarray(nul + 1);
+        if (path) paths.push(path);
+        if (paths.length > MAX_RESULTS) {
+          paths.length = MAX_RESULTS;
+          truncated = true;
+          child.kill("SIGTERM");
+          break;
+        }
+        nul = pending.indexOf(0);
+      }
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      if (stderr.length < 4000) stderr += chunk.toString("utf-8");
+    });
+    child.on("error", (error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") {
+        finish({
+          error:
+            "Glob: ripgrep (`rg`) is not on PATH. Install it via Homebrew " +
+            "(`brew install ripgrep`) or your package manager.",
+        });
+      } else {
+        finish({ error: `Glob: failed to start ripgrep: ${error.message}` });
+      }
+    });
+    child.on("close", (code, signal) => {
+      if (timedOut) {
+        finish({ error: `Glob: timeout after ${WALK_TIMEOUT_MS}ms` });
+      } else if (code !== 0 && code !== 1 && !truncated) {
+        finish({
+          error: `Glob: ripgrep exited with status ${code ?? signal}: ${stderr.trim()}`,
+        });
+      } else {
+        finish({ paths, truncated });
+      }
+    });
+  });
+}
+
+/** rg rejects unmatched `[`, while the legacy compiler treats it literally. */
+function normalizeRipgrepGlob(pattern: string): string {
+  let output = "";
+  for (let index = 0; index < pattern.length; index += 1) {
+    if (pattern[index] === "[" && pattern.indexOf("]", index + 1) === -1) {
+      output += "[[]";
+    } else {
+      output += pattern[index];
+    }
+  }
+  // A leading slash anchors globset matching to rg's search root. Without it,
+  // `*.ts` also matches `nested/file.ts`, unlike the legacy relative-path
+  // matcher where `*` never crosses a directory separator.
+  return output.startsWith("/") ? output : `/${output}`;
+}
 
 /**
  * Compile a shell-style glob to a regex that matches the entire relative

@@ -30,6 +30,8 @@ export interface MaestroMcpServerSpec {
   /** sse servers. */
   type?: "sse";
   url?: string;
+  /** Per-tool request timeout in milliseconds. Defaults to the MCP SDK's 60s. */
+  timeout?: number;
 }
 
 /** One tool resolved from an MCP server, ready to register with a ToolRegistry. */
@@ -128,10 +130,23 @@ export class MaestroMcpClient {
     input: Record<string, unknown>,
     abortSignal?: AbortSignal,
   ): Promise<MaestroMcpCallResult> {
+    const timeout =
+      typeof this.spec.timeout === "number" &&
+      Number.isFinite(this.spec.timeout) &&
+      this.spec.timeout > 0
+        ? this.spec.timeout
+        : undefined;
+    const requestOptions =
+      timeout !== undefined || abortSignal
+        ? {
+            ...(timeout !== undefined ? { timeout } : {}),
+            ...(abortSignal ? { signal: abortSignal } : {}),
+          }
+        : undefined;
     const res = await this.client.callTool(
       { name: originalName, arguments: input },
       undefined,
-      abortSignal ? { signal: abortSignal } : undefined,
+      requestOptions,
     );
     return renderCallResult(res);
   }

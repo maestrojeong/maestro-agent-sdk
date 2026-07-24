@@ -1,7 +1,19 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { htmlToText, webFetchTool } from "@/tools/builtin/web_fetch";
+import { createWebFetchTool, htmlToText } from "@/tools/builtin/web_fetch";
+
+vi.mock("undici", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("undici")>();
+  return {
+    ...actual,
+    fetch: (input: unknown, init?: unknown) =>
+      globalThis.fetch(input as string | URL | Request, init as RequestInit),
+  };
+});
 
 const ORIGINAL_FETCH = globalThis.fetch;
+const webFetchTool = createWebFetchTool({
+  resolveHostname: async () => ["93.184.216.34"],
+});
 
 afterEach(() => {
   globalThis.fetch = ORIGINAL_FETCH;
@@ -97,6 +109,71 @@ describe("webFetchTool", () => {
     const out = await webFetchTool.execute({ url: "https://example.com/api" });
     expect(out).toContain('{"ok":true}');
     expect(out).toContain("Content-Type: application/json");
+  });
+
+  test("blocks loopback addresses before fetch", async () => {
+    const fetchSpy = vi.fn();
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+    const out = JSON.parse(await webFetchTool.execute({ url: "http://127.0.0.1/secret" }));
+    expect(out.error).toMatch(/private address/);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  test("validates redirect destinations and blocks private targets", async () => {
+    globalThis.fetch = vi.fn(async () => {
+      return new Response(null, {
+        status: 302,
+        headers: { location: "http://169.254.169.254/latest/meta-data" },
+      });
+    }) as unknown as typeof fetch;
+
+    const out = JSON.parse(await webFetchTool.execute({ url: "https://example.com/start" }));
+    expect(out.error).toMatch(/private address/);
+  });
+
+  test("stops reading at the byte cap", async () => {
+    const oversized = "x".repeat(1024 * 1024 + 100);
+    globalThis.fetch = vi.fn(async () => {
+      return new Response(oversized, {
+        status: 200,
+        headers: { "content-type": "text/plain" },
+      });
+    }) as unknown as typeof fetch;
+
+    const out = await webFetchTool.execute({ url: "https://example.com/large" });
+    expect(out).toContain("(truncated at 1MB)");
+    expect(Buffer.byteLength(out, "utf-8")).toBeLessThan(1024 * 1024 + 300);
+  });
+
+  test("applies the timeout while DNS resolution is pending", async () => {
+    vi.useFakeTimers();
+    try {
+      const tool = createWebFetchTool({
+        resolveHostname: () => new Promise(() => {}),
+      });
+      const pending = tool.execute({ url: "https://example.com/hanging-dns" });
+      await vi.advanceTimersByTimeAsync(30_001);
+      const out = JSON.parse(await pending);
+      expect(out.error).toMatch(/timeout/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("accepts public IPv6 literals without DNS lookup", async () => {
+    const resolver = vi.fn(async () => ["127.0.0.1"]);
+    const tool = createWebFetchTool({
+      resolveHostname: resolver,
+    });
+    globalThis.fetch = vi.fn(async () => {
+      return new Response("ipv6", {
+        status: 200,
+        headers: { "content-type": "text/plain" },
+      });
+    }) as unknown as typeof fetch;
+    const out = await tool.execute({ url: "https://[2606:4700:4700::1111]/" });
+    expect(out).toContain("ipv6");
+    expect(resolver).not.toHaveBeenCalled();
   });
 
   test("aborts on timeout with structured error (no real wait)", async () => {

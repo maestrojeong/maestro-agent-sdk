@@ -110,6 +110,18 @@ describe("hashSpec", () => {
     const b: MaestroMcpServerSpec = { type: "sse", url: "http://localhost:9200/sse" };
     expect(hashSpec(a)).not.toBe(hashSpec(b));
   });
+
+  test("per-tool timeout participates (specs differing only in timeout must not collide)", () => {
+    const a: MaestroMcpServerSpec = { command: "bun", timeout: 30_000 };
+    const b: MaestroMcpServerSpec = { command: "bun", timeout: 600_000 };
+    expect(hashSpec(a)).not.toBe(hashSpec(b));
+  });
+
+  test("timeout omitted vs explicit undefined hash the same", () => {
+    const a: MaestroMcpServerSpec = { command: "bun" };
+    const b: MaestroMcpServerSpec = { command: "bun", timeout: undefined };
+    expect(hashSpec(a)).toBe(hashSpec(b));
+  });
 });
 
 describe("getOrStartClient — cache hit/miss", () => {

@@ -22,12 +22,6 @@
 // ─── Built-in tools ────────────────────────────────────────────────────────
 export { createAgentTool } from "@/tools/builtin/agent";
 export { bashTool, createBashTool } from "@/tools/builtin/bash";
-export {
-  type BackgroundBashRegistry,
-  createBackgroundBashRegistry,
-  createBashOutputTool,
-  createKillBashTool,
-} from "@/tools/builtin/bash_background";
 export { createEditTool, editTool } from "@/tools/builtin/edit";
 export { createGeminiImageQATool } from "@/tools/builtin/gemini_image_qa";
 export { compileGlob, globTool } from "@/tools/builtin/glob";
@@ -42,8 +36,10 @@ export {
   createTaskUpdateTool,
 } from "@/tools/builtin/tasks";
 export {
+  createWebFetchTool,
   htmlToMarkdown,
   htmlToText,
+  type WebFetchToolOptions,
   webFetchTool,
 } from "@/tools/builtin/web_fetch";
 export { createWriteTool, writeTool } from "@/tools/builtin/write";

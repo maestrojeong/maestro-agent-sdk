@@ -1,6 +1,7 @@
-import { existsSync, readFileSync, type Stats, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, type Stats, statSync } from "node:fs";
 import { isAbsolute, normalize } from "node:path";
 import { defineTool } from "@/providers/base";
+import { atomicWriteFileSync, contentHash } from "@/tools/atomic-write";
 import type { FileStateTracker } from "@/tools/file-state";
 import { checkBlockedPath } from "@/tools/path-guard";
 import type { ToolHandler } from "@/tools/registry";
@@ -155,14 +156,15 @@ export function createEditTool(opts: EditToolOptions = {}): ToolHandler {
         });
       }
 
-      let raw: string;
+      let rawBytes: Buffer;
       try {
-        raw = readFileSync(filePath, "utf-8");
+        rawBytes = readFileSync(filePath);
       } catch (e) {
         return JSON.stringify({
           error: `Edit: read failed: ${e instanceof Error ? e.message : String(e)}`,
         });
       }
+      const raw = rawBytes.toString("utf-8");
 
       const occurrences = countOccurrences(raw, oldStr);
       if (occurrences === 0) {
@@ -187,7 +189,10 @@ export function createEditTool(opts: EditToolOptions = {}): ToolHandler {
       }
 
       try {
-        writeFileSync(filePath, updated, "utf-8");
+        atomicWriteFileSync(filePath, updated, {
+          expectedHash: contentHash(rawBytes),
+          validateDestination: (destination) => checkBlockedPath("Edit", destination),
+        });
       } catch (e) {
         return JSON.stringify({
           error: `Edit: write failed: ${e instanceof Error ? e.message : String(e)}`,

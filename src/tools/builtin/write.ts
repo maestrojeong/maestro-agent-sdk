@@ -1,6 +1,7 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { dirname, isAbsolute, normalize } from "node:path";
 import { defineTool } from "@/providers/base";
+import { atomicWriteFileSync } from "@/tools/atomic-write";
 import type { FileStateTracker } from "@/tools/file-state";
 import { checkBlockedPath } from "@/tools/path-guard";
 import type { ToolHandler } from "@/tools/registry";
@@ -92,7 +93,9 @@ export function createWriteTool(opts: WriteToolOptions = {}): ToolHandler {
 
       try {
         mkdirSync(dirname(filePath), { recursive: true });
-        writeFileSync(filePath, content, "utf-8");
+        atomicWriteFileSync(filePath, content, {
+          validateDestination: (destination) => checkBlockedPath("Write", destination),
+        });
       } catch (e) {
         return JSON.stringify({
           error: `Write: failed: ${e instanceof Error ? e.message : String(e)}`,

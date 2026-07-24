@@ -503,9 +503,34 @@ export class ToolRegistry {
     }
 
     let currentInput = input;
-    for (const hook of this.hooks) {
+    for (const [hookIndex, hook] of this.hooks.entries()) {
       if (!hook.pre) continue;
-      const decision = await hook.pre({ toolName: name, input: currentInput });
+      let decision: PreToolUseDecision;
+      try {
+        decision = await hook.pre({ toolName: name, input: currentInput });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.error(
+          {
+            toolName: name,
+            hookIndex,
+            error: message,
+          },
+          "tool pre-hook failed closed",
+        );
+        return {
+          state: "done",
+          toolName: name,
+          input: currentInput,
+          parallelSafe: false,
+          result: {
+            isError: true,
+            content: JSON.stringify({
+              error: `PreToolUse hook ${hookIndex} failed: ${message}`,
+            }),
+          },
+        };
+      }
       if (decision.decision === "block") {
         return {
           state: "done",

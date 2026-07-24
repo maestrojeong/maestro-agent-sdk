@@ -29,13 +29,7 @@ import {
 } from "@/session-store";
 import { getTaskStore } from "@/state/tasks";
 import { createAgentTool } from "@/tools/builtin/agent";
-import { askUserQuestionTool } from "@/tools/builtin/ask_user_question";
-import { bashTool, createBashTool } from "@/tools/builtin/bash";
-import {
-  createBackgroundBashRegistry,
-  createBashOutputTool,
-  createKillBashTool,
-} from "@/tools/builtin/bash_background";
+import { bashTool } from "@/tools/builtin/bash";
 import { createEditTool } from "@/tools/builtin/edit";
 import { createGeminiImageQATool } from "@/tools/builtin/gemini_image_qa";
 import { globTool } from "@/tools/builtin/glob";
@@ -188,36 +182,13 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
     for (const hook of opts.toolHooks) tools.use(hook);
   }
 
-  // v0.1.19+: when `opts.enableBackgroundBash` is set, swap the default
-  // foreground-only bash for one that honors `run_in_background:true`
-  // AND register the polling + kill tools. The registry handle is bound
-  // to the loop's abort signal so an interrupted run cascade-kills every
-  // still-running background process — no detached children.
-  //
-  // Default (flag omitted/false): exactly the v0.1.18 behavior — plain
-  // `bashTool`, no `BashOutput`/`KillBash` exposed to the model.
-  if (opts.enableBackgroundBash) {
-    const bgRegistry = createBackgroundBashRegistry({
-      ...(opts.abortController ? { abortSignal: opts.abortController.signal } : {}),
-    });
-    tools.register(
-      createBashTool({
-        ...(opts.abortController ? { signal: opts.abortController.signal } : {}),
-        background: bgRegistry,
-      }),
-    );
-    tools.register(createBashOutputTool(bgRegistry));
-    tools.register(createKillBashTool(bgRegistry));
-  } else {
-    tools.register(bashTool);
-  }
+  tools.register(bashTool);
   // Read/Write/Edit/WebFetch/Glob/Grep — claude SDK parity builtins. Same
   // names + schemas so the model's pretrained instinct calls them with the
   // right shape, and prompt cache keys line up across agents when a topic
   // is bridged. Read/Write/Edit gate on the per-session file-state tracker
   // so Edit can't mutate a path that hasn't been Read in this session.
-  // Glob walks the filesystem in-process (no deps), Grep shells out to
-  // ripgrep — both are read-only and parallelSafe.
+  // Glob and Grep shell out to ripgrep — both are read-only and parallelSafe.
   tools.register(createReadTool({ tracker: fileTracker }));
   tools.register(createWriteTool({ tracker: fileTracker }));
   tools.register(createEditTool({ tracker: fileTracker }));
@@ -227,8 +198,6 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
   if (shouldRegisterGeminiImageQATool(resolvedModel)) {
     tools.register(createGeminiImageQATool({ apiKey: process.env.GEMINI_API_KEY }));
   }
-  // AskUserQuestion — ask the user a question mid-task, get answer next turn
-  tools.register(askUserQuestionTool);
   // Task family — granular CRUD replacing the v0.1.x TodoWrite. All four
   // share the same per-session store; the system reminder renders the list
   // every turn so the model rarely needs to call TaskList explicitly.
