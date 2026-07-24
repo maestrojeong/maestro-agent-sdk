@@ -42,14 +42,49 @@ const BLOCKED_PATTERNS: RegExp[] = [
  * @param normalizedAbsPath  An already-`normalize()`d absolute path.
  */
 export function checkBlockedPath(toolName: string, normalizedAbsPath: string): string | null {
-  for (const pattern of BLOCKED_PATTERNS) {
-    if (pattern.test(normalizedAbsPath)) {
-      return (
-        `${toolName}: writing to '${normalizedAbsPath}' is blocked — ` +
-        `this path matches a sensitive-file pattern (${pattern.source}). ` +
-        `Use bash to edit it explicitly if you are certain this is intentional.`
-      );
+  const candidates = new Set([portablePath(normalizedAbsPath)]);
+  const resolved = resolveThroughExistingParent(normalizedAbsPath);
+  if (resolved) candidates.add(portablePath(resolved));
+
+  for (const candidate of candidates) {
+    for (const pattern of BLOCKED_PATTERNS) {
+      if (pattern.test(candidate)) {
+        return (
+          `${toolName}: writing to '${normalizedAbsPath}' is blocked — ` +
+          `resolved path '${candidate}' matches a sensitive-file pattern (${pattern.source}). ` +
+          `Use bash to edit it explicitly if you are certain this is intentional.`
+        );
+      }
     }
   }
   return null;
 }
+
+function portablePath(path: string): string {
+  const withSlashes = path.replaceAll("\\", "/");
+  return withSlashes.startsWith("/") ? withSlashes : `/${withSlashes}`;
+}
+
+/**
+ * Resolve symlinks for an existing destination, or for the nearest existing
+ * ancestor when the destination is being created.
+ */
+function resolveThroughExistingParent(path: string): string | null {
+  let cursor = path;
+  while (!existsSync(cursor)) {
+    const parent = dirname(cursor);
+    if (parent === cursor) return null;
+    cursor = parent;
+  }
+
+  try {
+    const realBase = realpathSync(cursor);
+    const suffix = relative(cursor, path);
+    return suffix ? join(realBase, suffix) : realBase;
+  } catch {
+    return null;
+  }
+}
+
+import { existsSync, realpathSync } from "node:fs";
+import { dirname, join, relative } from "node:path";

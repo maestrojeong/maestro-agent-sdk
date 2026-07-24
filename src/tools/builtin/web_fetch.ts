@@ -1,5 +1,8 @@
+import { lookup } from "node:dns/promises";
+import { isIP, type LookupFunction } from "node:net";
 import * as cheerio from "cheerio";
 import type { AnyNode } from "domhandler";
+import { Agent, fetch as undiciFetch } from "undici";
 import { defineTool } from "@/providers/base";
 import type { ToolHandler } from "@/tools/registry";
 
@@ -28,126 +31,361 @@ import type { ToolHandler } from "@/tools/registry";
 
 const FETCH_TIMEOUT_MS = 30_000;
 const MAX_RESPONSE_BYTES = 1 * 1024 * 1024; // 1MB
+const MAX_REDIRECTS = 5;
 
-export const webFetchTool: ToolHandler = {
-  // HTTP GET against an external URL with no local side effects — multiple
-  // fetches in the same turn can run in parallel.
-  parallelSafe: true,
-  schema: defineTool({
-    name: "WebFetch",
-    description:
-      "Fetch a URL and return its text content. Supports text/* and application/json " +
-      "content types only — binary responses (PDF, images) are not decoded. " +
-      "30s timeout, 1MB response cap. The optional 'prompt' field is accepted " +
-      "for claude SDK compatibility but ignored — return value is the raw body.",
-    input_schema: {
-      type: "object",
-      properties: {
-        url: {
-          type: "string",
-          description: "Absolute http(s) URL to fetch.",
+export interface WebFetchToolOptions {
+  /**
+   * Opt out of the default SSRF guard. Intended only for trusted hosts that
+   * explicitly need intranet access.
+   */
+  allowPrivateNetwork?: boolean;
+  /** Resolver injection for deterministic tests and custom DNS environments. */
+  resolveHostname?: (hostname: string) => Promise<string[]>;
+}
+
+export function createWebFetchTool(options: WebFetchToolOptions = {}): ToolHandler {
+  const resolveHostname = options.resolveHostname ?? resolvePublicAddresses;
+  return {
+    // HTTP GET against an external URL with no local side effects — multiple
+    // fetches in the same turn can run in parallel.
+    parallelSafe: true,
+    schema: defineTool({
+      name: "WebFetch",
+      description:
+        "Fetch a URL and return its text content. Supports text/* and application/json " +
+        "content types only — binary responses (PDF, images) are not decoded. " +
+        "30s timeout, 1MB response cap. The optional 'prompt' field is accepted " +
+        "for claude SDK compatibility but ignored — return value is the raw body.",
+      input_schema: {
+        type: "object",
+        properties: {
+          url: {
+            type: "string",
+            description: "Absolute http(s) URL to fetch.",
+          },
+          prompt: {
+            type: "string",
+            description: "Ignored — accepted for claude SDK compatibility.",
+          },
         },
-        prompt: {
-          type: "string",
-          description: "Ignored — accepted for claude SDK compatibility.",
-        },
+        required: ["url"],
       },
-      required: ["url"],
-    },
-  }),
-  async execute(input) {
-    const url = typeof input.url === "string" ? input.url.trim() : "";
-    if (!url) {
-      return JSON.stringify({ error: "WebFetch: missing 'url' argument" });
-    }
-    if (!/^https?:\/\//i.test(url)) {
-      return JSON.stringify({
-        error: `WebFetch: url must start with http:// or https://, got '${url}'`,
-      });
-    }
-
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-
-    let response: Response;
-    try {
-      response = await fetch(url, { signal: controller.signal });
-    } catch (e) {
-      clearTimeout(timer);
-      const err = e as { name?: string; message?: string };
-      if (err.name === "AbortError") {
-        return JSON.stringify({
-          error: `WebFetch: timeout after ${FETCH_TIMEOUT_MS}ms`,
-          url,
-        });
+    }),
+    async execute(input) {
+      const rawUrl = typeof input.url === "string" ? input.url.trim() : "";
+      if (!rawUrl) {
+        return JSON.stringify({ error: "WebFetch: missing 'url' argument" });
       }
-      return JSON.stringify({
-        error: `WebFetch: fetch failed: ${err.message ?? String(e)}`,
-        url,
-      });
-    }
-    clearTimeout(timer);
 
-    const contentType = (response.headers.get("content-type") ?? "").toLowerCase();
-    if (!response.ok) {
-      const text = await safeText(response);
-      return JSON.stringify({
-        error: `WebFetch: HTTP ${response.status} ${response.statusText}`,
-        url,
-        contentType,
-        body: text.slice(0, 500),
-      });
-    }
-
-    // Only decode text-ish responses. application/json is a text content type
-    // that browsers serve without `text/` prefix — special-case it.
-    const isTextLike = contentType.startsWith("text/") || contentType.includes("json");
-    if (!isTextLike) {
-      return JSON.stringify({
-        error: `WebFetch: non-text content-type '${contentType}'. Download with bash + Read.`,
-        url,
-        contentType,
-      });
-    }
-
-    let body = await safeText(response);
-    let truncated = false;
-    if (body.length > MAX_RESPONSE_BYTES) {
-      body = body.slice(0, MAX_RESPONSE_BYTES);
-      truncated = true;
-    }
-
-    // HTML → markdown via cheerio: parse the DOM, drop noise nodes
-    // (script/style/head/noscript/iframe), then walk the remaining tree
-    // producing markdown for the structural elements the model relies on
-    // for context (headings, links, lists, code, emphasis). Falls back to
-    // the prose-only `htmlToText` if the markdown walker throws — defensive
-    // against pathological inputs, never breaks the fetch path.
-    if (contentType.includes("html")) {
+      let currentUrl: URL;
       try {
-        body = htmlToMarkdown(body);
+        currentUrl = new URL(rawUrl);
       } catch {
-        body = htmlToText(body);
+        return JSON.stringify({ error: `WebFetch: invalid URL '${rawUrl}'` });
       }
-    }
 
-    const parts: string[] = [];
-    parts.push(`URL: ${url}`);
-    parts.push(`Content-Type: ${contentType}`);
-    parts.push(`Length: ${body.length}${truncated ? " (truncated at 1MB)" : ""}`);
-    parts.push("");
-    parts.push(body);
-    return parts.join("\n");
-  },
-};
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+      let closeResponse: (() => Promise<void>) | undefined;
 
-/** Best-effort text decode — never throws. */
-async function safeText(response: Response): Promise<string> {
-  try {
-    return await response.text();
-  } catch {
-    return "";
+      try {
+        let response: Response | undefined;
+        for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects += 1) {
+          let address: string | undefined;
+          if (!options.allowPrivateNetwork) {
+            const validation = await validatePublicHttpUrl(
+              currentUrl,
+              resolveHostname,
+              controller.signal,
+            );
+            if ("error" in validation) {
+              return JSON.stringify({ error: `WebFetch: blocked URL: ${validation.error}` });
+            }
+            address = validation.address;
+          } else if (!isHttpUrl(currentUrl)) {
+            return JSON.stringify({
+              error: `WebFetch: url must use http:// or https://, got '${currentUrl.href}'`,
+            });
+          }
+
+          const request = await fetchPinned(currentUrl, address, controller.signal);
+          response = request.response;
+          closeResponse = request.close;
+
+          if (!isRedirect(response.status)) break;
+          const location = response.headers.get("location");
+          if (!location) break;
+          await response.body?.cancel();
+          if (redirects === MAX_REDIRECTS) {
+            return JSON.stringify({ error: `WebFetch: too many redirects (>${MAX_REDIRECTS})` });
+          }
+          await closeResponse();
+          closeResponse = undefined;
+          currentUrl = new URL(location, currentUrl);
+        }
+
+        if (!response) {
+          return JSON.stringify({ error: "WebFetch: no response received" });
+        }
+
+        const contentType = (response.headers.get("content-type") ?? "").toLowerCase();
+        const bodyResult = await readCappedBody(response, MAX_RESPONSE_BYTES);
+
+        if (!response.ok) {
+          return JSON.stringify({
+            error: `WebFetch: HTTP ${response.status} ${response.statusText}`,
+            url: currentUrl.href,
+            contentType,
+            body: bodyResult.text.slice(0, 500),
+          });
+        }
+
+        const isTextLike = contentType.startsWith("text/") || contentType.includes("json");
+        if (!isTextLike) {
+          return JSON.stringify({
+            error: `WebFetch: non-text content-type '${contentType}'. Download with bash + Read.`,
+            url: currentUrl.href,
+            contentType,
+          });
+        }
+
+        let body = bodyResult.text;
+        if (contentType.includes("html")) {
+          try {
+            body = htmlToMarkdown(body);
+          } catch {
+            body = htmlToText(body);
+          }
+        }
+
+        const parts: string[] = [];
+        parts.push(`URL: ${currentUrl.href}`);
+        parts.push(`Content-Type: ${contentType}`);
+        parts.push(
+          `Length: ${Buffer.byteLength(body, "utf-8")}${
+            bodyResult.truncated ? " (truncated at 1MB)" : ""
+          }`,
+        );
+        parts.push("");
+        parts.push(body);
+        return parts.join("\n");
+      } catch (e) {
+        const err = e as { name?: string; message?: string };
+        if (err.name === "AbortError") {
+          return JSON.stringify({
+            error: `WebFetch: timeout after ${FETCH_TIMEOUT_MS}ms`,
+            url: currentUrl.href,
+          });
+        }
+        return JSON.stringify({
+          error: `WebFetch: fetch failed: ${err.message ?? String(e)}`,
+          url: currentUrl.href,
+        });
+      } finally {
+        clearTimeout(timer);
+        await closeResponse?.();
+      }
+    },
+  };
+}
+
+export const webFetchTool: ToolHandler = createWebFetchTool();
+
+function isHttpUrl(url: URL): boolean {
+  return (url.protocol === "http:" || url.protocol === "https:") && !url.username && !url.password;
+}
+
+async function validatePublicHttpUrl(
+  url: URL,
+  resolver: (hostname: string) => Promise<string[]>,
+  signal: AbortSignal,
+): Promise<{ address: string } | { error: string }> {
+  if (!isHttpUrl(url)) {
+    return {
+      error: `${url.href} must start with http:// or https:// and contain no credentials`,
+    };
   }
+
+  const hostname = normalizeHostname(url.hostname);
+  if (hostname === "localhost" || hostname.endsWith(".localhost")) {
+    return { error: `hostname '${hostname}' is local` };
+  }
+
+  let addresses: string[];
+  try {
+    addresses = isIP(hostname) ? [hostname] : await abortable(resolver(hostname), signal);
+  } catch (error) {
+    if (isAbortError(error)) throw error;
+    return {
+      error: `DNS resolution failed for '${hostname}': ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
+  }
+  if (addresses.length === 0) {
+    return { error: `DNS resolution returned no addresses for '${hostname}'` };
+  }
+
+  const blocked = addresses.find(isPrivateAddress);
+  if (blocked) {
+    return { error: `hostname '${hostname}' resolves to private address '${blocked}'` };
+  }
+  return { address: addresses[0] };
+}
+
+async function resolvePublicAddresses(hostname: string): Promise<string[]> {
+  const records = await lookup(hostname, { all: true, verbatim: true });
+  return records.map((record) => record.address);
+}
+
+function isPrivateAddress(address: string): boolean {
+  const normalized = normalizeHostname(address).split("%", 1)[0];
+  if (normalized.startsWith("::ffff:")) return isPrivateAddress(normalized.slice(7));
+
+  if (isIP(normalized) === 4) {
+    const [a, b] = normalized.split(".").map(Number);
+    return (
+      a === 0 ||
+      a === 10 ||
+      a === 127 ||
+      (a === 100 && b >= 64 && b <= 127) ||
+      (a === 169 && b === 254) ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 0) ||
+      (a === 192 && b === 168) ||
+      (a === 198 && (b === 18 || b === 19)) ||
+      a >= 224
+    );
+  }
+
+  if (isIP(normalized) === 6) {
+    return (
+      normalized === "::" ||
+      normalized === "::1" ||
+      normalized.startsWith("fc") ||
+      normalized.startsWith("fd") ||
+      /^fe[89ab]/.test(normalized)
+    );
+  }
+  return true;
+}
+
+function normalizeHostname(hostname: string): string {
+  const normalized = hostname.toLowerCase().replace(/\.$/, "");
+  return normalized.startsWith("[") && normalized.endsWith("]")
+    ? normalized.slice(1, -1)
+    : normalized;
+}
+
+async function fetchPinned(
+  url: URL,
+  address: string | undefined,
+  signal: AbortSignal,
+): Promise<{ response: Response; close: () => Promise<void> }> {
+  const dispatcher = address
+    ? new Agent({
+        connect: {
+          lookup: pinnedLookup(address),
+        },
+      })
+    : new Agent();
+  try {
+    const response = await undiciFetch(url, {
+      signal,
+      redirect: "manual",
+      dispatcher,
+    });
+    return {
+      response: response as unknown as Response,
+      close: async () => {
+        await dispatcher.destroy();
+      },
+    };
+  } catch (error) {
+    await dispatcher.destroy();
+    throw error;
+  }
+}
+
+function pinnedLookup(address: string): LookupFunction {
+  const family = isIP(address);
+  return ((_hostname, options, callback) => {
+    if (typeof options === "object" && options.all) {
+      callback(null, [{ address, family }]);
+    } else {
+      callback(null, address, family);
+    }
+  }) as LookupFunction;
+}
+
+function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(abortError());
+  return new Promise((resolve, reject) => {
+    const onAbort = (): void => reject(abortError());
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
+function abortError(): Error {
+  const error = new Error("aborted");
+  error.name = "AbortError";
+  return error;
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
+}
+
+function isRedirect(status: number): boolean {
+  return status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
+}
+
+async function readCappedBody(
+  response: Response,
+  maxBytes: number,
+): Promise<{ text: string; truncated: boolean }> {
+  const reader = response.body?.getReader();
+  if (!reader) return { text: "", truncated: false };
+
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  let truncated = false;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      const remaining = maxBytes - total;
+      if (value.byteLength > remaining) {
+        if (remaining > 0) chunks.push(value.subarray(0, remaining));
+        total = maxBytes;
+        truncated = true;
+        await reader.cancel();
+        break;
+      }
+      chunks.push(value);
+      total += value.byteLength;
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return { text: new TextDecoder().decode(merged), truncated };
 }
 
 /** Strip HTML to plain text using cheerio. Removes <script>/<style>/<head>/

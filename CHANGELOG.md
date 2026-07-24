@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.1.49] - 2026-07-23
+
+### Changed
+- Removed the SDK-owned background Bash subsystem. `run_in_background`,
+  `enableBackgroundBash`, `BashOutput`, `KillBash`, and
+  `BackgroundBashRegistry` are no longer provided; hosts should manage
+  long-running processes in their engine or MCP layer.
+- Removed the SDK-owned `AskUserQuestion` built-in; hosts should provide user
+  interaction through their engine or MCP layer.
+- `Bash` is serial by default and terminates the full POSIX process group on
+  timeout or abort.
+- `Glob` now uses ripgrep's native file discovery with ignored/hidden-file
+  inclusion preserved and directory symlink traversal disabled.
+- `Grep` streams ripgrep output and stops once the requested page is available.
+
+### Fixed
+- Blocked WebFetch requests to loopback, private, link-local, and metadata
+  addresses, including redirect targets. DNS results are pinned to the actual
+  socket connection to prevent rebinding, DNS resolution shares the full
+  request deadline, and IPv6 literals are normalized correctly. Response
+  bodies are streamed and cancelled at the 1 MB cap while the timeout remains
+  active.
+- Prevented sensitive-path guard bypasses through symlinks and Windows path
+  separators.
+- Converted PreToolUse hook exceptions into fail-closed structured tool errors.
+- Strengthened Read-before-Edit with content hashes and file identity checks.
+- Made Write/Edit replacements atomic to avoid truncating destination files on
+  partial write failures. Destination paths are re-resolved and revalidated
+  immediately before replacement; hard links and dangling symlinks are rejected
+  rather than silently changing their semantics.
+
 ## [0.1.47] - 2026-07-20
 
 ### Fixed

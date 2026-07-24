@@ -1,7 +1,19 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  linkSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { contentHash } from "@/tools/atomic-write";
 import { createEditTool } from "@/tools/builtin/edit";
 import { createReadTool } from "@/tools/builtin/read";
 import { createWriteTool } from "@/tools/builtin/write";
@@ -123,6 +135,49 @@ describe("Read → Edit gate (tracker wired)", () => {
     expect(parsed.error).toMatch(/modified externally|size changed/);
   });
 
+  test("Edit rejects same-size content changes even when mtime is restored", async () => {
+    const path = join(dir, "same-size.txt");
+    writeFileSync(path, "AAAA\n");
+    const original = statSync(path);
+    const tracker = getFileStateTracker("sess-hash");
+    const read = createReadTool({ tracker });
+    const edit = createEditTool({ tracker });
+
+    await read.execute({ file_path: path });
+    writeFileSync(path, "BBBB\n");
+    utimesSync(path, original.atime, original.mtime);
+    const live = statSync(path);
+    tracker.recordRead(path, live.mtimeMs, live.size, {
+      hash: contentHash("AAAA\n"),
+      dev: live.dev,
+      ino: live.ino,
+    });
+
+    const result = await edit.execute({
+      file_path: path,
+      old_string: "BBBB",
+      new_string: "CCCC",
+    });
+    const parsed = JSON.parse(result) as { error?: string };
+    expect(parsed.error).toMatch(/content changed/);
+  });
+
+  test("Read and immediate Edit agree on hashes for invalid UTF-8 bytes", async () => {
+    const path = join(dir, "invalid-utf8.txt");
+    writeFileSync(path, Buffer.from([0xff, 0x61, 0x0a]));
+    const tracker = getFileStateTracker("sess-invalid-utf8");
+    const read = createReadTool({ tracker });
+    const edit = createEditTool({ tracker });
+
+    await read.execute({ file_path: path });
+    const result = await edit.execute({
+      file_path: path,
+      old_string: "a",
+      new_string: "b",
+    });
+    expect(result).toContain("File edited:");
+  });
+
   test("after a successful Edit, next Edit on same path requires re-Read", async () => {
     const path = join(dir, "d.txt");
     writeFileSync(path, "one two three\n");
@@ -207,6 +262,52 @@ describe("Read → Edit gate (tracker wired)", () => {
       new_string: "HI",
     });
     expect(result).toContain("File edited:");
+  });
+
+  test("atomic Edit preserves ordinary file symlinks and updates their target", async () => {
+    const { editTool } = await import("@/tools/builtin/edit");
+    const target = join(dir, "target.txt");
+    const link = join(dir, "link.txt");
+    writeFileSync(target, "before\n");
+    symlinkSync(target, link);
+
+    const result = await editTool.execute({
+      file_path: link,
+      old_string: "before",
+      new_string: "after",
+    });
+    expect(result).toContain("File edited:");
+    expect(lstatSync(link).isSymbolicLink()).toBe(true);
+    expect(readFileSync(target, "utf-8")).toBe("after\n");
+  });
+
+  test("atomic Write rejects dangling symlinks instead of replacing them", async () => {
+    const { writeTool } = await import("@/tools/builtin/write");
+    const link = join(dir, "dangling.txt");
+    symlinkSync(join(dir, "missing-target.txt"), link);
+
+    const result = JSON.parse(await writeTool.execute({ file_path: link, content: "new\n" }));
+    expect(result.error).toMatch(/dangling symlink/);
+    expect(lstatSync(link).isSymbolicLink()).toBe(true);
+  });
+
+  test("atomic Edit rejects hard-linked files instead of silently splitting the inode", async () => {
+    const { editTool } = await import("@/tools/builtin/edit");
+    const first = join(dir, "hard-a.txt");
+    const second = join(dir, "hard-b.txt");
+    writeFileSync(first, "before\n");
+    linkSync(first, second);
+
+    const result = JSON.parse(
+      await editTool.execute({
+        file_path: first,
+        old_string: "before",
+        new_string: "after",
+      }),
+    );
+    expect(result.error).toMatch(/hard-linked/);
+    expect(readFileSync(first, "utf-8")).toBe("before\n");
+    expect(readFileSync(second, "utf-8")).toBe("before\n");
   });
 });
 

@@ -48,8 +48,8 @@ describe("defineTool", () => {
   });
 
   test("accepts a readonly `required` array (e.g. from an `as const` schema literal)", () => {
-    // Several built-in tool schemas (bash.ts, bash_background.ts) are
-    // declared `as const` for literal-type narrowing elsewhere in the file,
+    // Several built-in tool schemas (for example bash.ts) are declared
+    // `as const` for literal-type narrowing elsewhere in the file,
     // which makes every array in the literal `readonly`. `defineTool` must
     // not reject that — it copies into a fresh mutable array internally.
     const constSchema = {

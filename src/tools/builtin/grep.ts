@@ -1,4 +1,4 @@
-import { type SpawnSyncOptions, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { isAbsolute } from "node:path";
 import { logger } from "@/platform/logger";
 import { defineTool } from "@/providers/base";
@@ -59,7 +59,7 @@ export const grepTool: ToolHandler = {
     description:
       "Search file contents using ripgrep. Returns matches in one of three " +
       "output modes (files_with_matches, content, count). Supports the same " +
-      "pattern syntax as `rg` (PCRE2-style regex) and the usual filters " +
+      "pattern syntax as `rg` (Rust regex by default) and the usual filters " +
       "(`glob` for filename pattern, `type` for ripgrep file-type aliases " +
       "like `ts` / `py` / `rust`). Context flags `-A` / `-B` / `-C` only " +
       "apply in `content` mode. Requires ripgrep on PATH.",
@@ -69,8 +69,8 @@ export const grepTool: ToolHandler = {
         pattern: {
           type: "string",
           description:
-            "Regular expression to search for. ripgrep syntax — `.` is any char, " +
-            "`\\.` is a literal dot, character classes / lookarounds / etc. work.",
+            "Regular expression to search for. ripgrep's default Rust regex syntax — " +
+            "`.` is any char and `\\.` is a literal dot.",
         },
         path: {
           type: "string",
@@ -165,6 +165,15 @@ export const grepTool: ToolHandler = {
       ? (input.output_mode as OutputMode)
       : "files_with_matches";
 
+    const headLimit =
+      typeof input.head_limit === "number" && Number.isFinite(input.head_limit)
+        ? Math.max(0, Math.floor(input.head_limit))
+        : DEFAULT_HEAD_LIMIT;
+    const offset =
+      typeof input.offset === "number" && Number.isFinite(input.offset)
+        ? Math.max(0, Math.floor(input.offset))
+        : 0;
+
     const args: string[] = [];
     // Mode-specific args.
     if (outputMode === "files_with_matches") {
@@ -196,15 +205,11 @@ export const grepTool: ToolHandler = {
     // Pattern + target last so the positional args don't get shuffled.
     args.push("--", pattern, target);
 
-    const spawnOpts: SpawnSyncOptions = {
-      encoding: "utf-8",
-      timeout: RG_TIMEOUT_MS,
-      maxBuffer: RG_MAX_OUTPUT,
-    };
-    const result = spawnSync("rg", args, spawnOpts);
+    const neededLines = headLimit > 0 ? offset + headLimit + 1 : Number.POSITIVE_INFINITY;
+    const result = await runRipgrep(args, neededLines);
 
     if (result.error) {
-      const err = result.error as NodeJS.ErrnoException;
+      const err = result.error;
       if (err.code === "ENOENT") {
         return JSON.stringify({
           error:
@@ -213,45 +218,39 @@ export const grepTool: ToolHandler = {
             "the bash tool with `grep`/`find`.",
         });
       }
-      if (err.code === "ETIMEDOUT" || err.code === "ECHILD") {
-        return JSON.stringify({
-          error: `Grep: timeout after ${RG_TIMEOUT_MS}ms — narrow the search with --glob/--type or pass a more specific path.`,
-        });
-      }
       return JSON.stringify({
         error: `Grep: spawn failed: ${err.message}`,
       });
     }
-
-    // ripgrep exits 0 = matches found, 1 = no matches, 2 = error.
-    if (result.status === 2) {
+    if (result.timedOut) {
       return JSON.stringify({
-        error: `Grep: ripgrep exited with status 2: ${truncate(String(result.stderr ?? ""), 1000)}`,
+        error: `Grep: timeout after ${RG_TIMEOUT_MS}ms — narrow the search with --glob/--type or pass a more specific path.`,
+      });
+    }
+    if (result.overflow) {
+      return JSON.stringify({
+        error: `Grep: output exceeded ${RG_MAX_OUTPUT} bytes before the requested line limit. Narrow the pattern or path.`,
       });
     }
 
-    const stdout = typeof result.stdout === "string" ? result.stdout : "";
+    // ripgrep exits 0 = matches found, 1 = no matches, 2 = error.
+    if (
+      result.status === 2 ||
+      (result.status !== 0 && result.status !== 1 && !result.stoppedEarly)
+    ) {
+      return JSON.stringify({
+        error: `Grep: ripgrep exited with status ${result.status}: ${truncate(result.stderr, 1000)}`,
+      });
+    }
 
-    // Head-limit / offset slicing — applied AFTER ripgrep returns the full
-    // result so we don't lose deterministic ordering by piping through
-    // external `head`.
-    const headLimit =
-      typeof input.head_limit === "number" && Number.isFinite(input.head_limit)
-        ? Math.max(0, Math.floor(input.head_limit))
-        : DEFAULT_HEAD_LIMIT;
-    const offset =
-      typeof input.offset === "number" && Number.isFinite(input.offset)
-        ? Math.max(0, Math.floor(input.offset))
-        : 0;
-
-    const allLines = stdout.split("\n");
+    const allLines = result.stdout.split("\n");
     // Trailing empty line is artifact of the final \n — drop it for counting.
     if (allLines.length > 0 && allLines[allLines.length - 1] === "") allLines.pop();
 
     let truncated = false;
     let sliced = allLines;
     if (offset > 0) sliced = sliced.slice(offset);
-    if (headLimit > 0 && sliced.length > headLimit) {
+    if (headLimit > 0 && (sliced.length > headLimit || result.stoppedEarly)) {
       sliced = sliced.slice(0, headLimit);
       truncated = true;
     }
@@ -292,4 +291,76 @@ export const grepTool: ToolHandler = {
 
 function truncate(s: string, n: number): string {
   return s.length > n ? `${s.slice(0, n)}…` : s;
+}
+
+interface RipgrepResult {
+  status: number | null;
+  stdout: string;
+  stderr: string;
+  stoppedEarly: boolean;
+  timedOut: boolean;
+  overflow: boolean;
+  error?: NodeJS.ErrnoException;
+}
+
+async function runRipgrep(args: string[], neededLines: number): Promise<RipgrepResult> {
+  return new Promise((resolve) => {
+    const child = spawn("rg", args, { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    let lines = 0;
+    let bytes = 0;
+    let stoppedEarly = false;
+    let timedOut = false;
+    let overflow = false;
+    let spawnError: NodeJS.ErrnoException | undefined;
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, RG_TIMEOUT_MS);
+
+    child.stdout.setEncoding("utf-8");
+    child.stdout.on("data", (chunk: string) => {
+      bytes += Buffer.byteLength(chunk, "utf-8");
+      if (bytes > RG_MAX_OUTPUT) {
+        overflow = true;
+        child.kill("SIGKILL");
+        return;
+      }
+      stdout += chunk;
+      lines += countNewlines(chunk);
+      if (lines >= neededLines) {
+        stoppedEarly = true;
+        child.kill("SIGTERM");
+      }
+    });
+    child.stderr.setEncoding("utf-8");
+    child.stderr.on("data", (chunk: string) => {
+      if (stderr.length < 4000) stderr += chunk;
+    });
+    child.on("error", (error: NodeJS.ErrnoException) => {
+      spawnError = error;
+    });
+    child.on("close", (status) => {
+      clearTimeout(timer);
+      resolve({
+        status,
+        stdout,
+        stderr,
+        stoppedEarly,
+        timedOut,
+        overflow,
+        ...(spawnError ? { error: spawnError } : {}),
+      });
+    });
+  });
+}
+
+function countNewlines(value: string): number {
+  let count = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    if (value.charCodeAt(index) === 10) count += 1;
+  }
+  return count;
 }

@@ -1,4 +1,5 @@
-import { existsSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync, statSync } from "node:fs";
 
 /**
  * Per-session file-state tracker for Read-before-Edit enforcement.
@@ -39,6 +40,10 @@ export interface FileStateEntry {
   size: number;
   /** Date.now() when the Read happened. Diagnostic only. */
   readAt: number;
+  /** Content digest captured from the bytes actually returned by Read. */
+  hash?: string;
+  dev?: number;
+  ino?: number;
 }
 
 /**
@@ -56,8 +61,13 @@ export class FileStateTracker {
    * model. A subsequent Read of the same path overwrites the entry — the
    * latest Read is what Edit's drift check compares against.
    */
-  recordRead(absPath: string, mtime: number, size: number): void {
-    this.entries.set(absPath, { mtime, size, readAt: Date.now() });
+  recordRead(
+    absPath: string,
+    mtime: number,
+    size: number,
+    identity?: { hash?: string; dev?: number; ino?: number },
+  ): void {
+    this.entries.set(absPath, { mtime, size, readAt: Date.now(), ...identity });
   }
 
   /**
@@ -107,10 +117,10 @@ export class FileStateTracker {
       );
     }
 
-    let live: { mtimeMs: number; size: number };
+    let live: { mtimeMs: number; size: number; dev: number; ino: number };
     try {
       const s = statSync(absPath);
-      live = { mtimeMs: s.mtimeMs, size: s.size };
+      live = { mtimeMs: s.mtimeMs, size: s.size, dev: s.dev, ino: s.ino };
     } catch {
       // If we can't stat, fall through to the tool's own error handler — it
       // will surface a clearer message than we can.
@@ -133,6 +143,24 @@ export class FileStateTracker {
         `(recorded ${entry.size}, live ${live.size}). ` +
         `Re-Read the file before ${tool.toLowerCase()}ing.`
       );
+    }
+
+    if (
+      (entry.dev !== undefined && live.dev !== entry.dev) ||
+      (entry.ino !== undefined && live.ino !== entry.ino)
+    ) {
+      return `${tool}: file '${absPath}' was replaced since the last Read. Re-Read it before mutating.`;
+    }
+
+    if (entry.hash !== undefined) {
+      try {
+        const liveHash = createHash("sha256").update(readFileSync(absPath)).digest("hex");
+        if (liveHash !== entry.hash) {
+          return `${tool}: file '${absPath}' content changed since the last Read. Re-Read it before mutating.`;
+        }
+      } catch {
+        return `${tool}: file '${absPath}' could not be verified before mutation. Re-Read it.`;
+      }
     }
 
     return null;
