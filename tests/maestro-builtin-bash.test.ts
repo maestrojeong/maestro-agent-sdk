@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
-import { bashTool, createBashTool } from "@/tools/builtin/bash";
+import { bashTool, createBashTool, createOutputRing } from "@/tools/builtin/bash";
 
 const tracked: string[] = [];
 
@@ -17,7 +17,76 @@ describe("Bash tool", () => {
 
   test("returns stdout and exit code", async () => {
     const result = JSON.parse(await bashTool.execute({ command: "printf hello" }));
-    expect(result).toMatchObject({ exitCode: 0, stdout: "hello" });
+    expect(result).toMatchObject({
+      exitCode: 0,
+      stdout: "hello",
+      outputStats: {
+        stdout: { totalBytes: 5, retainedBytes: 5, omittedBytes: 0 },
+        stderr: { totalBytes: 0, retainedBytes: 0, omittedBytes: 0 },
+      },
+    });
+  });
+
+  test("injects validated environment variables without mutating the parent", async () => {
+    const variable = "MAESTRO_BASH_TEST_VALUE";
+    const previous = process.env[variable];
+    delete process.env[variable];
+    try {
+      const result = JSON.parse(
+        await bashTool.execute({
+          command: `printf %s "$${variable}"`,
+          env: { [variable]: "injected" },
+        }),
+      );
+      expect(result).toMatchObject({ exitCode: 0, stdout: "injected" });
+      expect(process.env[variable]).toBeUndefined();
+    } finally {
+      if (previous !== undefined) process.env[variable] = previous;
+    }
+  });
+
+  test("rejects invalid environment variables", async () => {
+    const invalidName = JSON.parse(
+      await bashTool.execute({ command: "true", env: { "NOT-VALID": "value" } }),
+    );
+    expect(invalidName.error).toMatch(/invalid environment variable name/);
+
+    const invalidValue = JSON.parse(
+      await bashTool.execute({ command: "true", env: { VALID: 42 } }),
+    );
+    expect(invalidValue.error).toMatch(/must be a string/);
+
+    const nulValue = JSON.parse(
+      await bashTool.execute({ command: "true", env: { VALID: "before\0after" } }),
+    );
+    expect(nulValue.error).toMatch(/must not contain NUL bytes/);
+  });
+
+  test("truncates raw bytes without splitting UTF-8 characters", () => {
+    const ring = createOutputRing(8);
+    const bytes = Buffer.from("가나다라마", "utf8");
+    ring.append(bytes.subarray(0, 4));
+    ring.append(bytes.subarray(4));
+
+    expect(ring.render()).toBe("가\n...[truncated 9 bytes]...\n마");
+    expect(ring.render()).not.toContain("\uFFFD");
+    expect(ring.stats()).toEqual({
+      totalBytes: 15,
+      retainedBytes: 6,
+      omittedBytes: 9,
+    });
+  });
+
+  test("keeps only the configured tail allocation for a large chunk", () => {
+    const ring = createOutputRing(8);
+    ring.append(Buffer.alloc(1_000_000, 0x61));
+
+    expect(ring.stats()).toEqual({
+      totalBytes: 1_000_000,
+      retainedBytes: 8,
+      omittedBytes: 999_992,
+    });
+    expect(ring.render()).toBe("aaaa\n...[truncated 999992 bytes]...\naaaa");
   });
 
   test.runIf(process.platform !== "win32")("timeout kills the process group", async () => {

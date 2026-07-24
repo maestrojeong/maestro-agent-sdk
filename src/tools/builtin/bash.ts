@@ -48,6 +48,13 @@ const bashSchema = {
         type: "string",
         description: "Working directory (optional).",
       },
+      env: {
+        type: "object",
+        description:
+          "Additional environment variables for the command. Values override " +
+          "the inherited process environment.",
+        additionalProperties: { type: "string" },
+      },
     },
     required: ["command"],
   },
@@ -106,6 +113,10 @@ async function executeBash(
     typeof rawMaxOutput === "number" && Number.isFinite(rawMaxOutput) && rawMaxOutput > 0
       ? Math.min(Math.floor(rawMaxOutput), BASH_MAX_OUTPUT_HARD)
       : BASH_MAX_OUTPUT_DEFAULT;
+  const envResult = normalizeBashEnv(input.env);
+  if ("error" in envResult) {
+    return JSON.stringify({ error: envResult.error });
+  }
 
   const stdoutRing = createOutputRing(maxOutputBytes);
   const stderrRing = createOutputRing(maxOutputBytes);
@@ -115,7 +126,7 @@ async function executeBash(
       const useProcessGroup = process.platform !== "win32";
       const child = spawn("bash", ["-c", command], {
         ...(cwd ? { cwd } : {}),
-        env: process.env,
+        env: { ...process.env, ...envResult.env },
         detached: useProcessGroup,
       });
 
@@ -163,10 +174,10 @@ async function executeBash(
       abortSignal?.addEventListener("abort", onAbort, { once: true });
 
       child.stdout?.on("data", (chunk: Buffer) => {
-        stdoutRing.append(chunk.toString("utf-8"));
+        stdoutRing.append(chunk);
       });
       child.stderr?.on("data", (chunk: Buffer) => {
-        stderrRing.append(chunk.toString("utf-8"));
+        stderrRing.append(chunk);
       });
       child.on("close", (code) => {
         clearTimeout(timer);
@@ -182,6 +193,10 @@ async function executeBash(
                 : { exitCode: code }),
             stdout: stdoutRing.render(),
             stderr: stderrRing.render(),
+            outputStats: {
+              stdout: stdoutRing.stats(),
+              stderr: stderrRing.stats(),
+            },
             ...truncatedFlag(stdoutRing, stderrRing),
           }),
         );
@@ -219,6 +234,29 @@ const BASH_MAX_OUTPUT_DEFAULT = 50_000;
  *  for any reasonable build log; pathological output past this point should
  *  be redirected to a file and Read'd in slices anyway. */
 const BASH_MAX_OUTPUT_HARD = 100_000;
+const BASH_ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+function normalizeBashEnv(value: unknown): { env: Record<string, string> } | { error: string } {
+  if (value === undefined) return { env: {} };
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return { error: "Bash: 'env' must be an object with string values" };
+  }
+
+  const env = Object.create(null) as Record<string, string>;
+  for (const [name, envValue] of Object.entries(value)) {
+    if (!BASH_ENV_NAME_PATTERN.test(name)) {
+      return { error: `Bash: invalid environment variable name '${name}'` };
+    }
+    if (typeof envValue !== "string") {
+      return { error: `Bash: environment variable '${name}' must be a string` };
+    }
+    if (envValue.includes("\0")) {
+      return { error: `Bash: environment variable '${name}' must not contain NUL bytes` };
+    }
+    env[name] = envValue;
+  }
+  return { env };
+}
 
 /**
  * Bash tool — built-in subprocess executor.
@@ -256,74 +294,129 @@ export const bashTool: ToolHandler = createBashTool();
  * much stream data flows through. The buffer accepts incremental `append`
  * calls (matching the `data` event shape of a Node readable stream).
  */
+export interface OutputStats {
+  totalBytes: number;
+  retainedBytes: number;
+  omittedBytes: number;
+}
+
 interface OutputRing {
-  append(text: string): void;
+  append(data: string | Uint8Array): void;
   render(): string;
   truncated(): boolean;
+  stats(): OutputStats;
 }
 
 export function createOutputRing(cap: number): OutputRing {
-  if (cap <= 0) {
-    return {
-      append() {},
-      render: () => "",
-      truncated: () => false,
-    };
-  }
+  const normalizedCap = Math.max(0, Math.floor(cap));
   // Split the cap roughly in half. With an odd cap the head gets the extra
   // byte — head context (command echo, startup banner) tends to be slightly
   // more diagnostic than the tail of "Done." messages.
-  const headCap = Math.ceil(cap / 2);
-  const tailCap = cap - headCap;
-  let head = "";
-  // The tail is maintained as a sliding window — we keep at most `tailCap`
-  // bytes of the most-recent output regardless of how many bytes streamed
-  // past. `dropped` tracks the count of middle bytes we ejected so the
-  // truncation marker can quote a real number.
-  let tail = "";
-  let dropped = 0;
-  // total bytes observed — sum of head, tail, and dropped. Useful for
-  // future telemetry; not exposed yet.
-  let _total = 0;
+  const headCap = Math.ceil(normalizedCap / 2);
+  const tailCap = normalizedCap - headCap;
+  let head = Buffer.alloc(0);
+  let tail = Buffer.alloc(0);
+  let totalBytes = 0;
+
+  const retainedBuffers = (): { head: Buffer; tail: Buffer } => {
+    if (totalBytes <= normalizedCap) {
+      return { head: Buffer.concat([head, tail]), tail: Buffer.alloc(0) };
+    }
+    return {
+      head: trimIncompleteUtf8End(head),
+      tail: trimIncompleteUtf8Start(tail),
+    };
+  };
+
+  const getStats = (): OutputStats => {
+    const retained = retainedBuffers();
+    const retainedBytes = retained.head.length + retained.tail.length;
+    return {
+      totalBytes,
+      retainedBytes,
+      omittedBytes: Math.max(0, totalBytes - retainedBytes),
+    };
+  };
 
   return {
-    append(text: string) {
-      if (text.length === 0) return;
-      _total += text.length;
+    append(data: string | Uint8Array) {
+      let chunk =
+        typeof data === "string"
+          ? Buffer.from(data, "utf8")
+          : Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+      if (chunk.length === 0) return;
+      totalBytes += chunk.length;
 
       // Phase 1: while the head buffer has room, fill it first.
-      if (head.length < headCap) {
-        const take = Math.min(text.length, headCap - head.length);
-        head += text.slice(0, take);
-        text = text.slice(take);
-        if (text.length === 0) return;
+      if (head.length < headCap && chunk.length > 0) {
+        const take = Math.min(chunk.length, headCap - head.length);
+        head = Buffer.concat([head, chunk.subarray(0, take)]);
+        chunk = chunk.subarray(take);
+        if (chunk.length === 0) return;
       }
 
       // Phase 2: tail-only path. Append, then evict the oldest bytes if
-      // we exceed `tailCap`. Bytes evicted from the tail count toward
-      // `dropped` because they passed through but are no longer visible.
+      // we exceed `tailCap`. The total counter preserves the exact number
+      // of bytes that passed through.
       if (tailCap === 0) {
-        // Degenerate: head took the whole cap. Drop everything after.
-        dropped += text.length;
         return;
       }
-      tail += text;
-      if (tail.length > tailCap) {
-        const over = tail.length - tailCap;
-        dropped += over;
-        tail = tail.slice(over);
+      if (chunk.length >= tailCap) {
+        tail = Buffer.from(chunk.subarray(chunk.length - tailCap));
+        return;
       }
+      const combined = Buffer.concat([tail, chunk]);
+      tail =
+        combined.length > tailCap
+          ? Buffer.from(combined.subarray(combined.length - tailCap))
+          : combined;
     },
     render() {
-      if (dropped === 0) return head + tail;
+      const retained = retainedBuffers();
+      const headText = retained.head.toString("utf8");
+      const tailText = retained.tail.toString("utf8");
+      const stats = getStats();
+      if (stats.omittedBytes === 0) return headText + tailText;
       // The middle marker is emitted on its own line so the model — and any
       // human reading the trace — can see where the gap is. We keep the
       // marker terse (no ANSI, no decoration) so it survives downstream
       // serialisation.
-      return `${head}\n...[truncated ${dropped} bytes]...\n${tail}`;
+      return `${headText}\n...[truncated ${stats.omittedBytes} bytes]...\n${tailText}`;
     },
-    truncated: () => dropped > 0,
+    truncated: () => getStats().omittedBytes > 0,
+    stats: getStats,
   };
+}
+
+function trimIncompleteUtf8End(buffer: Buffer): Buffer {
+  if (buffer.length === 0) return buffer;
+  let lead = buffer.length - 1;
+  while (lead >= 0 && isUtf8Continuation(buffer[lead])) lead--;
+  if (lead < 0) return Buffer.alloc(0);
+
+  const sequenceBytes = utf8SequenceBytes(buffer[lead]);
+  if (sequenceBytes > 1 && buffer.length - lead < sequenceBytes) {
+    return buffer.subarray(0, lead);
+  }
+  return buffer;
+}
+
+function trimIncompleteUtf8Start(buffer: Buffer): Buffer {
+  let start = 0;
+  while (start < buffer.length && isUtf8Continuation(buffer[start])) start++;
+  return buffer.subarray(start);
+}
+
+function isUtf8Continuation(byte: number): boolean {
+  return (byte & 0xc0) === 0x80;
+}
+
+function utf8SequenceBytes(byte: number): number {
+  if ((byte & 0x80) === 0) return 1;
+  if ((byte & 0xe0) === 0xc0) return 2;
+  if ((byte & 0xf0) === 0xe0) return 3;
+  if ((byte & 0xf8) === 0xf0) return 4;
+  return 1;
 }
 
 function truncatedFlag(stdout: OutputRing, stderr: OutputRing): { truncated?: true } {
