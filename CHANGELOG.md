@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.1.50] - 2026-07-24
+
+### Added
+- Added per-command `env` overrides to the built-in Bash tool with environment
+  variable name and value validation.
+- Added stdout/stderr byte statistics reporting total, retained, and omitted
+  output bytes.
+
+### Fixed
+- Made Bash output limits operate on raw UTF-8 bytes instead of JavaScript
+  string length, preserving complete multibyte characters across process chunks
+  and head/tail truncation boundaries.
+- Kept the Bash output ring's retained memory bounded by the configured cap,
+  including when a single process output chunk is much larger than the cap.
+
 ## [0.1.49] - 2026-07-23
 
 ### Changed
