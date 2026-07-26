@@ -13,8 +13,6 @@ DeepSeek V4 and Kimi K3/K2.7 Code provider support. No CLI, no gateway, no host 
 
 > **Status:** Early port (v0.1.x). Active development. API surface may change before 1.0.
 
-A provider-backed agent runtime. Inject your own logger/MCP resolver/hooks, and embed it in any host process — no framework, no lock-in.
-
 ## What's in the box
 
 - **Agent loop** — provider-driven tool-calling loop with iteration cap, abort signal, LLM pre/post guardrail hooks, and event stream.
@@ -38,7 +36,33 @@ Requires Node.js 20+.
 
 ## Quick start
 
-### DeepSeek (V4)
+### Batteries-included host entry point
+
+`maestroProvider()` creates the provider, built-in tools, session persistence,
+memory compaction, optional MCP clients, and one unified event stream:
+
+```ts
+import { maestroProvider } from "maestro-agent-sdk";
+
+for await (const event of maestroProvider({
+  agent: "maestro",
+  cwd: process.cwd(),
+  model: "deepseek-v4-flash",
+  systemPrompt: "You are a concise coding assistant.",
+  prompt: "Inspect this project and summarize its package scripts.",
+  effort: "medium",
+  maxIterations: 20,
+})) {
+  if (event.type === "text_delta") process.stdout.write(event.content);
+  if (event.type === "tool_use") console.error(`\n[tool] ${event.name}`);
+}
+```
+
+Set `DEEPSEEK_API_KEY` first, or select a Kimi model and set
+`MOONSHOT_API_KEY`. Pass a stable `sessionId` on later calls to resume the
+same on-disk session.
+
+### Low-level agent loop (DeepSeek V4)
 
 The unified event stream, tool registry, and `runConversation()` driver are
 shared across direct `AIAgent` usage and the batteries-included
@@ -69,7 +93,10 @@ const agent = new AIAgent(provider, tools, {
 // `runConversation` takes the full message history, not a bare string —
 // the caller owns this array and it mutates in place as the turn runs, so
 // you can persist it (or the next prompt's array) for multi-turn resume.
-const messages = [{ role: "user" as const, content: "Summarize today's news." }];
+const messages = [{
+  role: "user" as const,
+  content: "Explain the purpose of an agent tool loop in one paragraph.",
+}];
 
 for await (const event of runConversation(agent, messages)) {
   if (event.type === "text_delta") process.stdout.write(event.content);
@@ -92,7 +119,8 @@ const provider = KimiProvider.fromEnv();
 The default endpoint is `https://api.moonshot.ai/v1`. Set
 `MOONSHOT_BASE_URL=https://api.moonshot.cn/v1` for the China platform or to
 route through a compatible proxy. Kimi vision accepts base64 and `ms://` file
-references; public image URLs are rejected before the request is sent.
+references; public image URLs degrade to a text placeholder and are not sent
+as image content.
 
 ## Image handling (DeepSeek)
 
@@ -492,6 +520,8 @@ setMcpResolver((opts) => ({
 - **In-flight dedup** — concurrent acquires on the same key await one `start()` instead of double-spawning (v0.1.14).
 - **Env values in cache hash** — `{ TOKEN: alice }` and `{ TOKEN: bob }` get separate processes by default; opt high-churn keys out via `setMcpCacheIgnoreEnvKeys(["DEPTH"])` (v0.1.14).
 - **stdio + SSE** — both transports supported via `MaestroMcpServerSpec`.
+- **Deferred schemas (opt-in)** — set `enableToolSearch: true` to expose a compact
+  MCP catalog and let the model activate only the schemas it needs.
 - **Graceful shutdown** — `SIGINT` / `SIGTERM` closes every cached client before exit.
 
 ## Development
@@ -503,7 +533,8 @@ bun install         # also supported
 npm install         # alternative
 npm run typecheck   # tsc --noEmit
 npm run build       # tsc + tsc-alias → dist/
-npm test            # vitest, 481 tests (+11 skipped without ripgrep)
+npm run lint        # Biome checks
+npm test            # Vitest suite; Glob/Grep coverage requires ripgrep
 ```
 
 ## License
