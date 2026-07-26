@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="540" viewBox="0 0 1200 540" role="img" aria-labelledby="title desc">
+  <title id="title">Agent SDK positioning comparison</title>
+  <desc id="desc">A structural comparison of CLI wrapper SDKs, standalone agent products, and the composable Maestro Agent SDK library.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fbfcfe"/>
+      <stop offset="1" stop-color="#f4f1e8"/>
+    </linearGradient>
+    <linearGradient id="maestro" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fff4c4"/>
+      <stop offset="1" stop-color="#ffe39a"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="7" stdDeviation="10" flood-color="#302810" flood-opacity=".1"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#88909d"/>
+    </marker>
+    <marker id="gold-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#b98200"/>
+    </marker>
+  </defs>
+
+  <rect width="1200" height="540" rx="28" fill="url(#bg)"/>
+  <rect x="1" y="1" width="1198" height="538" rx="27" fill="none" stroke="#dde1e7" stroke-width="2"/>
+  <text x="58" y="68" fill="#20242b" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="32" font-weight="760">Where Maestro fits</text>
+  <text x="58" y="102" fill="#69717d" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="17">The difference is architectural: what your application imports, owns, and runs.</text>
+
+  <g filter="url(#shadow)">
+    <rect x="58" y="144" width="330" height="338" rx="22" fill="#ffffff" stroke="#d9dee6" stroke-width="2"/>
+    <rect x="435" y="144" width="330" height="338" rx="22" fill="#ffffff" stroke="#d9dee6" stroke-width="2"/>
+    <rect x="812" y="132" width="330" height="362" rx="24" fill="url(#maestro)" stroke="#d49a00" stroke-width="3"/>
+  </g>
+
+  <g font-family="Inter, ui-sans-serif, system-ui, sans-serif" text-anchor="middle">
+    <text x="223" y="188" fill="#4f5865" font-size="19" font-weight="740">CLI wrapper SDK</text>
+    <text x="600" y="188" fill="#4f5865" font-size="19" font-weight="740">Standalone agent product</text>
+    <text x="977" y="178" fill="#765600" font-size="20" font-weight="780">Maestro Agent SDK</text>
+
+    <rect x="105" y="220" width="236" height="48" rx="12" fill="#eef4fb" stroke="#a9bfd8"/>
+    <text x="223" y="250" fill="#34495f" font-size="16" font-weight="670">Your application</text>
+    <path d="M223 270 L223 300" stroke="#88909d" stroke-width="3" marker-end="url(#arrow)"/>
+    <rect x="105" y="307" width="236" height="48" rx="12" fill="#f4efff" stroke="#b9a7df"/>
+    <text x="223" y="337" fill="#5b478a" font-size="16" font-weight="670">SDK wrapper</text>
+    <path d="M223 357 L223 387" stroke="#88909d" stroke-width="3" marker-end="url(#arrow)"/>
+    <rect x="105" y="394" width="236" height="48" rx="12" fill="#f7f8fa" stroke="#bfc5ce"/>
+    <text x="223" y="424" fill="#4f5865" font-size="16" font-weight="670">CLI subprocess + harness</text>
+    <text x="223" y="466" fill="#7b838e" font-size="14">The product runtime stays underneath.</text>
+
+    <rect x="482" y="220" width="236" height="48" rx="12" fill="#eef4fb" stroke="#a9bfd8"/>
+    <text x="600" y="250" fill="#34495f" font-size="16" font-weight="670">Your application</text>
+    <path d="M600 270 L600 300" stroke="#88909d" stroke-width="3" marker-end="url(#arrow)"/>
+    <rect x="482" y="307" width="236" height="100" rx="14" fill="#edf3f9" stroke="#8eabc9" stroke-width="2"/>
+    <text x="600" y="345" fill="#34495f" font-size="17" font-weight="700">Agent product</text>
+    <text x="600" y="374" fill="#65798e" font-size="14">UI · harness · workflow</text>
+    <text x="600" y="466" fill="#7b838e" font-size="14">Adopt the product's operating model.</text>
+
+    <rect x="859" y="208" width="236" height="48" rx="12" fill="#fffdf7" stroke="#d2ad3b"/>
+    <text x="977" y="238" fill="#56440d" font-size="16" font-weight="690">Your application</text>
+    <path d="M977 258 L977 288" stroke="#b98200" stroke-width="3" marker-end="url(#gold-arrow)"/>
+    <rect x="859" y="295" width="236" height="104" rx="14" fill="#fff9df" stroke="#c89300" stroke-width="2"/>
+    <text x="977" y="329" fill="#765600" font-size="17" font-weight="750">Imported library</text>
+    <text x="977" y="357" fill="#796425" font-size="14">loop · tools · MCP · memory</text>
+    <text x="977" y="380" fill="#796425" font-size="14">sessions · hooks · subagents</text>
+    <text x="977" y="432" fill="#765600" font-size="15" font-weight="680">Your host owns the product.</text>
+    <text x="977" y="460" fill="#8b7430" font-size="14">Compose the runtime you need.</text>
+  </g>
+</svg>

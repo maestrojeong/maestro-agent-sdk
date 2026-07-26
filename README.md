@@ -4,10 +4,38 @@
 [![npm version](https://img.shields.io/npm/v/maestro-agent-sdk.svg)](https://www.npmjs.com/package/maestro-agent-sdk)
 [![license](https://img.shields.io/npm/l/maestro-agent-sdk.svg)](./LICENSE)
 
-An embeddable TypeScript agent runtime for Node.js 20+. It provides the model
-loop, built-in tools, sessions, memory compaction, MCP, and host-controlled
-guardrails while leaving the UI, storage policy, and application workflow to
-your host.
+**A lightweight, composable TypeScript agent SDK.**
+
+Import the agent loop into your product, then assemble only what you need:
+built-in or custom tools, sessions, memory compaction, MCP, guardrails, and
+subagents. Your host keeps control of the UI, workflow, storage policy, auth,
+and deployment.
+
+![Maestro Agent SDK composable architecture](./assets/composable-agent-sdk.svg)
+
+Maestro is an ESM library, not a CLI wrapper, sidecar, gateway, or bundled app.
+The current npm tarball is about 311 kB (1.16 MB unpacked), excluding
+dependencies.
+
+## Why Maestro?
+
+- **Composable:** start with `maestroProvider()` or build from `AIAgent`,
+  providers, tools, and hooks.
+- **Lightweight:** one imported library and direct provider API calls—no agent
+  CLI subprocess to install or supervise.
+- **Host-controlled:** keep ownership of presentation, persistence, tenancy,
+  approvals, and tool policy.
+- **Ready for real workflows:** streaming events, resumable sessions, context
+  compaction, MCP tools, and subagent delegation are included.
+
+## Positioning
+
+![Agent SDK positioning comparison](./assets/sdk-positioning.svg)
+
+Maestro sits at the library layer. CLI-wrapper SDKs keep another product's
+harness underneath your application; standalone agents bring their own
+operating model. Maestro gives your host the loop and runtime primitives while
+leaving the product boundary with you.
 
 ## Install
 

@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="620" viewBox="0 0 1200 620" role="img" aria-labelledby="title desc">
+  <title id="title">Maestro Agent SDK composable architecture</title>
+  <desc id="desc">A host application composes the Maestro agent loop with tools, memory, MCP, guardrails, sessions, and subagents, then connects it to DeepSeek or Kimi.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fffdf7"/>
+      <stop offset="1" stop-color="#f8f2df"/>
+    </linearGradient>
+    <linearGradient id="core" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fff5c7"/>
+      <stop offset="1" stop-color="#ffe49a"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#6b4f00" flood-opacity=".12"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#b98200"/>
+    </marker>
+  </defs>
+
+  <rect width="1200" height="620" rx="28" fill="url(#bg)"/>
+  <rect x="1" y="1" width="1198" height="618" rx="27" fill="none" stroke="#ead99f" stroke-width="2"/>
+
+  <text x="64" y="72" fill="#231f16" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="34" font-weight="750">Lightweight. Composable. Yours.</text>
+  <text x="64" y="108" fill="#72664d" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="18">Import an agent runtime into your product. Keep the UI, workflow, and policy in your hands.</text>
+
+  <g filter="url(#shadow)">
+    <rect x="64" y="166" width="255" height="354" rx="22" fill="#ffffff" stroke="#ddd4bf" stroke-width="2"/>
+    <rect x="382" y="148" width="436" height="390" rx="26" fill="url(#core)" stroke="#d49a00" stroke-width="3"/>
+    <rect x="881" y="166" width="255" height="354" rx="22" fill="#ffffff" stroke="#ddd4bf" stroke-width="2"/>
+  </g>
+
+  <text x="96" y="214" fill="#8a6500" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14" font-weight="750" letter-spacing="1.5">YOUR PRODUCT</text>
+  <text x="96" y="252" fill="#231f16" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="24" font-weight="700">Host-owned</text>
+  <g fill="#5f5747" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="17">
+    <text x="96" y="302">UI and event rendering</text>
+    <text x="96" y="342">Workflow and approvals</text>
+    <text x="96" y="382">Storage policy</text>
+    <text x="96" y="422">Auth and tenancy</text>
+    <text x="96" y="462">Deployment</text>
+  </g>
+
+  <text x="420" y="200" fill="#8a6500" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14" font-weight="750" letter-spacing="1.5">NPM LIBRARY · NO CLI SUBPROCESS</text>
+  <text x="420" y="244" fill="#231f16" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="29" font-weight="780">Maestro Agent SDK</text>
+  <text x="420" y="276" fill="#6e571a" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="17">A provider-neutral agent loop you assemble.</text>
+
+  <g font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="16" font-weight="650" text-anchor="middle">
+    <rect x="420" y="318" width="112" height="48" rx="12" fill="#fffdf7" stroke="#d9b653"/>
+    <text x="476" y="348" fill="#4f420f">Tools</text>
+    <rect x="544" y="318" width="112" height="48" rx="12" fill="#fffdf7" stroke="#d9b653"/>
+    <text x="600" y="348" fill="#4f420f">Memory</text>
+    <rect x="668" y="318" width="112" height="48" rx="12" fill="#fffdf7" stroke="#d9b653"/>
+    <text x="724" y="348" fill="#4f420f">MCP</text>
+    <rect x="420" y="382" width="112" height="48" rx="12" fill="#fffdf7" stroke="#d9b653"/>
+    <text x="476" y="412" fill="#4f420f">Sessions</text>
+    <rect x="544" y="382" width="112" height="48" rx="12" fill="#fffdf7" stroke="#d9b653"/>
+    <text x="600" y="412" fill="#4f420f">Guardrails</text>
+    <rect x="668" y="382" width="112" height="48" rx="12" fill="#fffdf7" stroke="#d9b653"/>
+    <text x="724" y="412" fill="#4f420f">Subagents</text>
+  </g>
+  <text x="600" y="476" fill="#6e571a" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="15" text-anchor="middle">Use the batteries-included provider</text>
+  <text x="600" y="498" fill="#6e571a" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="15" text-anchor="middle">or compose the lower-level pieces.</text>
+
+  <text x="913" y="214" fill="#8a6500" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14" font-weight="750" letter-spacing="1.5">MODEL PROVIDERS</text>
+  <text x="913" y="252" fill="#231f16" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="24" font-weight="700">Choose per call</text>
+  <rect x="913" y="294" width="191" height="72" rx="14" fill="#f7fbff" stroke="#9bbce0" stroke-width="2"/>
+  <text x="1008" y="326" fill="#204f80" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="20" font-weight="720" text-anchor="middle">DeepSeek V4</text>
+  <text x="1008" y="349" fill="#57738f" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14" text-anchor="middle">Pro · Flash</text>
+  <rect x="913" y="386" width="191" height="72" rx="14" fill="#faf8ff" stroke="#b3a2db" stroke-width="2"/>
+  <text x="1008" y="418" fill="#59438e" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="20" font-weight="720" text-anchor="middle">Kimi</text>
+  <text x="1008" y="441" fill="#77679c" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14" text-anchor="middle">K3 · K2.7 Code</text>
+
+  <path d="M 319 343 C 342 343, 352 343, 378 343" fill="none" stroke="#b98200" stroke-width="3" marker-end="url(#arrow)"/>
+  <path d="M 818 343 C 842 343, 852 343, 877 343" fill="none" stroke="#b98200" stroke-width="3" marker-end="url(#arrow)"/>
+
+  <g font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="15" font-weight="650">
+    <rect x="64" y="558" width="218" height="38" rx="19" fill="#231f16"/>
+    <text x="173" y="583" fill="#fff9e8" text-anchor="middle">~311 kB packed package*</text>
+    <text x="302" y="583" fill="#7b705a">* v0.1.51 npm tarball, excluding dependencies</text>
+  </g>
+</svg>
