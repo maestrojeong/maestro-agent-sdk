@@ -24,7 +24,7 @@ import {
   isWellFormedMessage,
   loadMaestroSession,
   loadMaestroSessionMeta,
-  saveMaestroSession,
+  saveMaestroSessionSplit,
   trimToSafePrefix,
 } from "@/session-store";
 import { getTaskStore } from "@/state/tasks";
@@ -600,11 +600,20 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
         // meta header, preserving the v0.1.21 byte-shape for non-opt-in
         // callers (one less line in the JSONL diff per save).
         const activeDeferred = opts.enableToolSearch === true ? tools.serializeActive() : undefined;
-        saveMaestroSession(sessionId, safePrefix, {
-          cwd: opts.cwd,
-          ...(opts.userId !== undefined ? { userId: opts.userId } : {}),
-          ...(opts.sessionMetadata !== undefined ? { metadata: opts.sessionMetadata } : {}),
-          ...(activeDeferred !== undefined ? { activeDeferredTools: activeDeferred } : {}),
+        // Dual-file persistence (v0.1.52+): the append-only raw log
+        // (`<id>.jsonl`) preserves the full original conversation verbatim,
+        // while the replaceable active projection (`<id>.active.jsonl`) holds
+        // the compacted working view the next resume hydrates. `priorMessages`
+        // is passed so the raw delta (new real turns) can be identified by
+        // object identity. Pre-compaction sessions transparently keep the
+        // legacy single-file layout — see `saveMaestroSessionSplit`.
+        saveMaestroSessionSplit(sessionId, safePrefix, priorMessages, {
+          meta: {
+            cwd: opts.cwd,
+            ...(opts.userId !== undefined ? { userId: opts.userId } : {}),
+            ...(opts.sessionMetadata !== undefined ? { metadata: opts.sessionMetadata } : {}),
+            ...(activeDeferred !== undefined ? { activeDeferredTools: activeDeferred } : {}),
+          },
         });
         if (!drained && safePrefix.length < messages.length) {
           logger.info(

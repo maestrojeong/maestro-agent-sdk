@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.1.52] - 2026-07-29
+
+### Added
+- Dual-file session persistence that preserves the original conversation. The
+  append-only raw log (`~/.maestro/sessions/<id>.jsonl`) now retains the full,
+  verbatim history with no compaction sentinels, while a new replaceable
+  active projection (`<id>.active.jsonl`) holds the compacted working view
+  (protected head + latest compaction summary + post-compaction tail) that a
+  resume hydrates. Mirrors negotium's raw + `active.jsonl` split.
+- `buildActiveProjection` (memory/compressor) derives the compacted projection
+  without touching the in-memory compaction algorithm, so every wire path is
+  byte-identical to before.
+- New session-store surface: `maestroActiveSessionPath`,
+  `hasActiveMaestroSession`, `loadRawMaestroSession`,
+  `appendRawMaestroMessages`, `writeActiveMaestroSession`, and
+  `saveMaestroSessionSplit`.
+
+### Changed
+- `loadMaestroSession` / `loadMaestroSessionMeta` now prefer the compacted
+  active projection when present (falling back to the raw log), so long
+  previously-compacted sessions hydrate only their small working view instead
+  of reloading and re-pruning the dead summarized middle every turn.
+- Active projections carry a raw-file size checkpoint. Resume rejects empty,
+  malformed, or stale projections after an interrupted raw-then-active save,
+  and recovers from the append-only raw log without duplicating messages.
+- JSONL append separates a trailing partial line left by an interrupted write
+  and fsyncs the parent directory when creating a new raw log.
+- `forkSessionAt` reads the full raw history so `messageIndex` keeps addressing
+  the complete conversation after a session has been compacted.
+- `compactMaestroSession` and the live loop persist through the dual-file
+  split. Pre-compaction sessions transparently keep the legacy single-file
+  layout (full backward compatibility with on-disk sessions).
+
 ## [0.1.51] - 2026-07-24
 
 ### Added

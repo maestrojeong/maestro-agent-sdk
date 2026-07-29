@@ -6,7 +6,11 @@ import {
 import { buildMaestroMemoryState, saveMaestroMemoryState } from "@/memory/state";
 import { logger } from "@/platform/logger";
 import type { ProviderMessage } from "@/providers/base";
-import { loadMaestroSession, type SaveSessionMetaInput, saveMaestroSession } from "@/session-store";
+import {
+  loadMaestroSession,
+  type SaveSessionMetaInput,
+  saveMaestroSessionSplit,
+} from "@/session-store";
 
 export interface CompactMaestroSessionOptions extends Omit<CompactMessagesNowOptions, "mutate"> {
   /** Maestro session id backed by `~/.maestro/sessions/<sessionId>.jsonl`. */
@@ -52,6 +56,13 @@ export async function compactMaestroSession(
     };
   }
 
+  // Snapshot the loaded message references BEFORE compaction mutates the
+  // array in place. `saveMaestroSessionSplit` uses these to identify the raw
+  // delta by object identity — a pure manual compaction adds no new real
+  // messages, so the append-only raw log is left untouched and only the
+  // compacted active projection is (re)written.
+  const priorMessages = loaded.slice();
+
   const result = await compactMessagesNow(loaded, {
     ...compactOpts,
     mutate: true,
@@ -59,7 +70,9 @@ export async function compactMaestroSession(
 
   let persisted = false;
   if (result.didCompact) {
-    saveMaestroSession(sessionId, result.canonicalMessages, saveMeta);
+    saveMaestroSessionSplit(sessionId, result.canonicalMessages, priorMessages, {
+      ...(saveMeta !== undefined ? { meta: saveMeta } : {}),
+    });
     persisted = true;
     if (result.summary?.trim()) {
       try {

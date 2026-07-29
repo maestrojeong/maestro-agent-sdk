@@ -8,7 +8,13 @@ import type {
   ProviderMessage,
   ProviderResponse,
 } from "@/providers/base";
-import { deleteMaestroSession, loadMaestroSession, saveMaestroSession } from "@/session-store";
+import {
+  deleteMaestroSession,
+  hasActiveMaestroSession,
+  loadMaestroSession,
+  loadRawMaestroSession,
+  saveMaestroSession,
+} from "@/session-store";
 
 const TEST_AUX_MODEL = "claude-sonnet-4-6";
 const tracked: string[] = [];
@@ -97,13 +103,26 @@ describe("compactMaestroSession", () => {
     expect(result.persisted).toBe(true);
     expect(result.summary).toContain("manual session compaction");
 
-    const persisted = loadMaestroSession(sessionId);
-    expect(persisted).not.toBeNull();
-    expect(persisted!.length).toBe(messages.length + 2);
-    expect(findLastCompactionSummary(persisted!)).toContain("manual session compaction");
+    // Dual-file persistence (v0.1.52+): loadMaestroSession returns the
+    // compacted active projection (protected head + marker/summary + tail),
+    // which is much smaller than the full history and still carries the
+    // summary so the next resume can compact incrementally.
+    const active = loadMaestroSession(sessionId);
+    expect(active).not.toBeNull();
+    expect(hasActiveMaestroSession(sessionId)).toBe(true);
+    expect(active!.length).toBeLessThan(messages.length);
+    expect(findLastCompactionSummary(active!)).toContain("manual session compaction");
+
+    // The append-only raw log preserves the full original conversation
+    // verbatim — no compaction sentinels, nothing dropped.
+    const raw = loadRawMaestroSession(sessionId);
+    expect(raw).not.toBeNull();
+    expect(raw!.length).toBe(messages.length);
+    expect(findLastCompactionSummary(raw!)).toBeUndefined();
 
     const memory = loadMaestroMemoryState(sessionId);
     expect(memory?.summary).toContain("manual session compaction");
-    expect(memory?.messageCount).toBe(persisted!.length);
+    // messageCount tracks the in-memory canonical (full history + marker pair).
+    expect(memory?.messageCount).toBe(result.canonicalMessages.length);
   });
 });

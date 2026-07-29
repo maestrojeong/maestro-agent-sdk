@@ -110,8 +110,13 @@ export {
   type ForkSessionAtOptions,
   type ForkSessionAtResult,
   forkSessionAt,
+  hasActiveMaestroSession,
+  loadMaestroSession,
   loadMaestroSessionMeta,
+  loadRawMaestroSession,
   type MaestroSessionMeta,
+  maestroActiveSessionPath,
+  maestroSessionPath,
   maestroSessionsDir,
   type SaveSessionMetaInput,
 } from "@/session-store";
