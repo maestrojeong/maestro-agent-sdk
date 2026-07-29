@@ -42,9 +42,14 @@ import {
   ensureCwdExists,
   extractChatPairs,
 } from "@/agents/rollout/shared";
+import {
+  buildActiveProjection,
+  findLastCompactionSummary,
+  isCompactionMarkerUser,
+} from "@/memory/compressor";
 import { maestroMemoryStatePath } from "@/memory/state";
 import { DATA_DIR } from "@/platform/config";
-import { writeJsonlFile } from "@/platform/jsonl";
+import { appendJsonlFile, writeJsonlFile } from "@/platform/jsonl";
 import { logger } from "@/platform/logger";
 import { MAESTRO_SDK_VERSION } from "@/platform/version";
 import type { ProviderContentBlock, ProviderMessage } from "@/providers/base";
@@ -68,9 +73,34 @@ export function maestroSessionsDir(): string {
   return join(DATA_DIR, "sessions");
 }
 
-/** Absolute path of the JSONL backing a given sessionId. */
+/**
+ * Absolute path of the **append-only raw** JSONL backing a given sessionId.
+ *
+ * This is the forensic source of truth: full-fidelity conversation history,
+ * one ProviderMessage per line, never rewritten to drop content and never
+ * carrying compaction sentinels. Compaction produces a separate replaceable
+ * projection at `maestroActiveSessionPath`.
+ */
 export function maestroSessionPath(sessionId: string): string {
   return join(maestroSessionsDir(), `${sessionId}.jsonl`);
+}
+
+/**
+ * Absolute path of the **replaceable active projection** for a sessionId.
+ *
+ * Written only once a session has been compacted at least once. Holds the
+ * compacted working view (protected head + compaction marker/summary pair +
+ * post-compaction tail) that the loop hydrates on resume, mirroring
+ * negotium's `{topic}.active.jsonl`. Absent → the raw log is the whole story
+ * and is loaded directly (pre-compaction sessions, cross-agent rollouts).
+ */
+export function maestroActiveSessionPath(sessionId: string): string {
+  return join(maestroSessionsDir(), `${sessionId}.active.jsonl`);
+}
+
+/** True when a compacted active projection exists for this session. */
+export function hasActiveMaestroSession(sessionId: string): boolean {
+  return existsSync(maestroActiveSessionPath(sessionId));
 }
 
 /**
@@ -122,6 +152,12 @@ export interface MaestroSessionMeta {
    * to keep the line short for callers that don't use `enableToolSearch`.
    */
   activeDeferredTools?: string[];
+  /**
+   * v0.1.52+: byte length of the append-only raw file when this active
+   * projection was committed. Detects a crash after the raw append but before
+   * the active atomic rename, so resume can fall back to the newer raw log.
+   */
+  rawFileSize?: number;
 }
 
 /** Discriminator key — the first line of a v0.1.5+ rollout starts with this. */
@@ -155,8 +191,7 @@ function tryParseLine(line: string): unknown {
  * carry the meta header on line 1; we skip it here so callers only see real
  * messages. Use `loadMaestroSessionMeta` for the meta payload.
  */
-export function loadMaestroSession(sessionId: string): ProviderMessage[] | null {
-  const path = maestroSessionPath(sessionId);
+function readMessagesFromPath(path: string): ProviderMessage[] | null {
   if (!existsSync(path)) return null;
   try {
     const raw = readFileSync(path, "utf8");
@@ -171,12 +206,43 @@ export function loadMaestroSession(sessionId: string): ProviderMessage[] | null 
     }
     return out;
   } catch (err) {
-    logger.warn(
-      { err, sessionId, path },
-      "loadMaestroSession: read/parse failed, starting fresh session",
-    );
+    logger.warn({ err, path }, "readMessagesFromPath: read/parse failed");
     return null;
   }
+}
+
+/**
+ * Load the persisted ProviderMessage[] the next turn should resume from, or
+ * `null` if no file exists (fresh session). Prefers the compacted active
+ * projection when present so a long, previously-compacted session hydrates
+ * only its small working view; otherwise falls back to the append-only raw
+ * log. Malformed lines are skipped rather than crashing the loop.
+ *
+ * Backward-compat: files written by SDK <= 0.1.4 had no `_meta` header — the
+ * loader treats their first line as a regular message. Files written by v0.1.5+
+ * carry the meta header on line 1; we skip it here so callers only see real
+ * messages. Use `loadMaestroSessionMeta` for the meta payload.
+ */
+export function loadMaestroSession(sessionId: string): ProviderMessage[] | null {
+  const activePath = maestroActiveSessionPath(sessionId);
+  if (existsSync(activePath)) {
+    const active = readMessagesFromPath(activePath);
+    if (active !== null && isCurrentActiveProjection(sessionId, active)) return active;
+    logger.warn(
+      { sessionId, activePath },
+      "loadMaestroSession: invalid or stale active projection, falling back to raw",
+    );
+  }
+  return readMessagesFromPath(maestroSessionPath(sessionId));
+}
+
+/**
+ * Load the full-fidelity **raw** history, ignoring any active projection.
+ * Used where message-index semantics must be against the complete history
+ * (e.g. `forkSessionAt`) or for forensic/archival reads.
+ */
+export function loadRawMaestroSession(sessionId: string): ProviderMessage[] | null {
+  return readMessagesFromPath(maestroSessionPath(sessionId));
 }
 
 /**
@@ -185,13 +251,9 @@ export function loadMaestroSession(sessionId: string): ProviderMessage[] | null 
  * indexers that want to attribute a session to its cwd / userId without
  * loading the full message history.
  */
-export function loadMaestroSessionMeta(sessionId: string): MaestroSessionMeta | null {
-  const path = maestroSessionPath(sessionId);
+function readMetaFromPath(path: string): MaestroSessionMeta | null {
   if (!existsSync(path)) return null;
   try {
-    // Read just enough bytes to cover a reasonably sized meta line. 16KB is
-    // generous — meta is typically <1KB. Falls through to a full read if the
-    // newline isn't found in the first chunk (degenerate single-line files).
     const raw = readFileSync(path, "utf8");
     const newline = raw.indexOf("\n");
     const firstLine = newline >= 0 ? raw.slice(0, newline) : raw;
@@ -199,8 +261,44 @@ export function loadMaestroSessionMeta(sessionId: string): MaestroSessionMeta | 
     if (!isMetaLine(parsed)) return null;
     return parsed[META_KEY];
   } catch (err) {
-    logger.warn({ err, sessionId, path }, "loadMaestroSessionMeta: read/parse failed");
+    logger.warn({ err, path }, "readMetaFromPath: read/parse failed");
     return null;
+  }
+}
+
+/**
+ * Read just the `_meta` header for a sessionId, or `null` if no file carries
+ * one. Prefers the active projection's meta (rewritten every save, so it
+ * carries the freshest `activeDeferredTools` / cwd) and falls back to the raw
+ * log's meta (written at creation) — including for pre-compaction sessions
+ * that have no active projection yet.
+ */
+export function loadMaestroSessionMeta(sessionId: string): MaestroSessionMeta | null {
+  const activePath = maestroActiveSessionPath(sessionId);
+  if (existsSync(activePath)) {
+    const active = readMessagesFromPath(activePath);
+    if (active !== null && isCurrentActiveProjection(sessionId, active)) {
+      const activeMeta = readMetaFromPath(activePath);
+      if (activeMeta) return activeMeta;
+    }
+  }
+  return readMetaFromPath(maestroSessionPath(sessionId));
+}
+
+function isCurrentActiveProjection(sessionId: string, messages: ProviderMessage[]): boolean {
+  // A valid active projection always contains its marker + non-empty summary
+  // pair. Empty/meta-only or partially-written projections must not hide raw.
+  if (findLastCompactionSummary(messages) === undefined) return false;
+  const checkpoint = readMetaFromPath(maestroActiveSessionPath(sessionId))?.rawFileSize;
+  if (checkpoint === undefined) return true;
+  try {
+    return statSync(maestroSessionPath(sessionId)).size === checkpoint;
+  } catch (err) {
+    // If raw is missing, active is still the only recoverable conversation.
+    if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") {
+      logger.warn({ err, sessionId }, "isCurrentActiveProjection: raw stat failed");
+    }
+    return true;
   }
 }
 
@@ -231,8 +329,13 @@ export interface SaveSessionMetaInput {
  * come from the live input so a session that moves cwd / changes metadata
  * mid-flight gets its current state recorded.
  */
-function buildMeta(sessionId: string, input: SaveSessionMetaInput): MaestroSessionMeta {
-  const existing = loadMaestroSessionMeta(sessionId);
+function buildMeta(
+  sessionId: string,
+  input: SaveSessionMetaInput,
+  existingOverride?: MaestroSessionMeta | null,
+): MaestroSessionMeta {
+  const existing =
+    existingOverride === undefined ? loadMaestroSessionMeta(sessionId) : existingOverride;
   const meta: MaestroSessionMeta = {
     version: 1,
     cwd: input.cwd ?? existing?.cwd ?? "",
@@ -296,6 +399,140 @@ export function saveMaestroSession(
 }
 
 /**
+ * Append new full-fidelity messages to the append-only **raw** log.
+ *
+ * Creates the file (with a `_meta` header line) on first write; subsequent
+ * calls append message lines only, never rewriting existing content — the raw
+ * log must only ever grow so the original conversation is preserved verbatim
+ * even after the active projection drops the summarized middle. No-op on an
+ * empty `messages` slice.
+ */
+export function appendRawMaestroMessages(
+  sessionId: string,
+  messages: ProviderMessage[],
+  meta?: SaveSessionMetaInput,
+): void {
+  assertUuidLike("sessionId", sessionId);
+  if (messages.length === 0) return;
+  const path = maestroSessionPath(sessionId);
+  if (!existsSync(path)) {
+    // First raw write for this session: seed the meta header so a standalone
+    // forensic read of the raw log is self-describing.
+    const built = buildMeta(sessionId, meta ?? {});
+    writeJsonlFile(path, [{ [META_KEY]: built }, ...messages]);
+    return;
+  }
+  appendJsonlFile(path, messages);
+}
+
+/**
+ * Overwrite the replaceable **active projection** with the compacted view.
+ * Always stamps a fresh `_meta` header (merged with any prior meta, preserving
+ * `createdAt`) so the projection carries the current `activeDeferredTools` and
+ * cwd for the next resume.
+ */
+export function writeActiveMaestroSession(
+  sessionId: string,
+  messages: ProviderMessage[],
+  meta?: SaveSessionMetaInput,
+  existingMeta?: MaestroSessionMeta | null,
+): void {
+  assertUuidLike("sessionId", sessionId);
+  const built = buildMeta(sessionId, meta ?? {}, existingMeta);
+  built.rawFileSize = statSync(maestroSessionPath(sessionId)).size;
+  writeJsonlFile(maestroActiveSessionPath(sessionId), [{ [META_KEY]: built }, ...messages]);
+}
+
+/**
+ * Collect the genuinely new, real conversation messages in `canonical` that
+ * are not already persisted — identified by object identity against the set
+ * loaded at turn start (`priorMessages`). Compaction sentinels (the marker
+ * user turn and the summary assistant immediately following it) are excluded
+ * so they never leak into the raw log.
+ *
+ * Object identity is reliable here: prior messages are the exact array
+ * references the loader returned this turn, while new user/assistant/tool
+ * turns and freshly-built compaction blocks are distinct objects. This is
+ * robust to compaction splicing markers into the middle of the array and to
+ * `trimToSafePrefix` returning a shorter slice of the same references.
+ */
+function collectNewRawMessages(
+  canonical: ProviderMessage[],
+  priorSet: ReadonlySet<ProviderMessage>,
+): ProviderMessage[] {
+  const out: ProviderMessage[] = [];
+  for (let i = 0; i < canonical.length; i++) {
+    const msg = canonical[i];
+    if (priorSet.has(msg)) continue;
+    const next = canonical[i + 1];
+    if (
+      isCompactionMarkerUser(msg) &&
+      next?.role === "assistant" &&
+      typeof next.content === "string" &&
+      next.content.length > 0
+    ) {
+      // Only the same valid marker/summary pair recognized by the compressor
+      // is synthetic. Preserve unmatched marker-like user content verbatim.
+      i++;
+      continue;
+    }
+    out.push(msg);
+  }
+  return out;
+}
+
+/**
+ * Persist a turn's canonical history using the dual-file (raw + active) split.
+ *
+ * Regimes:
+ *  - **No compaction yet** (no marker pair in `canonical`): behaves exactly
+ *    like the legacy single-file `saveMaestroSession` — the raw log is
+ *    overwritten with the full history and no active projection is created.
+ *    Fully backward compatible with pre-0.1.52 sessions on disk.
+ *  - **Compacted**: appends only the new real messages to the append-only raw
+ *    log (preserving the original verbatim) and replaces the active projection
+ *    with the compacted working view (`buildActiveProjection`).
+ *
+ * `priorMessages` must be the array the loader returned at the start of this
+ * turn (used for the object-identity raw delta). `headProtect` should match
+ * the compressor's protected-head count so the projection keeps the same head.
+ */
+export function saveMaestroSessionSplit(
+  sessionId: string,
+  canonical: ProviderMessage[],
+  priorMessages: readonly ProviderMessage[],
+  opts?: { meta?: SaveSessionMetaInput; headProtect?: number },
+): void {
+  assertUuidLike("sessionId", sessionId);
+  const meta = opts?.meta;
+  const hasCompaction = findLastCompactionSummary(canonical) !== undefined;
+  if (!hasCompaction) {
+    if (hasActiveMaestroSession(sessionId)) {
+      // Recovery path: the loader rejected a stale/corrupt active projection
+      // and fell back to raw. Preserve raw's append-only contract, add only
+      // this turn's new messages, then remove the unusable projection.
+      const priorSet = new Set<ProviderMessage>(priorMessages);
+      appendRawMaestroMessages(sessionId, collectNewRawMessages(canonical, priorSet), meta);
+      try {
+        unlinkSync(maestroActiveSessionPath(sessionId));
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") throw err;
+      }
+      return;
+    }
+    // Pre-compaction: nothing to project — keep the simple single-file layout.
+    saveMaestroSession(sessionId, canonical, meta);
+    return;
+  }
+  const existingMeta = loadMaestroSessionMeta(sessionId);
+  const priorSet = new Set<ProviderMessage>(priorMessages);
+  const rawDelta = collectNewRawMessages(canonical, priorSet);
+  appendRawMaestroMessages(sessionId, rawDelta, meta);
+  const projection = buildActiveProjection(canonical, opts?.headProtect ?? 2);
+  writeActiveMaestroSession(sessionId, projection, meta, existingMeta);
+}
+
+/**
  * Remove a session's backing file and drop its in-memory file-state tracker.
  * ENOENT on the unlink is silently ignored. Tracker drop is unconditional —
  * no-op when the session never registered a tracker.
@@ -310,6 +547,18 @@ export function deleteMaestroSession(sessionId: string): void {
       dropFileStateTracker(sessionId);
       dropTaskStore(sessionId);
       throw e;
+    }
+  }
+  // Best-effort removal of the compacted active projection sidecar. Its
+  // absence is normal (pre-compaction sessions never create one).
+  try {
+    unlinkSync(maestroActiveSessionPath(sessionId));
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") {
+      logger.warn(
+        { err: e, sessionId },
+        "deleteMaestroSession: active projection unlink failed (non-ENOENT)",
+      );
     }
   }
   dropFileStateTracker(sessionId);
@@ -386,7 +635,10 @@ export function forkSessionAt(opts: ForkSessionAtOptions): ForkSessionAtResult {
   if (opts.messageIndex < 0) {
     throw new Error(`forkSessionAt: messageIndex must be >= 0, got ${opts.messageIndex}`);
   }
-  const parentMessages = loadMaestroSession(opts.parentSessionId);
+  // Fork against the full-fidelity raw history so `messageIndex` addresses the
+  // complete conversation, not the compacted active projection (which would
+  // shift indices once a session has been compacted).
+  const parentMessages = loadRawMaestroSession(opts.parentSessionId);
   if (parentMessages === null) {
     throw new Error(`forkSessionAt: parent session not found: ${opts.parentSessionId}`);
   }
@@ -644,6 +896,10 @@ export function cleanupStaleMaestroSessions(maxAgeMs: number = DEFAULT_MAESTRO_S
   const cutoff = Date.now() - maxAgeMs;
   for (const name of entries) {
     if (!name.endsWith(".jsonl")) continue;
+    // Skip the compacted active projection sidecars — they are removed
+    // alongside their raw parent below, and are not sessions in their own
+    // right (treating `<id>.active` as a sessionId would strand caches).
+    if (name.endsWith(".active.jsonl")) continue;
     scanned++;
     const path = join(dir, name);
     // saveMaestroSession writes `${sessionsDir}/${sessionId}.jsonl`, so the
@@ -656,6 +912,18 @@ export function cleanupStaleMaestroSessions(maxAgeMs: number = DEFAULT_MAESTRO_S
       if (stat.mtimeMs >= cutoff) continue;
       unlinkSync(path);
       removed++;
+      // Remove the compacted active projection sidecar too (best-effort —
+      // absent for sessions that were never compacted).
+      try {
+        unlinkSync(maestroActiveSessionPath(sessionId));
+      } catch (activeErr) {
+        if ((activeErr as NodeJS.ErrnoException)?.code !== "ENOENT") {
+          logger.warn(
+            { err: activeErr, sessionId },
+            "cleanupStaleMaestroSessions: active projection unlink failed (continuing)",
+          );
+        }
+      }
       dropFileStateTracker(sessionId);
       // Also unlinks the on-disk `.tasks.json` sidecar (+ legacy `.todos.json`).
       dropTaskStore(sessionId);

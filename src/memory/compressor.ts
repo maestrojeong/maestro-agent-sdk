@@ -163,8 +163,18 @@ export interface CompactMessagesNowResult {
 const COMPACTOR_MIN_SAVINGS_RATIO = 0.1;
 
 /** Sentinel user message that marks a compaction block pair.
- *  Uses NUL-bytes to make accidental user-content collision extremely unlikely. */
-const COMPACTION_MARKER = "\x00maestro-compaction\x00";
+ *  Uses NUL-bytes to make accidental user-content collision extremely unlikely.
+ *  Exported so the persistence layer (session-store) can recognize the
+ *  compaction pair when splitting the canonical array into an append-only raw
+ *  log (markers stripped) and a compacted active projection (markers kept). */
+export const COMPACTION_MARKER = "\x00maestro-compaction\x00";
+
+/** True when a message is the sentinel user turn that opens a compaction pair. */
+export function isCompactionMarkerUser(msg: ProviderMessage): boolean {
+  return (
+    msg.role === "user" && typeof msg.content === "string" && msg.content === COMPACTION_MARKER
+  );
+}
 
 /** Incremental summary update prompt.  Restates the schema contract
  *  (same sections as ACTIVE_TASK_TEMPLATE) so aux output never drifts. */
@@ -353,6 +363,64 @@ function findLastCompaction(
 
 export function findLastCompactionSummary(messages: ProviderMessage[]): string | undefined {
   return findLastCompaction(messages)?.summary;
+}
+
+/**
+ * Build the compacted **active projection** persisted to `<id>.active.jsonl`.
+ *
+ * The live loop keeps the full canonical array in memory (protected head +
+ * raw summarized middle + compaction marker pair + protected tail) so every
+ * wire path in `compressIfNeeded` behaves exactly as before. But that full
+ * array is dead weight on disk and on resume: the summarized middle is never
+ * summarized again and is stripped from every wire, yet it was being reloaded
+ * and re-pruned every turn.
+ *
+ * This projection drops that middle: it keeps the protected head, the most
+ * recent compaction marker + summary pair, and everything after it (the
+ * post-compaction delta / tail). On resume the loader hydrates this small
+ * projection; `compressIfNeeded` then follows its well-tested incremental
+ * path (previous summary + delta) exactly as it would from the full array.
+ *
+ * The full-fidelity original is never lost — it lives in the append-only raw
+ * log (`<id>.jsonl`). This projection is a replaceable derived view, mirroring
+ * negotium's `{topic}.active.jsonl` vs append-only `{topic}.jsonl` split.
+ *
+ * Returns a shallow copy of `messages` unchanged when there is no compaction
+ * pair yet (nothing to project — the raw log is still the whole story).
+ *
+ * Wire-safety: when the retained head ends on a `user` turn, an empty
+ * assistant turn is inserted before the marker so the projection never
+ * produces a `user`→`user` adjacency that a provider could reject on the
+ * `compressIfNeeded` early-return (below-threshold) path. This mirrors the
+ * filler `buildCompactedWire` already inserts.
+ */
+export function buildActiveProjection(
+  messages: ProviderMessage[],
+  headProtect = 2,
+): ProviderMessage[] {
+  const marker = findLastCompaction(messages);
+  if (!marker) return messages.slice();
+
+  // Head boundary computed on the FULL array so we keep the genuine first
+  // turns, then clamped so it can never cross into the summarized middle or
+  // the marker itself (snapHeadEnd's fallback can otherwise return a late
+  // boundary when the head region has no clean plain-user turn).
+  const headEnd = Math.min(
+    snapHeadEnd(messages, Math.min(headProtect, messages.length)),
+    marker.userIdx,
+  );
+  const head = messages.slice(0, Math.max(0, headEnd));
+  const tail = messages.slice(marker.assistantIdx + 1);
+  const headEndsUser = head.length > 0 && head[head.length - 1].role === "user";
+  return [
+    ...head,
+    ...(headEndsUser
+      ? [{ role: "assistant" as const, content: [{ type: "text" as const, text: "" }] }]
+      : []),
+    { role: "user", content: COMPACTION_MARKER },
+    { role: "assistant", content: marker.summary },
+    ...tail,
+  ];
 }
 
 /**
@@ -1034,7 +1102,7 @@ export async function compactMessagesNow(
  * open tool_use IDs and only stops at a plain user when every
  * tool_use in the head region has a matching tool_result.
  */
-function snapHeadEnd(messages: ProviderMessage[], idealEnd: number): number {
+export function snapHeadEnd(messages: ProviderMessage[], idealEnd: number): number {
   // Pre-populate open tool_uses from the prefix we're keeping (0..idealEnd-1).
   const open = new Set<string>();
   const limit = Math.min(idealEnd, messages.length);

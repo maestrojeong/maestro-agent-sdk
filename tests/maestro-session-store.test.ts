@@ -1,15 +1,30 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeAll, describe, expect, test } from "vitest";
+import { COMPACTION_MARKER } from "@/memory/compressor";
 import type { ProviderMessage } from "@/providers/base";
 import {
+  appendRawMaestroMessages,
   cleanupStaleMaestroSessions,
   deleteMaestroSession,
+  hasActiveMaestroSession,
   isWellFormedMessage,
   loadMaestroSession,
+  loadMaestroSessionMeta,
+  loadRawMaestroSession,
+  maestroActiveSessionPath,
   maestroSessionPath,
   saveMaestroSession,
+  saveMaestroSessionSplit,
   trimToSafePrefix,
   writeMaestroRollout,
 } from "@/session-store";
@@ -75,6 +90,212 @@ describe("maestro session store (save / load round-trip)", () => {
     saveMaestroSession(sid, [{ role: "user", content: "second" }]);
     const loaded = loadMaestroSession(sid);
     expect(loaded).toEqual([{ role: "user", content: "second" }]);
+  });
+
+  test("saveMaestroSessionSplit with no compaction keeps single-file layout", () => {
+    const sid = uuid();
+    tracked.push(maestroSessionPath(sid), maestroActiveSessionPath(sid));
+    const prior: ProviderMessage[] = [];
+    const messages: ProviderMessage[] = [
+      { role: "user", content: "hi" },
+      { role: "assistant", content: [{ type: "text", text: "yo" }] },
+    ];
+    saveMaestroSessionSplit(sid, messages, prior);
+    // No marker → no active projection is created; raw holds the full history.
+    expect(hasActiveMaestroSession(sid)).toBe(false);
+    expect(loadMaestroSession(sid)).toEqual(messages);
+    expect(loadRawMaestroSession(sid)).toEqual(messages);
+  });
+
+  test("dual-file split preserves raw original while active holds the compacted view", () => {
+    const sid = uuid();
+    tracked.push(maestroSessionPath(sid), maestroActiveSessionPath(sid));
+
+    // Turn 1 (pre-compaction): a plain multi-turn history, single-file.
+    const t1: ProviderMessage[] = [];
+    for (let i = 0; i < 6; i++) {
+      t1.push({ role: "user", content: `q${i}` });
+      t1.push({ role: "assistant", content: [{ type: "text", text: `a${i}` }] });
+    }
+    saveMaestroSessionSplit(sid, t1, []);
+    expect(hasActiveMaestroSession(sid)).toBe(false);
+    expect(loadRawMaestroSession(sid)).toHaveLength(t1.length);
+
+    // Turn 2: resume loads prior, appends a new turn, and compaction inserts a
+    // marker/summary pair into the canonical array (middle retained in memory).
+    const prior = loadMaestroSession(sid) as ProviderMessage[];
+    const newUser: ProviderMessage = { role: "user", content: "q6" };
+    const newAssistant: ProviderMessage = {
+      role: "assistant",
+      content: [{ type: "text", text: "a6" }],
+    };
+    // Simulate the compressor's canonical mutation: [head, ...middle, MARKER,
+    // summary, tail] with the brand-new turn appended at the tail.
+    const canonical: ProviderMessage[] = [
+      prior[0],
+      prior[1],
+      ...prior.slice(2, 10),
+      { role: "user", content: COMPACTION_MARKER },
+      { role: "assistant", content: "SUMMARY-of-middle" },
+      prior[10],
+      prior[11],
+      newUser,
+      newAssistant,
+    ];
+    saveMaestroSessionSplit(sid, canonical, prior);
+
+    // Active projection: compacted, carries the marker, drops the raw middle.
+    expect(hasActiveMaestroSession(sid)).toBe(true);
+    const active = loadMaestroSession(sid) as ProviderMessage[];
+    expect(active.length).toBeLessThan(canonical.length);
+    const markerIdx = active.findIndex((m) => m.role === "user" && m.content === COMPACTION_MARKER);
+    expect(markerIdx).toBeGreaterThanOrEqual(0);
+    expect(active[markerIdx + 1]).toEqual({
+      role: "assistant",
+      content: "SUMMARY-of-middle",
+    });
+
+    // Raw log: append-only, full original + the new real turns, NO markers.
+    const raw = loadRawMaestroSession(sid) as ProviderMessage[];
+    expect(raw).toHaveLength(t1.length + 2);
+    expect(raw.some((m) => m.role === "user" && m.content === COMPACTION_MARKER)).toBe(false);
+    expect(raw[raw.length - 2]).toEqual(newUser);
+    expect(raw[raw.length - 1]).toEqual(newAssistant);
+  });
+
+  test("falls back to newer raw after a raw-append/active-replace crash window", () => {
+    const sid = uuid();
+    tracked.push(maestroSessionPath(sid), maestroActiveSessionPath(sid));
+    const original: ProviderMessage[] = [
+      { role: "user", content: "q1" },
+      { role: "assistant", content: "a1" },
+    ];
+    saveMaestroSessionSplit(sid, original, []);
+    const prior = loadMaestroSession(sid) as ProviderMessage[];
+    saveMaestroSessionSplit(
+      sid,
+      [
+        ...prior,
+        { role: "user", content: COMPACTION_MARKER },
+        { role: "assistant", content: "summary" },
+      ],
+      prior,
+    );
+
+    const rawOnlyMessage: ProviderMessage = { role: "user", content: "survived in raw" };
+    appendRawMaestroMessages(sid, [rawOnlyMessage]);
+
+    // The active checkpoint is now stale, so resume must expose the newer raw
+    // history instead of silently hiding the last durable user turn.
+    const recovered = loadMaestroSession(sid) as ProviderMessage[];
+    expect(recovered).toEqual([...original, rawOnlyMessage]);
+
+    const answer: ProviderMessage = { role: "assistant", content: "recovered answer" };
+    saveMaestroSessionSplit(sid, [...recovered, answer], recovered);
+    expect(hasActiveMaestroSession(sid)).toBe(false);
+    expect(loadRawMaestroSession(sid)).toEqual([...original, rawOnlyMessage, answer]);
+  });
+
+  test("preserves active metadata while raw advances before projection rewrite", () => {
+    const sid = uuid();
+    tracked.push(maestroSessionPath(sid), maestroActiveSessionPath(sid));
+    const original: ProviderMessage[] = [
+      { role: "user", content: "q1" },
+      { role: "assistant", content: "a1" },
+    ];
+    saveMaestroSessionSplit(sid, original, [], {
+      meta: { cwd: "/tmp/original", metadata: { topicId: "topic-1" } },
+    });
+    const prior = loadMaestroSession(sid) as ProviderMessage[];
+    saveMaestroSessionSplit(
+      sid,
+      [
+        ...prior,
+        { role: "user", content: COMPACTION_MARKER },
+        { role: "assistant", content: "summary" },
+      ],
+      prior,
+    );
+    const before = loadMaestroSessionMeta(sid);
+
+    const active = loadMaestroSession(sid) as ProviderMessage[];
+    saveMaestroSessionSplit(
+      sid,
+      [...active, { role: "user", content: "q2" }, { role: "assistant", content: "a2" }],
+      active,
+    );
+    const after = loadMaestroSessionMeta(sid);
+    expect(after?.createdAt).toBe(before?.createdAt);
+    expect(after?.cwd).toBe("/tmp/original");
+    expect(after?.metadata).toEqual({ topicId: "topic-1" });
+  });
+
+  test("preserves unmatched marker-like user content in raw", () => {
+    const sid = uuid();
+    tracked.push(maestroSessionPath(sid), maestroActiveSessionPath(sid));
+    const markerLikeUser: ProviderMessage = { role: "user", content: COMPACTION_MARKER };
+    const blockAssistant: ProviderMessage = {
+      role: "assistant",
+      content: [{ type: "text", text: "real response" }],
+    };
+    saveMaestroSessionSplit(
+      sid,
+      [
+        markerLikeUser,
+        blockAssistant,
+        { role: "user", content: COMPACTION_MARKER },
+        { role: "assistant", content: "actual summary" },
+      ],
+      [],
+    );
+    expect(loadRawMaestroSession(sid)).toEqual([markerLikeUser, blockAssistant]);
+  });
+
+  test("falls back to raw when the active projection is empty", () => {
+    const sid = uuid();
+    tracked.push(maestroSessionPath(sid), maestroActiveSessionPath(sid));
+    const messages: ProviderMessage[] = [
+      { role: "user", content: "q" },
+      { role: "assistant", content: "a" },
+    ];
+    saveMaestroSession(sid, messages);
+    writeFileSync(maestroActiveSessionPath(sid), "");
+    expect(loadMaestroSession(sid)).toEqual(messages);
+  });
+
+  test("separates a trailing partial raw line before the next append", () => {
+    const sid = uuid();
+    tracked.push(maestroSessionPath(sid));
+    const original: ProviderMessage[] = [
+      { role: "user", content: "q" },
+      { role: "assistant", content: "a" },
+    ];
+    saveMaestroSession(sid, original);
+    appendFileSync(maestroSessionPath(sid), '{"role":"user","content":"partial');
+    const next: ProviderMessage = { role: "user", content: "intact next line" };
+    appendRawMaestroMessages(sid, [next]);
+    expect(loadRawMaestroSession(sid)).toEqual([...original, next]);
+  });
+
+  test("deleteMaestroSession removes both raw and active files", () => {
+    const sid = uuid();
+    tracked.push(maestroSessionPath(sid), maestroActiveSessionPath(sid));
+    saveMaestroSessionSplit(
+      sid,
+      [
+        { role: "user", content: "q" },
+        { role: "assistant", content: [{ type: "text", text: "a" }] },
+        { role: "user", content: COMPACTION_MARKER },
+        { role: "assistant", content: "sum" },
+        { role: "user", content: "q2" },
+      ],
+      [],
+    );
+    expect(existsSync(maestroSessionPath(sid))).toBe(true);
+    expect(existsSync(maestroActiveSessionPath(sid))).toBe(true);
+    deleteMaestroSession(sid);
+    expect(existsSync(maestroSessionPath(sid))).toBe(false);
+    expect(existsSync(maestroActiveSessionPath(sid))).toBe(false);
   });
 
   test("deleteMaestroSession removes the backing file and is idempotent", () => {
