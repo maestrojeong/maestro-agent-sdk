@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.1.53] - 2026-08-01
+
+### Changed
+- Token estimation now charges CJK code points at a conservative script-aware
+  rate across messages, tool inputs, and tool results, preventing long Korean,
+  Japanese, and Chinese sessions from reaching provider context limits before
+  compaction runs.
+- `Glob` now respects `.gitignore` rules by default, including outside Git
+  worktrees. Pass `no_ignore: true` to include dependencies and generated
+  output explicitly; hidden files remain included.
+- Partial text `Read` results now include the displayed and total line range so
+  callers know when to continue with `offset` and `limit`.
+
+### Fixed
+- Text `Read` no longer counts the sentinel after a trailing newline as an
+  extra line, emits inverted ranges for offsets past EOF, or represents an
+  empty file as a numbered blank line.
+
 ## [0.1.52] - 2026-07-29
 
 ### Added

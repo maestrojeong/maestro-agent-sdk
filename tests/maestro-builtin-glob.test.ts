@@ -11,9 +11,10 @@ import { compileGlob, globTool } from "@/tools/builtin/glob";
  *   - Tool: input validation (absolute path, directory check), match
  *     correctness across nested layouts, mtime-descending sort, empty
  *     result shape, dotfile inclusion (no implicit skip)
+ *   - Ignore policy: .gitignore respected by default, `no_ignore` opt-out
  *
- * The implementation walks the filesystem in-process (no dep on ripgrep
- * or shell glob), so the tests are dep-free too.
+ * Discovery is delegated to `rg --files`, so these tests require ripgrep on
+ * PATH. The pattern compiler itself is pure and tested in-process.
  */
 
 const tracked: string[] = [];
@@ -161,6 +162,31 @@ describe("Glob tool — match correctness", () => {
     const out = JSON.parse(await globTool.execute({ pattern: "**/*.json", path: root }));
     expect(out.paths.sort()).toEqual(
       [join(root, ".config/foo.json"), join(root, "normal.json")].sort(),
+    );
+  });
+
+  test("gitignored paths are skipped by default, included with no_ignore", async () => {
+    // Regression guard for the context-window blowout: `--no-ignore` used to be
+    // passed unconditionally, so `**/*.ts` on a repo with installed deps
+    // returned ~5.4k paths (82% node_modules) serializing to ~460 KB.
+    const root = makeRoot();
+    writeFileSync(join(root, ".gitignore"), "node_modules/\ndist/\n", "utf-8");
+    write(root, "src/keep.ts");
+    write(root, "node_modules/pkg/index.ts");
+    write(root, "dist/bundle.ts");
+
+    const def = JSON.parse(await globTool.execute({ pattern: "**/*.ts", path: root }));
+    expect(def.paths).toEqual([join(root, "src/keep.ts")]);
+
+    const all = JSON.parse(
+      await globTool.execute({ pattern: "**/*.ts", path: root, no_ignore: true }),
+    );
+    expect(all.paths.sort()).toEqual(
+      [
+        join(root, "src/keep.ts"),
+        join(root, "node_modules/pkg/index.ts"),
+        join(root, "dist/bundle.ts"),
+      ].sort(),
     );
   });
 

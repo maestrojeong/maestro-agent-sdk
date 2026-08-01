@@ -11,6 +11,19 @@ import { __MAX_FILE_BYTES, readTool } from "@/tools/builtin/read";
  * oversized file).
  */
 
+/**
+ * Split a Read result into its line-numbered body and its partial-view
+ * notice. A partial read appends `\n\n[showing lines X-Y of N ...]`; a
+ * fully-visible read appends nothing, in which case `notice` is undefined.
+ */
+function splitPartialViewNotice(out: unknown): [string, string | undefined] {
+  if (typeof out !== "string") throw new Error("expected string return");
+  const marker = "\n\n[showing lines ";
+  const at = out.lastIndexOf(marker);
+  if (at === -1) return [out, undefined];
+  return [out.slice(0, at), out.slice(at + 2)];
+}
+
 let tmp: string;
 
 beforeEach(() => {
@@ -41,13 +54,40 @@ describe("readTool", () => {
     const path = join(tmp, "b.txt");
     writeFileSync(path, "L1\nL2\nL3\nL4\nL5\n", "utf-8");
     const out = await readTool.execute({ file_path: path, offset: 2, limit: 2 });
-    const lines = out.split("\n");
+    const [body, notice] = splitPartialViewNotice(out);
+    const lines = body.split("\n");
     expect(lines).toHaveLength(2);
     expect(lines[0]).toContain("\tL2");
     expect(lines[1]).toContain("\tL3");
     // Numbering reflects the actual line number, not 1-2 of the slice.
     expect(lines[0]).toMatch(/^\s+2\t/);
     expect(lines[1]).toMatch(/^\s+3\t/);
+    // A partial view is labelled so the model knows to paginate. The trailing
+    // newline in the fixture must not inflate the reported total to 6.
+    expect(notice).toBe("[showing lines 2-3 of 5 — use offset/limit to read another range]");
+  });
+
+  test("a fully-visible read carries no partial-view notice", async () => {
+    const path = join(tmp, "whole.txt");
+    writeFileSync(path, "L1\nL2\nL3\n", "utf-8");
+    const out = await readTool.execute({ file_path: path });
+    expect(out).not.toContain("showing lines");
+    expect(out.split("\n")).toHaveLength(3);
+    expect(out).not.toContain("     4\t");
+  });
+
+  test("an offset past EOF reports no lines without an inverted range", async () => {
+    const path = join(tmp, "past-eof.txt");
+    writeFileSync(path, "L1\nL2\nL3\n", "utf-8");
+    const out = await readTool.execute({ file_path: path, offset: 10 });
+    expect(out).toBe("[showing no lines — offset 10 is past end of file (3 lines)]");
+  });
+
+  test("an empty file is identified explicitly", async () => {
+    const path = join(tmp, "empty.txt");
+    writeFileSync(path, "", "utf-8");
+    const out = await readTool.execute({ file_path: path });
+    expect(out).toBe("[file is empty]");
   });
 
   test("rejects relative paths with a structured error", async () => {
@@ -93,11 +133,15 @@ describe("readTool", () => {
     writeFileSync(path, content, "utf-8");
     const out = await readTool.execute({ file_path: path });
     if (typeof out !== "string") throw new Error("expected string return for .txt");
-    const lines = out.split("\n");
+    const [body, notice] = splitPartialViewNotice(out);
+    const lines = body.split("\n");
     expect(lines).toHaveLength(2000);
     // First and last visible line numbers reflect the cap.
     expect(lines[0]).toContain("\tL1");
     expect(lines[1999]).toContain("\tL2000");
+    // The 500 dropped lines must be announced. Without this the model reasons
+    // about the file as if it had seen all 2500 lines.
+    expect(notice).toBe("[showing lines 1-2000 of 2500 — use offset/limit to read another range]");
   });
 
   // ─── v0.1.18: image branch ──────────────────────────────────────────
