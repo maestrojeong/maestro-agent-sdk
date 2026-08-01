@@ -24,6 +24,10 @@ import type { ToolHandler } from "@/tools/registry";
  *    same default; without it a 50K-line file would dump the whole thing into
  *    the model's context.
  *  - `offset` is 1-based line number (claude SDK convention, NOT byte offset).
+ *  - Partial views are labelled. When the returned slice does not cover the
+ *    whole file the result gains a trailing `[showing lines X-Y of N ...]`
+ *    line so the model knows to paginate instead of assuming it saw
+ *    everything. Fully-visible reads carry no notice.
  *
  * Returns the line-numbered string on success or `JSON.stringify({error})`
  * for every failure mode — matches `bashTool`'s convention so the model sees
@@ -232,9 +236,19 @@ export function createReadTool(opts: ReadToolOptions = {}): ToolHandler {
       const offset = clampPositive(input.offset, 1);
       const limit = clampPositive(input.limit, DEFAULT_LINE_LIMIT);
 
-      const allLines = raw.split("\n");
+      const allLines = raw.length === 0 ? [] : raw.split("\n");
+      // A trailing newline terminates the preceding line; the empty element
+      // emitted by `split` is not another line. Remove it from both the body
+      // and total so the notice cannot disagree with the numbered output.
+      if (allLines[allLines.length - 1] === "") allLines.pop();
+      const totalLines = allLines.length;
       const start = Math.max(0, offset - 1);
-      const end = Math.min(allLines.length, start + limit);
+      if (totalLines === 0) return "[file is empty]";
+      if (start >= totalLines) {
+        return `[showing no lines — offset ${offset} is past end of file (${totalLines} lines)]`;
+      }
+
+      const end = Math.min(totalLines, start + limit);
       const slice = allLines.slice(start, end);
 
       const formatted = slice
@@ -243,6 +257,18 @@ export function createReadTool(opts: ReadToolOptions = {}): ToolHandler {
           return `${String(lineNum).padStart(6, " ")}\t${line}`;
         })
         .join("\n");
+
+      // Tell the model when it is looking at a partial view. Without this a
+      // 5000-line file read without `limit` returns lines 1-2000 and nothing
+      // signals that 3000 lines were dropped — the model then reasons about
+      // the file as if it had seen all of it, and has no reason to paginate.
+      //
+      // The notice is appended rather than JSON-wrapped so the line-numbered
+      // body keeps the claude-SDK format. Fully-visible reads (the common
+      // case) carry no notice.
+      if (start > 0 || end < totalLines) {
+        return `${formatted}\n\n[showing lines ${start + 1}-${end} of ${totalLines} — use offset/limit to read another range]`;
+      }
 
       return formatted;
     },

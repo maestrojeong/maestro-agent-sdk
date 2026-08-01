@@ -22,9 +22,15 @@ import type { ToolHandler } from "@/tools/registry";
  *   - Other characters match literally; regex metacharacters are escaped.
  *
  * Implementation: ripgrep discovers files using its native glob engine.
- * `--no-ignore --hidden` preserves the original behavior of including ignored
- * and dot-prefixed files, while rg's default no-follow behavior prevents
- * symlink loops and traversal outside the requested root.
+ * `--hidden` includes dot-prefixed files, while rg's default no-follow
+ * behavior prevents symlink loops and traversal outside the requested root.
+ *
+ * .gitignore is respected by default. It was not until v0.1.53: `--no-ignore`
+ * was passed unconditionally, so `**\/*.ts` on a repo with installed deps
+ * returned ~5.4k paths (82% of them `node_modules`) and serialized to ~460 KB
+ * — a single tool result large enough to dominate or overflow the context
+ * window. Callers that genuinely need to search dependencies or build output
+ * opt back in with `no_ignore: true`.
  *
  * Bounds:
  *   - 10,000-file ceiling so a pathological pattern (`**\/*`) in a giant
@@ -50,8 +56,9 @@ export const globTool: ToolHandler = {
       "`**` (cross-segment wildcard), `?` (one char), `[abc]` / `[a-z]` / `[!abc]` " +
       "character classes, and `{a,b}` brace expansion (nestable). Returns " +
       "absolute paths sorted by modification time descending — recently-touched " +
-      "files first. Does NOT skip dotfiles or build dirs; the model's pattern is " +
-      "authoritative. Caps results at 10,000 entries (truncates with a note when exceeded).",
+      "files first. Dotfiles are included. Files ignored by .gitignore (e.g. " +
+      "`node_modules`, `dist`) are skipped by default — pass `no_ignore: true` to " +
+      "include them. Caps results at 10,000 entries (truncates with a note when exceeded).",
     input_schema: {
       type: "object",
       properties: {
@@ -70,6 +77,13 @@ export const globTool: ToolHandler = {
             "Optional absolute directory to search in. Defaults to the SDK's process cwd. " +
             "If omitted and `pattern` is absolute, the walk root is auto-extracted " +
             "from `pattern`. Relative paths are rejected.",
+        },
+        no_ignore: {
+          type: "boolean",
+          description:
+            "Include files ignored by .gitignore (node_modules, dist, build output). " +
+            "Defaults to false. Only set this when you specifically need to search " +
+            "inside dependencies or generated output — it can return 10x more paths.",
         },
       },
       required: ["pattern"],
@@ -132,7 +146,8 @@ export const globTool: ToolHandler = {
       });
     }
 
-    const discovery = await discoverWithRipgrep(root, normalizeRipgrepGlob(pattern));
+    const noIgnore = input.no_ignore === true;
+    const discovery = await discoverWithRipgrep(root, normalizeRipgrepGlob(pattern), noIgnore);
     if ("error" in discovery) return JSON.stringify({ error: discovery.error });
 
     const matches: Array<{ abs: string; mtime: number }> = [];
@@ -170,9 +185,25 @@ export const globTool: ToolHandler = {
 async function discoverWithRipgrep(
   root: string,
   pattern: string,
+  noIgnore: boolean,
 ): Promise<{ paths: string[]; truncated: boolean } | { error: string }> {
   return new Promise((resolve) => {
-    const child = spawn("rg", ["--files", "--no-ignore", "--hidden", "--null", "--glob", pattern], {
+    // `--hidden` is unconditional: dotfiles are content the model asked for by
+    // pattern, and they are few. `--no-ignore` is opt-in because it is not —
+    // on a repo with installed dependencies it multiplies the result set by
+    // roughly 10x with `node_modules`/`dist` paths the model did not want.
+    const args = ["--files", "--hidden"];
+    if (noIgnore) {
+      args.push("--no-ignore");
+    } else {
+      // ripgrep only honors .gitignore when it finds a `.git` directory, so
+      // without this flag the ignore rules silently do nothing in any
+      // non-repository workspace — exactly the scratch/extracted directories
+      // where a stray `node_modules` is most likely to be sitting.
+      args.push("--no-require-git");
+    }
+    args.push("--null", "--glob", pattern);
+    const child = spawn("rg", args, {
       cwd: root,
       stdio: ["ignore", "pipe", "pipe"],
     });
