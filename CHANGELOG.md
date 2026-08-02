@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.54] - 2026-08-03
+
+- Keep the login-PATH bootstrap silent when the login PATH is already fully
+  represented by the process PATH. This successful no-op no longer emits a
+  debug message during SDK import.
+
 ## [0.1.53] - 2026-08-01
 
 ### Changed

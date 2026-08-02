@@ -130,7 +130,6 @@ export function bootstrapHostPath(): void {
   }
 
   if (additions.length === 0) {
-    _log.debug({}, "env-bootstrap: login PATH already a subset of process PATH");
     return;
   }
 
