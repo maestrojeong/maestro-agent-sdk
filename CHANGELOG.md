@@ -46,6 +46,16 @@
 ### Removed
 - `MaestroSessionMeta.rawFileSize`. Headers no longer describe the other file.
 
+### Internal
+- `tests/maestro-session-store.test.ts` runs in CI again. It had been excluded
+  alongside the registry suite, but it never depended on the host functions that
+  exclusion cites — so the dual-file persistence and crash-window coverage was
+  silently not executing.
+- Each test file now gets its own `MAESTRO_DATA_DIR`. The suites previously
+  shared the developer's real `~/.maestro/sessions`, where the
+  `cleanupStaleMaestroSessions` coverage would delete fixtures belonging to
+  whichever suite ran alongside it.
+
 ## [0.1.54] - 2026-08-03
 
 - Keep the login-PATH bootstrap silent when the login PATH is already fully

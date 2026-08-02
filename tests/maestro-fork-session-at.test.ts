@@ -38,10 +38,10 @@ import {
  *   3. The slice respects `messageIndex` AND `trimToSafePrefix`.
  *   4. The parent JSONL is unchanged.
  *
- * `DATA_DIR` resolves at module load and can't be re-pointed mid-test,
- * so we use the real default `~/.maestro/sessions` and track every
- * session file we create for `afterEach` cleanup. This matches the
- * `maestro-session-store.test.ts` pattern.
+ * `tests/setup/data-dir.ts` points `DATA_DIR` at a temp directory owned by
+ * this file, so sessions written here are invisible to every other suite.
+ * Each one is still tracked for `afterEach` cleanup to keep individual tests
+ * from seeing each other's fixtures.
  */
 
 let tmpCwd: string;
