@@ -120,7 +120,6 @@ export {
   maestroActiveSessionPath,
   maestroSessionPath,
   maestroSessionsDir,
-  migrateMaestroSessionSeq,
   type SaveSessionMetaInput,
 } from "@/session-store";
 // ─── State (todos) ───────────────────────────────────────────────────────────

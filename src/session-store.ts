@@ -21,16 +21,17 @@
  *              older SDK versions skip this line, and the loader treats them
  *              as meta-less without error.
  *   line 2…N — `{"_seq": N, "m": <ProviderMessage>}`, one user/assistant turn
- *              each. Pre-v0.1.55 files store the bare message with no envelope;
- *              both forms load, and `migrateMaestroSessionSeq` upgrades the old
- *              one in place.
+ *              each. Pre-v0.2.0 files store the bare message with no envelope.
+ *              Those still load and the session keeps running, but its existing
+ *              messages stay unnumbered forever — there is no migration, and a
+ *              compacted one forks without inheriting its projection.
  *
  * The meta header lets a future per-cwd indexer / forensic sweep recover
  * locality without changing the on-disk directory structure (flat
  * `<sessionId>.jsonl` stays). Hosts that don't care can ignore it.
  *
  * A compacted session is stored as two files — the append-only raw log and the
- * replaceable active projection — and since v0.1.55 **neither describes the
+ * replaceable active projection — and since v0.2.0 **neither describes the
  * other**. Each carries a complete, independently loadable record of what it
  * holds, and the `_seq` numbers are what let a caller line them up when it
  * actually wants to (forking, integrity checks). Deleting, archiving, or
@@ -185,7 +186,7 @@ function tryParseLine(line: string): unknown {
   }
 }
 
-/* ── message sequence numbers (v0.1.55+) ───────────────────────────────────
+/* ── message sequence numbers (v0.2.0+) ───────────────────────────────────
  *
  * Every real conversation message is stamped with a monotonic, session-scoped
  * `seq` at the moment it is first persisted, and both files carry that same
@@ -220,7 +221,7 @@ interface SessionEntry {
   message: ProviderMessage;
 }
 
-/** Type guard for a v0.1.55+ seq-stamped message line. */
+/** Type guard for a v0.2.0+ seq-stamped message line. */
 function isEntryLine(value: unknown): value is { [SEQ_KEY]: number; [MSG_KEY]: ProviderMessage } {
   if (!value || typeof value !== "object") return false;
   const obj = value as Record<string, unknown>;
@@ -253,7 +254,7 @@ function seqOf(message: ProviderMessage): number | undefined {
   return seqRegistry.get(message);
 }
 
-/** Render entries as JSONL line objects in the v0.1.55+ envelope. Sentinels
+/** Render entries as JSONL line objects in the v0.2.0+ envelope. Sentinels
  *  (no seq) are written bare so the format stays lossless both ways. */
 function entriesToLines(entries: readonly SessionEntry[]): unknown[] {
   return entries.map((e) =>
@@ -334,7 +335,6 @@ function readMessagesFromPath(path: string): ProviderMessage[] | null {
  * messages. Use `loadMaestroSessionMeta` for the meta payload.
  */
 export function loadMaestroSession(sessionId: string): ProviderMessage[] | null {
-  migrateMaestroSessionSeq(sessionId);
   const activePath = maestroActiveSessionPath(sessionId);
   if (existsSync(activePath)) {
     const active = readMessagesFromPath(activePath);
@@ -662,7 +662,7 @@ export function saveMaestroSessionSplit(
   // Number the new turns BEFORE either file is built, so the projection and the
   // raw append agree on every message's identity without either one having to
   // look at the other.
-  assignSeqs(canonical);
+  assignSeqs(canonical, priorSet);
   const rawDelta = collectNewRawMessages(canonical, priorSet);
   const projection = buildActiveProjection(canonical, opts?.headProtect ?? 2);
   // Projection first, raw second. Both writes are individually durable, so the
@@ -688,7 +688,10 @@ export function saveMaestroSessionSplit(
  * next compaction. Leaving them unnumbered is what lets a reader walk a
  * projection and separate head / sentinels / tail from the file alone.
  */
-function assignSeqs(canonical: readonly ProviderMessage[]): void {
+function assignSeqs(
+  canonical: readonly ProviderMessage[],
+  priorSet: ReadonlySet<ProviderMessage>,
+): void {
   let next = -1;
   for (const message of canonical) {
     const seq = seqOf(message);
@@ -697,6 +700,13 @@ function assignSeqs(canonical: readonly ProviderMessage[]): void {
   for (let i = 0; i < canonical.length; i++) {
     const message = canonical[i];
     if (seqOf(message) !== undefined) continue;
+    // Already persisted, just without a number — a pre-0.2.0 file. Numbering it
+    // here would only stamp the copy in the projection: raw is append-only and
+    // still holds it bare, so the two files would then disagree about which
+    // message a given seq means and a fork would cut the head in the wrong
+    // place. Leave it unnumbered; unnumbered entries are always kept by the
+    // fork slicer, and the session degrades to a raw-only fork instead.
+    if (priorSet.has(message)) continue;
     if (isCompactionSentinelAt(canonical, i)) continue;
     next += 1;
     rememberSeq(message, next);
@@ -791,7 +801,7 @@ export interface ForkSessionAtResult {
    *  smaller than `messageIndex` when the slice ended on an orphan turn. */
   messagesWritten: number;
   /**
-   * v0.1.55+: true when the parent's compacted active projection was carried
+   * v0.2.0+: true when the parent's compacted active projection was carried
    * over (cut at the branch point) instead of the fork falling back to the raw
    * history. False for never-compacted parents — where raw *is* the working
    * view, so the fork is already prefix-identical — and for branch points that
@@ -815,7 +825,7 @@ export interface ForkSessionAtResult {
  * the forked prefix as if it were a fresh resume.
  *
  * When the parent has been compacted, the fork also inherits a **cut copy of
- * the parent's active projection** (v0.1.55+) rather than silently reverting to
+ * the parent's active projection** (v0.2.0+) rather than silently reverting to
  * the uncompacted raw log. See `forkActiveProjection` for the mechanics and the
  * cases where inheritance is skipped. The fork additionally carries over the
  * parent's `activeDeferredTools`: promoted tool schemas sit in front of the
@@ -831,9 +841,6 @@ export function forkSessionAt(opts: ForkSessionAtOptions): ForkSessionAtResult {
   if (opts.messageIndex < 0) {
     throw new Error(`forkSessionAt: messageIndex must be >= 0, got ${opts.messageIndex}`);
   }
-  // A pre-v0.1.55 parent has no seqs to cut on; upgrade it first so legacy
-  // sessions fork just as well as new ones.
-  migrateMaestroSessionSeq(opts.parentSessionId);
   // Fork against the full-fidelity raw history so `messageIndex` addresses the
   // complete conversation, not the compacted active projection (which would
   // shift indices once a session has been compacted).
@@ -1025,123 +1032,6 @@ export function checkMaestroSessionIntegrity(sessionId: string): MaestroSessionI
   out.activeLastSeq = maxSeq(activeEntries);
   for (const e of activeEntries) {
     if (e.seq !== undefined && !rawSeqs.has(e.seq)) out.missingFromRaw.push(e.seq);
-  }
-  return out;
-}
-
-/* ── legacy migration ──────────────────────────────────────────────────── */
-
-/**
- * Upgrade a session written by SDK <= 0.1.54 to seq-stamped lines. Idempotent
- * and safe to call on every load: sessions already carrying seqs return
- * immediately after one header-free scan of the raw file.
- *
- * Raw is trivial — it is append-only, so ordinal position *is* the sequence
- * number, and rewriting it with those numbers preserves the content verbatim.
- * (This one rewrite is a deliberate exception to the append-only rule: no
- * message is added, removed, or reordered.)
- *
- * The projection is the interesting half. Old projections recorded nothing
- * about which raw messages they held, so the numbers have to be recovered from
- * the content: `buildActiveProjection` copies the protected head off the front
- * of the history and the tail off the back, verbatim, so the projection's
- * leading messages are a prefix of raw and its trailing messages are a suffix
- * of raw. Matching from both ends recovers each surviving message's ordinal;
- * anything left in the middle is the marker/summary pair and stays unnumbered.
- *
- * A projection that fails to match (hand-edited, corrupt, or written by a
- * compressor with different head/tail semantics) is left alone — it still loads
- * fine, it just won't contribute cache-preserving forks until the next
- * compaction rewrites it with fresh seqs.
- */
-export function migrateMaestroSessionSeq(sessionId: string): boolean {
-  const rawPath = maestroSessionPath(sessionId);
-  const rawEntries = readEntriesFromPath(rawPath);
-  if (rawEntries === null || rawEntries.length === 0) return false;
-  if (rawEntries.every((e) => e.seq !== undefined)) return false;
-
-  const numberedRaw: SessionEntry[] = rawEntries.map((e, seq) => ({ seq, message: e.message }));
-  const rawMeta = readMetaFromPath(rawPath);
-  writeJsonlFile(
-    rawPath,
-    rawMeta
-      ? [{ [META_KEY]: rawMeta }, ...entriesToLines(numberedRaw)]
-      : entriesToLines(numberedRaw),
-  );
-
-  const activePath = maestroActiveSessionPath(sessionId);
-  const activeEntries = readEntriesFromPath(activePath);
-  if (activeEntries !== null && activeEntries.length > 0) {
-    const numberedActive = numberProjectionByContent(activeEntries, numberedRaw);
-    if (numberedActive) {
-      const activeMeta = readMetaFromPath(activePath);
-      writeJsonlFile(
-        activePath,
-        activeMeta
-          ? [{ [META_KEY]: activeMeta }, ...entriesToLines(numberedActive)]
-          : entriesToLines(numberedActive),
-      );
-    } else {
-      logger.warn(
-        { sessionId },
-        "migrateMaestroSessionSeq: could not match projection to raw, left unnumbered",
-      );
-    }
-  }
-  logger.info(
-    { sessionId, messages: numberedRaw.length },
-    "migrateMaestroSessionSeq: upgraded to seq-stamped lines",
-  );
-  return true;
-}
-
-/**
- * Recover seqs for a legacy projection by matching its head against raw's
- * prefix and its tail against raw's suffix. Returns null when the two ends
- * overlap (they would have to disagree about the same message) or when the
- * unmatched middle is anything other than the compaction sentinels.
- */
-function numberProjectionByContent(
-  active: readonly SessionEntry[],
-  raw: readonly SessionEntry[],
-): SessionEntry[] | null {
-  const same = (a: ProviderMessage, b: ProviderMessage): boolean =>
-    JSON.stringify(a) === JSON.stringify(b);
-
-  let head = 0;
-  while (
-    head < active.length &&
-    head < raw.length &&
-    same(active[head].message, raw[head].message)
-  ) {
-    head++;
-  }
-  let tail = 0;
-  while (
-    tail < active.length - head &&
-    tail < raw.length - head &&
-    same(active[active.length - 1 - tail].message, raw[raw.length - 1 - tail].message)
-  ) {
-    tail++;
-  }
-  const middle = active.slice(head, active.length - tail);
-  // Whatever the ends didn't claim must be exactly the synthetic pair.
-  const isSentinelPair =
-    middle.length === 2 &&
-    isCompactionMarkerUser(middle[0].message) &&
-    middle[1].message.role === "assistant";
-  const isEmptyFillerPair =
-    middle.length === 3 &&
-    middle[0].message.role === "assistant" &&
-    isCompactionMarkerUser(middle[1].message) &&
-    middle[2].message.role === "assistant";
-  if (!isSentinelPair && !isEmptyFillerPair) return null;
-
-  const out: SessionEntry[] = [];
-  for (let i = 0; i < head; i++) out.push({ seq: i, message: active[i].message });
-  for (const entry of middle) out.push({ message: entry.message });
-  for (let i = tail; i > 0; i--) {
-    out.push({ seq: raw.length - i, message: active[active.length - i].message });
   }
   return out;
 }

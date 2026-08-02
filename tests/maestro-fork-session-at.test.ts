@@ -23,7 +23,6 @@ import {
   loadRawMaestroSession,
   maestroActiveSessionPath,
   maestroSessionPath,
-  migrateMaestroSessionSeq,
   saveMaestroSession,
   saveMaestroSessionSplit,
 } from "@/session-store";
@@ -228,7 +227,7 @@ describe("forkSessionAt", () => {
 });
 
 /**
- * v0.1.55+: forking a **compacted** parent must carry the active projection
+ * v0.2.0+: forking a **compacted** parent must carry the active projection
  * over, cut at the branch point, so the fork's first prompt is a byte-identical
  * prefix of the parent's and hits the provider's automatic prefix cache.
  * Before this, a fork silently reverted to the uncompacted raw log — a
@@ -379,7 +378,7 @@ describe("forkSessionAt — compacted parent", () => {
     expect(loaded.some((m) => m.role === "user" && m.content === COMPACTION_MARKER)).toBe(false);
   });
 
-  /** Rewrite both files in the pre-v0.1.55 shape: bare message lines, and a
+  /** Rewrite both files in the pre-v0.2.0 shape: bare message lines, and a
    *  header carrying the old raw-coupled fields. */
   function downgradeToLegacy(sessionId: string): void {
     for (const path of [maestroSessionPath(sessionId), maestroActiveSessionPath(sessionId)]) {
@@ -400,42 +399,49 @@ describe("forkSessionAt — compacted parent", () => {
     }
   }
 
-  test("migrates a pre-v0.1.55 session and forks it with the projection intact", () => {
-    const { sessionId, rawLength, tailLength } = seedCompactedParent();
+  test("a pre-v0.2.0 session keeps loading and forks without the projection", () => {
+    const { sessionId, rawLength } = seedCompactedParent();
     const activeBefore = parentActive(sessionId);
     downgradeToLegacy(sessionId);
+
+    // Still loads, unchanged — no migration runs, nothing is rewritten.
+    expect(parentActive(sessionId)).toEqual(activeBefore);
+    expect(readFileSync(maestroSessionPath(sessionId), "utf8")).not.toContain('"_seq"');
 
     const result = forkSessionAt({ parentSessionId: sessionId, messageIndex: rawLength });
     track(result.sessionId);
 
-    // Migration recovered the numbering by matching the projection's head and
-    // tail against raw, so a legacy session forks as well as a fresh one.
-    expect(result.activeProjectionForked).toBe(true);
-    expect(loadMaestroSession(result.sessionId)).toEqual(activeBefore);
-    // The parent was upgraded in place, content unchanged.
-    expect(loadRawMaestroSession(sessionId)).toHaveLength(rawLength);
-    expect(parentActive(sessionId)).toEqual(activeBefore);
-    const raw = seqLines(maestroSessionPath(sessionId));
-    expect(raw.map((e) => e.seq)).toEqual([...Array(rawLength).keys()]);
-    expect(
-      seqLines(maestroActiveSessionPath(sessionId))
-        .filter((e) => e.seq !== undefined)
-        .slice(-tailLength)
-        .map((e) => e.seq),
-    ).toEqual([...Array(tailLength).keys()].map((j) => rawLength - tailLength + j));
+    // No seqs to cut on, so the branch falls back to the raw history rather
+    // than guessing at an alignment.
+    expect(result.activeProjectionForked).toBe(false);
+    expect(loadMaestroSession(result.sessionId)).toHaveLength(rawLength);
+    expect(readFileSync(maestroSessionPath(sessionId), "utf8")).not.toContain('"_seq"');
   });
 
-  test("migration is idempotent and leaves already-numbered files untouched", () => {
+  test("a resumed pre-v0.2.0 session never renumbers messages raw still holds bare", () => {
     const { sessionId } = seedCompactedParent();
-    const before = [maestroSessionPath(sessionId), maestroActiveSessionPath(sessionId)].map((p) =>
-      readFileSync(p, "utf8"),
-    );
-    expect(migrateMaestroSessionSeq(sessionId)).toBe(false);
-    expect(
-      [maestroSessionPath(sessionId), maestroActiveSessionPath(sessionId)].map((p) =>
-        readFileSync(p, "utf8"),
-      ),
-    ).toEqual(before);
+    downgradeToLegacy(sessionId);
+
+    // Take a turn on the legacy session, exactly as the loop would.
+    const prior = loadMaestroSession(sessionId) as ProviderMessage[];
+    const nu: ProviderMessage = { role: "user", content: "after upgrade" };
+    const na: ProviderMessage = {
+      role: "assistant",
+      content: [{ type: "text", text: "reply" }],
+    };
+    saveMaestroSessionSplit(sessionId, [...prior, nu, na], prior, { meta: { cwd: tmpCwd } });
+
+    // Only the genuinely new turns get numbered. Numbering the restored ones
+    // would stamp the projection's copies while raw kept them bare, and the
+    // two files would then disagree about what a given seq means.
+    const active = seqLines(maestroActiveSessionPath(sessionId));
+    const numbered = active.filter((e) => e.seq !== undefined);
+    expect(numbered.map((e) => e.message)).toEqual([nu, na]);
+    const raw = seqLines(maestroSessionPath(sessionId));
+    expect(raw.filter((e) => e.seq !== undefined).map((e) => e.message)).toEqual([nu, na]);
+    // Whatever a seq means, it means the same thing in both files.
+    const rawBySeq = new Map(raw.filter((e) => e.seq !== undefined).map((e) => [e.seq, e.message]));
+    for (const e of numbered) expect(e.message).toEqual(rawBySeq.get(e.seq));
   });
 
   test("a never-compacted parent forks raw-only, as before", () => {

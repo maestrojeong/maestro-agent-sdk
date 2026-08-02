@@ -1,6 +1,9 @@
 # Changelog
 
-## [0.1.55] - 2026-08-03
+## [0.2.0] - 2026-08-03
+
+Breaking: the on-disk session format changed and there is no migration. See
+"Migration" below.
 
 ### Changed
 - **Session files are now standalone.** The append-only raw log and the
@@ -12,8 +15,7 @@
 - Persisted message lines carry a session-scoped sequence number:
   `{"_seq": N, "m": <message>}`. Both files record the same number for the same
   message, which is what lets callers line them up when they want to — forking,
-  integrity checks — instead of one file encoding the other's layout. Legacy
-  bare-message lines still load.
+  integrity checks — instead of one file encoding the other's layout.
 - The split writer commits the projection **before** appending to raw. A crash
   between the two can now only leave the archive a turn short, never the working
   view, which is what the removed `rawFileSize` checkpoint existed to detect.
@@ -31,12 +33,24 @@
   summary covers turns that exist only on the abandoned timeline, so inheriting
   it would leak them into the new branch.
 
+### Migration
+
+None. Sessions written by 0.1.x keep loading and can be resumed indefinitely —
+bare message lines are still parsed — but their existing messages stay
+unnumbered, and only turns added after the upgrade get sequence numbers. The
+consequence is limited to one feature: forking a session that was already
+compacted before the upgrade falls back to the raw history instead of
+inheriting the projection, so that first branch misses the prefix cache.
+Everything else behaves identically.
+
+An in-place upgrade was implemented and then dropped on purpose. Numbering raw
+by position is trivial, but an old projection records nothing about which raw
+messages it holds, so its numbers can only be guessed by matching its head and
+tail against raw — which re-introduces a dependency on `buildActiveProjection`'s
+internals, precisely the kind of implicit coupling this release removes. Paying
+that permanently to spare existing sessions a single cold fork was not worth it.
+
 ### Added
-- `migrateMaestroSessionSeq` upgrades a pre-0.1.55 session in place, and runs
-  automatically on load and on fork. Raw is numbered by position (it is
-  append-only, so position is the sequence number); an existing projection
-  recovers its numbers by matching its head and tail against raw, so legacy
-  compacted sessions fork with the projection intact rather than degrading.
 - `checkMaestroSessionIntegrity` compares the two files on demand and reports
   any messages the archive is missing. This replaces the implicit cross-file
   check that used to run on every read.

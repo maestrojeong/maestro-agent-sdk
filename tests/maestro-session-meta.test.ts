@@ -60,7 +60,7 @@ describe("v0.1.5 rollout meta header — save / load round-trip", () => {
     saveMaestroSession(sid, [{ role: "user", content: "hi" }]);
     const lines = readLines(sid);
     expect(lines).toHaveLength(1);
-    // v0.1.55+: message lines are seq-stamped envelopes, `{_seq, m}`.
+    // v0.2.0+: message lines are seq-stamped envelopes, `{_seq, m}`.
     const parsed = JSON.parse(lines[0]);
     expect(parsed._seq).toBe(0);
     expect(parsed.m.role).toBe("user");

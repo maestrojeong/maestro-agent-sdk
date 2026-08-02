@@ -167,7 +167,7 @@ describe("maestro session store (save / load round-trip)", () => {
   });
 
   /**
-   * v0.1.55 moved the projection write ahead of the raw append, which changes
+   * v0.2.0 moved the projection write ahead of the raw append, which changes
    * which side a crash between them can damage. It can no longer strand the
    * working view behind the archive (the old `rawFileSize` checkpoint existed
    * to detect exactly that); it can only leave the archive a turn short. The
