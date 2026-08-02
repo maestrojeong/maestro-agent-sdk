@@ -3,25 +3,48 @@
 ## [0.1.55] - 2026-08-03
 
 ### Changed
-- `forkSessionAt` now carries a compacted parent's active projection over to
-  the fork, cut at the branch point, instead of leaving the fork to resume from
-  the uncompacted raw log. The fork's prompt is therefore a byte-identical
-  prefix of the parent's and hits the provider's automatic prefix cache, and
-  the branch keeps the parent's compacted context size rather than expanding
-  back to the full history. The active projection's `_meta` records the
-  `activeTailRawIndex` / `activeTailStart` mapping this relies on; projections
-  written by earlier versions have no mapping and degrade to the previous
-  raw-only fork behaviour.
-- Forks inherit the parent's `activeDeferredTools`. Promoted tool schemas
-  render ahead of the message list, so a fork starting with an empty active set
-  broke prefix reuse at the very first token regardless of message alignment.
+- **Session files are now standalone.** The append-only raw log and the
+  compacted active projection no longer reference each other. Previously the
+  projection recorded raw's byte length (`rawFileSize`) and was discarded on any
+  mismatch, so it could not be read or trusted without raw being present and
+  unchanged. Each file now carries a complete, independently loadable record of
+  its own contents, and a session resumes correctly with the raw log deleted.
+- Persisted message lines carry a session-scoped sequence number:
+  `{"_seq": N, "m": <message>}`. Both files record the same number for the same
+  message, which is what lets callers line them up when they want to — forking,
+  integrity checks — instead of one file encoding the other's layout. Legacy
+  bare-message lines still load.
+- The split writer commits the projection **before** appending to raw. A crash
+  between the two can now only leave the archive a turn short, never the working
+  view, which is what the removed `rawFileSize` checkpoint existed to detect.
+- `forkSessionAt` carries a compacted parent's active projection over to the
+  fork, cut at the branch point, instead of leaving the fork to resume from the
+  uncompacted raw log. The fork's prompt is therefore a byte-identical prefix of
+  the parent's and hits the provider's automatic prefix cache, and the branch
+  keeps the parent's compacted context size rather than expanding back to the
+  full history. The cut is expressed as a sequence number, so each file slices
+  itself without consulting the other.
+- Forks inherit the parent's `activeDeferredTools`. Promoted tool schemas render
+  ahead of the message list, so a fork starting with an empty active set broke
+  prefix reuse at the very first token regardless of message alignment.
 - Branch points that land inside the summarized middle still fork raw-only: the
   summary covers turns that exist only on the abandoned timeline, so inheriting
   it would leak them into the new branch.
 
 ### Added
+- `migrateMaestroSessionSeq` upgrades a pre-0.1.55 session in place, and runs
+  automatically on load and on fork. Raw is numbered by position (it is
+  append-only, so position is the sequence number); an existing projection
+  recovers its numbers by matching its head and tail against raw, so legacy
+  compacted sessions fork with the projection intact rather than degrading.
+- `checkMaestroSessionIntegrity` compares the two files on demand and reports
+  any messages the archive is missing. This replaces the implicit cross-file
+  check that used to run on every read.
 - `ForkSessionAtResult.activeProjectionForked` reports whether the projection
   was inherited or the fork fell back to raw.
+
+### Removed
+- `MaestroSessionMeta.rawFileSize`. Headers no longer describe the other file.
 
 ## [0.1.54] - 2026-08-03
 

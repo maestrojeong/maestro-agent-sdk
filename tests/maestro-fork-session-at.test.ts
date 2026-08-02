@@ -1,11 +1,20 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { COMPACTION_MARKER } from "@/memory/compressor";
 import type { ProviderMessage } from "@/providers/base";
 import {
+  checkMaestroSessionIntegrity,
   deleteMaestroSession,
   forkSessionAt,
   hasActiveMaestroSession,
@@ -14,6 +23,7 @@ import {
   loadRawMaestroSession,
   maestroActiveSessionPath,
   maestroSessionPath,
+  migrateMaestroSessionSeq,
   saveMaestroSession,
   saveMaestroSessionSplit,
 } from "@/session-store";
@@ -264,29 +274,58 @@ describe("forkSessionAt — compacted parent", () => {
     return loadMaestroSession(sessionId) as ProviderMessage[];
   }
 
-  test("the projection header records a raw↔active mapping that actually holds", () => {
+  /** Every seq-stamped line of a file, as `{seq, message}`. */
+  function seqLines(path: string): { seq?: number; message: ProviderMessage }[] {
+    return readFileSync(path, "utf8")
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((l) => JSON.parse(l))
+      .filter((o) => o._meta === undefined)
+      .map((o) => (typeof o._seq === "number" ? { seq: o._seq, message: o.m } : { message: o }));
+  }
+
+  test("both files record the same seq for the same message", () => {
     const { sessionId, rawLength, tailLength } = seedCompactedParent();
-    const meta = loadMaestroSessionMeta(sessionId);
-    const active = parentActive(sessionId);
-    const raw = loadRawMaestroSession(sessionId) as ProviderMessage[];
+    const raw = seqLines(maestroSessionPath(sessionId));
+    const active = seqLines(maestroActiveSessionPath(sessionId));
 
     expect(raw).toHaveLength(rawLength);
-    expect(meta?.activeTailRawIndex).toBe(rawLength - tailLength);
-    expect(meta?.activeTailStart).toBe(active.length - tailLength);
-    // The invariant the fork slicing depends on.
-    for (let j = 0; j < tailLength; j++) {
-      expect(active[(meta?.activeTailStart as number) + j]).toEqual(
-        raw[(meta?.activeTailRawIndex as number) + j],
-      );
+    expect(raw.map((e) => e.seq)).toEqual([...Array(rawLength).keys()]);
+
+    // Sentinels are unnumbered — that absence is what separates head from tail.
+    const sentinels = active.filter((e) => e.seq === undefined);
+    expect(sentinels.map((e) => e.message.content)).toContain(COMPACTION_MARKER);
+
+    // Every numbered projection entry matches the raw entry with the same seq.
+    const rawBySeq = new Map(raw.map((e) => [e.seq, e.message]));
+    const numbered = active.filter((e) => e.seq !== undefined);
+    expect(numbered.length).toBeGreaterThan(0);
+    for (const entry of numbered) {
+      expect(entry.message).toEqual(rawBySeq.get(entry.seq));
+    }
+    // …including the whole tail, which is what a fork slices on.
+    expect(numbered.slice(-tailLength).map((e) => e.seq)).toEqual(
+      [...Array(tailLength).keys()].map((j) => rawLength - tailLength + j),
+    );
+  });
+
+  test("neither header describes the other file", () => {
+    const { sessionId } = seedCompactedParent();
+    for (const path of [maestroSessionPath(sessionId), maestroActiveSessionPath(sessionId)]) {
+      const meta = JSON.parse(readFileSync(path, "utf8").split("\n")[0])._meta;
+      // v0.1.52-0.1.54 leaked raw's byte length / raw offsets into the header.
+      expect(meta.rawFileSize).toBeUndefined();
+      expect(meta.activeTailRawIndex).toBeUndefined();
+      expect(meta.activeTailStart).toBeUndefined();
     }
   });
 
-  test("the raw log's own header never carries the mapping", () => {
+  test("the projection is usable with the raw log deleted", () => {
     const { sessionId } = seedCompactedParent();
-    const rawLine = readFileSync(maestroSessionPath(sessionId), "utf8").split("\n")[0];
-    const rawMeta = JSON.parse(rawLine)._meta;
-    expect(rawMeta.activeTailRawIndex).toBeUndefined();
-    expect(rawMeta.activeTailStart).toBeUndefined();
+    const before = parentActive(sessionId);
+    unlinkSync(maestroSessionPath(sessionId));
+    expect(loadMaestroSession(sessionId)).toEqual(before);
   });
 
   test("forking at the parent's full length reproduces the projection verbatim", () => {
@@ -340,23 +379,63 @@ describe("forkSessionAt — compacted parent", () => {
     expect(loaded.some((m) => m.role === "user" && m.content === COMPACTION_MARKER)).toBe(false);
   });
 
-  test("a pre-v0.1.55 projection with no mapping degrades to a raw-only fork", () => {
-    const { sessionId, rawLength } = seedCompactedParent();
-    // Strip the mapping the way an older SDK would have left the file.
-    const activePath = maestroActiveSessionPath(sessionId);
-    const lines = readFileSync(activePath, "utf8").split("\n");
-    const parsed = JSON.parse(lines[0]);
-    delete parsed._meta.activeTailRawIndex;
-    delete parsed._meta.activeTailStart;
-    lines[0] = JSON.stringify(parsed);
-    writeFileSync(activePath, lines.join("\n"));
+  /** Rewrite both files in the pre-v0.1.55 shape: bare message lines, and a
+   *  header carrying the old raw-coupled fields. */
+  function downgradeToLegacy(sessionId: string): void {
+    for (const path of [maestroSessionPath(sessionId), maestroActiveSessionPath(sessionId)]) {
+      if (!existsSync(path)) continue;
+      const out = readFileSync(path, "utf8")
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => {
+          const parsed = JSON.parse(line);
+          if (parsed._meta !== undefined) {
+            parsed._meta.rawFileSize = statSync(maestroSessionPath(sessionId)).size;
+            return JSON.stringify(parsed);
+          }
+          return JSON.stringify(typeof parsed._seq === "number" ? parsed.m : parsed);
+        });
+      writeFileSync(path, `${out.join("\n")}\n`);
+    }
+  }
+
+  test("migrates a pre-v0.1.55 session and forks it with the projection intact", () => {
+    const { sessionId, rawLength, tailLength } = seedCompactedParent();
+    const activeBefore = parentActive(sessionId);
+    downgradeToLegacy(sessionId);
 
     const result = forkSessionAt({ parentSessionId: sessionId, messageIndex: rawLength });
     track(result.sessionId);
 
-    expect(result.activeProjectionForked).toBe(false);
-    expect(hasActiveMaestroSession(result.sessionId)).toBe(false);
-    expect(loadMaestroSession(result.sessionId)).toHaveLength(rawLength);
+    // Migration recovered the numbering by matching the projection's head and
+    // tail against raw, so a legacy session forks as well as a fresh one.
+    expect(result.activeProjectionForked).toBe(true);
+    expect(loadMaestroSession(result.sessionId)).toEqual(activeBefore);
+    // The parent was upgraded in place, content unchanged.
+    expect(loadRawMaestroSession(sessionId)).toHaveLength(rawLength);
+    expect(parentActive(sessionId)).toEqual(activeBefore);
+    const raw = seqLines(maestroSessionPath(sessionId));
+    expect(raw.map((e) => e.seq)).toEqual([...Array(rawLength).keys()]);
+    expect(
+      seqLines(maestroActiveSessionPath(sessionId))
+        .filter((e) => e.seq !== undefined)
+        .slice(-tailLength)
+        .map((e) => e.seq),
+    ).toEqual([...Array(tailLength).keys()].map((j) => rawLength - tailLength + j));
+  });
+
+  test("migration is idempotent and leaves already-numbered files untouched", () => {
+    const { sessionId } = seedCompactedParent();
+    const before = [maestroSessionPath(sessionId), maestroActiveSessionPath(sessionId)].map((p) =>
+      readFileSync(p, "utf8"),
+    );
+    expect(migrateMaestroSessionSeq(sessionId)).toBe(false);
+    expect(
+      [maestroSessionPath(sessionId), maestroActiveSessionPath(sessionId)].map((p) =>
+        readFileSync(p, "utf8"),
+      ),
+    ).toEqual(before);
   });
 
   test("a never-compacted parent forks raw-only, as before", () => {
@@ -368,6 +447,36 @@ describe("forkSessionAt — compacted parent", () => {
     track(result.sessionId);
     expect(result.activeProjectionForked).toBe(false);
     expect(hasActiveMaestroSession(result.sessionId)).toBe(false);
+  });
+
+  test("a forked branch keeps numbering where the parent left off", () => {
+    const { sessionId, rawLength } = seedCompactedParent();
+    const result = forkSessionAt({ parentSessionId: sessionId, messageIndex: rawLength });
+    track(result.sessionId);
+
+    // Take a turn on the branch exactly as the agent loop would.
+    const forkPrior = loadMaestroSession(result.sessionId) as ProviderMessage[];
+    const nu: ProviderMessage = { role: "user", content: "branch question" };
+    const na: ProviderMessage = {
+      role: "assistant",
+      content: [{ type: "text", text: "branch answer" }],
+    };
+    saveMaestroSessionSplit(result.sessionId, [...forkPrior, nu, na], forkPrior, {
+      meta: { cwd: tmpCwd },
+    });
+
+    // Seqs continue from the branch point with no gap and no reuse.
+    expect(seqLines(maestroSessionPath(result.sessionId)).map((e) => e.seq)).toEqual([
+      ...Array(rawLength + 2).keys(),
+    ]);
+    // The branch stays compacted rather than reverting to the full history.
+    const active = loadMaestroSession(result.sessionId) as ProviderMessage[];
+    expect(active.some((m) => m.role === "user" && m.content === COMPACTION_MARKER)).toBe(true);
+    expect(active.slice(-2)).toEqual([nu, na]);
+    expect(active.length).toBeLessThan(rawLength + 2);
+    // Two replicas, no divergence; parent untouched.
+    expect(checkMaestroSessionIntegrity(result.sessionId).missingFromRaw).toEqual([]);
+    expect(loadRawMaestroSession(sessionId)).toHaveLength(rawLength);
   });
 
   test("the fork inherits activeDeferredTools so the tool prefix still matches", () => {

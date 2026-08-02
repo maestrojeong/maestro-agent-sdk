@@ -20,11 +20,21 @@
  *              and any host-supplied `metadata`). Optional — files written by
  *              older SDK versions skip this line, and the loader treats them
  *              as meta-less without error.
- *   line 2…N — ProviderMessage per line (one user/assistant turn each).
+ *   line 2…N — `{"_seq": N, "m": <ProviderMessage>}`, one user/assistant turn
+ *              each. Pre-v0.1.55 files store the bare message with no envelope;
+ *              both forms load, and `migrateMaestroSessionSeq` upgrades the old
+ *              one in place.
  *
  * The meta header lets a future per-cwd indexer / forensic sweep recover
  * locality without changing the on-disk directory structure (flat
  * `<sessionId>.jsonl` stays). Hosts that don't care can ignore it.
+ *
+ * A compacted session is stored as two files — the append-only raw log and the
+ * replaceable active projection — and since v0.1.55 **neither describes the
+ * other**. Each carries a complete, independently loadable record of what it
+ * holds, and the `_seq` numbers are what let a caller line them up when it
+ * actually wants to (forking, integrity checks). Deleting, archiving, or
+ * rewriting one leaves the other fully usable.
  *
  * Two writer paths share the same file format:
  *   - `saveMaestroSession` — verbatim dump from the live loop.
@@ -153,36 +163,6 @@ export interface MaestroSessionMeta {
    * to keep the line short for callers that don't use `enableToolSearch`.
    */
   activeDeferredTools?: string[];
-  /**
-   * v0.1.52+: byte length of the append-only raw file when this active
-   * projection was committed. Detects a crash after the raw append but before
-   * the active atomic rename, so resume can fall back to the newer raw log.
-   */
-  rawFileSize?: number;
-  /**
-   * v0.1.55+: index into the **raw** log of the first message of this active
-   * projection's post-compaction tail.
-   *
-   * Together with `activeTailStart` it pins the linear mapping
-   * `active[activeTailStart + j] === raw[activeTailRawIndex + j]`, which holds
-   * because `buildActiveProjection` copies the tail verbatim out of the same
-   * messages the raw log appended. `forkSessionAt` uses it to cut the parent's
-   * active projection at the branch point, so the fork's first request shares a
-   * byte-identical prompt prefix with the parent and hits the provider's
-   * automatic prefix cache instead of re-reading an uncompacted raw history.
-   *
-   * Only ever written to the active projection's header, never to raw's.
-   * Absent on projections written by SDK <= 0.1.54 — readers must treat a
-   * missing value as "mapping unknown" and fall back to raw.
-   */
-  activeTailRawIndex?: number;
-  /**
-   * v0.1.55+: index into this active projection of the first tail message —
-   * i.e. the offset just past the protected head, the optional filler
-   * assistant, and the compaction marker/summary pair. See
-   * `activeTailRawIndex` for the invariant these two fields encode.
-   */
-  activeTailStart?: number;
 }
 
 /** Discriminator key — the first line of a v0.1.5+ rollout starts with this. */
@@ -205,6 +185,99 @@ function tryParseLine(line: string): unknown {
   }
 }
 
+/* ── message sequence numbers (v0.1.55+) ───────────────────────────────────
+ *
+ * Every real conversation message is stamped with a monotonic, session-scoped
+ * `seq` at the moment it is first persisted, and both files carry that same
+ * number for the same message:
+ *
+ *   {"_seq": 41, "m": {"role": "user", "content": "…"}}
+ *
+ * This is what makes the raw log and the active projection **standalone**.
+ * Before seq numbers the projection identified its contents by position in the
+ * raw file (`activeTailRawIndex`) and validated itself by stat'ing raw's byte
+ * length (`rawFileSize`) — so the projection could not be read, cut, or trusted
+ * without the other file being present and byte-for-byte unchanged. Now each
+ * file is self-describing: a message's identity travels inside the line, the
+ * same way two replicas of a table share primary keys rather than row offsets.
+ *
+ * The compaction marker/summary sentinels are synthetic — they exist only in
+ * the projection and never in raw — so they carry no seq. That absence is
+ * meaningful and is what lets the fork slicer walk a projection and tell head,
+ * sentinels, and tail apart without consulting anything external.
+ *
+ * Legacy lines (bare messages, no envelope) still parse; `migrateSessionSeq`
+ * upgrades them in place.
+ */
+
+const SEQ_KEY = "_seq";
+const MSG_KEY = "m";
+
+/** One persisted line: a message plus its sequence number (absent = synthetic
+ *  compaction sentinel, or a legacy line not yet migrated). */
+interface SessionEntry {
+  seq?: number;
+  message: ProviderMessage;
+}
+
+/** Type guard for a v0.1.55+ seq-stamped message line. */
+function isEntryLine(value: unknown): value is { [SEQ_KEY]: number; [MSG_KEY]: ProviderMessage } {
+  if (!value || typeof value !== "object") return false;
+  const obj = value as Record<string, unknown>;
+  return (
+    typeof obj[SEQ_KEY] === "number" && Boolean(obj[MSG_KEY]) && typeof obj[MSG_KEY] === "object"
+  );
+}
+
+/**
+ * Seq of each message object currently live in this process.
+ *
+ * The writer needs to know which seq a message already owns so it doesn't
+ * re-number history on every save, but `ProviderMessage` is handed verbatim to
+ * providers — stamping the number onto the object itself would leak it into
+ * request bodies. A WeakMap keyed by object identity keeps it out of band.
+ *
+ * Object identity is already the contract the split writer relies on
+ * (`collectNewRawMessages` diffs by reference against the array the loader
+ * returned), so this adds no new assumption. Entries die with the messages.
+ */
+const seqRegistry = new WeakMap<ProviderMessage, number>();
+
+function rememberSeq(message: ProviderMessage, seq: number): void {
+  seqRegistry.set(message, seq);
+}
+
+/** Seq previously assigned to this message object, or undefined if it is new
+ *  to this process (freshly generated turn, or a legacy line). */
+function seqOf(message: ProviderMessage): number | undefined {
+  return seqRegistry.get(message);
+}
+
+/** Render entries as JSONL line objects in the v0.1.55+ envelope. Sentinels
+ *  (no seq) are written bare so the format stays lossless both ways. */
+function entriesToLines(entries: readonly SessionEntry[]): unknown[] {
+  return entries.map((e) =>
+    e.seq === undefined ? e.message : { [SEQ_KEY]: e.seq, [MSG_KEY]: e.message },
+  );
+}
+
+/** Pair messages with whatever seq they already carry in this process. */
+function toEntries(messages: readonly ProviderMessage[]): SessionEntry[] {
+  return messages.map((message) => {
+    const seq = seqOf(message);
+    return seq === undefined ? { message } : { seq, message };
+  });
+}
+
+/** Highest seq among these entries, or -1 when none carry one. */
+function maxSeq(entries: readonly SessionEntry[]): number {
+  let max = -1;
+  for (const e of entries) {
+    if (e.seq !== undefined && e.seq > max) max = e.seq;
+  }
+  return max;
+}
+
 /**
  * Load the persisted ProviderMessage[] for a sessionId, or `null` if no
  * file exists (i.e. this is a fresh session). Malformed lines are skipped
@@ -216,7 +289,7 @@ function tryParseLine(line: string): unknown {
  * carry the meta header on line 1; we skip it here so callers only see real
  * messages. Use `loadMaestroSessionMeta` for the meta payload.
  */
-function readMessagesFromPath(path: string): ProviderMessage[] | null {
+function readEntriesFromPath(path: string): SessionEntry[] | null {
   if (!existsSync(path)) return null;
   try {
     const raw = readFileSync(path, "utf8");
@@ -224,16 +297,28 @@ function readMessagesFromPath(path: string): ProviderMessage[] | null {
     if (lines.length === 0) return [];
     const first = tryParseLine(lines[0]);
     const startIdx = isMetaLine(first) ? 1 : 0;
-    const out: ProviderMessage[] = [];
+    const out: SessionEntry[] = [];
     for (let i = startIdx; i < lines.length; i++) {
       const parsed = tryParseLine(lines[i]);
-      if (parsed !== null) out.push(parsed as ProviderMessage);
+      if (parsed === null) continue;
+      if (isEntryLine(parsed)) {
+        const message = parsed[MSG_KEY];
+        rememberSeq(message, parsed[SEQ_KEY]);
+        out.push({ seq: parsed[SEQ_KEY], message });
+      } else {
+        // Legacy bare line, or a synthetic compaction sentinel.
+        out.push({ message: parsed as ProviderMessage });
+      }
     }
     return out;
   } catch (err) {
-    logger.warn({ err, path }, "readMessagesFromPath: read/parse failed");
+    logger.warn({ err, path }, "readEntriesFromPath: read/parse failed");
     return null;
   }
+}
+
+function readMessagesFromPath(path: string): ProviderMessage[] | null {
+  return readEntriesFromPath(path)?.map((e) => e.message) ?? null;
 }
 
 /**
@@ -249,13 +334,14 @@ function readMessagesFromPath(path: string): ProviderMessage[] | null {
  * messages. Use `loadMaestroSessionMeta` for the meta payload.
  */
 export function loadMaestroSession(sessionId: string): ProviderMessage[] | null {
+  migrateMaestroSessionSeq(sessionId);
   const activePath = maestroActiveSessionPath(sessionId);
   if (existsSync(activePath)) {
     const active = readMessagesFromPath(activePath);
-    if (active !== null && isCurrentActiveProjection(sessionId, active)) return active;
+    if (active !== null && isUsableActiveProjection(active)) return active;
     logger.warn(
       { sessionId, activePath },
-      "loadMaestroSession: invalid or stale active projection, falling back to raw",
+      "loadMaestroSession: unusable active projection, falling back to raw",
     );
   }
   return readMessagesFromPath(maestroSessionPath(sessionId));
@@ -302,7 +388,7 @@ export function loadMaestroSessionMeta(sessionId: string): MaestroSessionMeta | 
   const activePath = maestroActiveSessionPath(sessionId);
   if (existsSync(activePath)) {
     const active = readMessagesFromPath(activePath);
-    if (active !== null && isCurrentActiveProjection(sessionId, active)) {
+    if (active !== null && isUsableActiveProjection(active)) {
       const activeMeta = readMetaFromPath(activePath);
       if (activeMeta) return activeMeta;
     }
@@ -310,21 +396,24 @@ export function loadMaestroSessionMeta(sessionId: string): MaestroSessionMeta | 
   return readMetaFromPath(maestroSessionPath(sessionId));
 }
 
-function isCurrentActiveProjection(sessionId: string, messages: ProviderMessage[]): boolean {
-  // A valid active projection always contains its marker + non-empty summary
-  // pair. Empty/meta-only or partially-written projections must not hide raw.
-  if (findLastCompactionSummary(messages) === undefined) return false;
-  const checkpoint = readMetaFromPath(maestroActiveSessionPath(sessionId))?.rawFileSize;
-  if (checkpoint === undefined) return true;
-  try {
-    return statSync(maestroSessionPath(sessionId)).size === checkpoint;
-  } catch (err) {
-    // If raw is missing, active is still the only recoverable conversation.
-    if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") {
-      logger.warn({ err, sessionId }, "isCurrentActiveProjection: raw stat failed");
-    }
-    return true;
-  }
+/**
+ * Whether a projection can be used as the working view — judged purely on its
+ * own contents.
+ *
+ * A real projection always carries its marker + non-empty summary pair; an
+ * empty, meta-only, or half-written file does not, and must not be allowed to
+ * hide the raw log. That is the entire test.
+ *
+ * v0.1.52-0.1.54 additionally compared the projection's recorded `rawFileSize`
+ * against the raw file's current byte length and rejected the projection on any
+ * mismatch. That coupling is gone: the writers now commit the projection
+ * *before* appending to raw, so a crash between the two can only leave the
+ * archive a turn short — never the working view — and there is nothing for the
+ * read path to reconcile. Callers who want to audit the two replicas against
+ * each other can call `checkMaestroSessionIntegrity` explicitly.
+ */
+function isUsableActiveProjection(messages: ProviderMessage[]): boolean {
+  return findLastCompactionSummary(messages) !== undefined;
 }
 
 /**
@@ -345,11 +434,6 @@ export interface SaveSessionMetaInput {
   /** v0.1.22+: see `MaestroSessionMeta.activeDeferredTools`. Passed by
    *  `maestroProvider` on every save when `enableToolSearch` is on. */
   activeDeferredTools?: string[];
-  /** v0.1.55+: see `MaestroSessionMeta.activeTailRawIndex`. Only meaningful on
-   *  an active-projection write — the raw writer never receives it. */
-  activeTailRawIndex?: number;
-  /** v0.1.55+: see `MaestroSessionMeta.activeTailStart`. */
-  activeTailStart?: number;
 }
 
 /**
@@ -395,16 +479,6 @@ function buildMeta(
   } else if (existing?.activeDeferredTools && existing.activeDeferredTools.length > 0) {
     meta.activeDeferredTools = existing.activeDeferredTools;
   }
-  // v0.1.55+: the raw ↔ active index mapping describes ONE specific projection,
-  // so it is never inherited from `existing`. Only an explicit input records it
-  // — that keeps it off the raw log's header (whose writer never passes it)
-  // even though `loadMaestroSessionMeta` prefers the active header when both
-  // exist. A stale mapping is worse than no mapping: it would make
-  // `forkSessionAt` slice the wrong offset.
-  if (input.activeTailRawIndex !== undefined && input.activeTailStart !== undefined) {
-    meta.activeTailRawIndex = input.activeTailRawIndex;
-    meta.activeTailStart = input.activeTailStart;
-  }
   return meta;
 }
 
@@ -426,16 +500,25 @@ export function saveMaestroSession(
 ): void {
   assertUuidLike("sessionId", sessionId);
   const existing = loadMaestroSessionMeta(sessionId);
+  // Single-file path: this array IS the whole history, so ordinal position is
+  // the sequence number by definition. Stamping here is what gives a
+  // never-compacted session usable seqs the moment it is first forked.
+  const entries: SessionEntry[] = messages.map((message, seq) => {
+    rememberSeq(message, seq);
+    return { seq, message };
+  });
   // Skip the meta line entirely only when: caller didn't pass one AND no
   // meta was previously written. Pre-0.1.5 files with no header stay that
   // way unless the caller opts in by passing meta on the first save.
   if (!meta && !existing) {
-    writeJsonlFile(maestroSessionPath(sessionId), messages);
+    writeJsonlFile(maestroSessionPath(sessionId), entriesToLines(entries));
     return;
   }
   const built = buildMeta(sessionId, meta ?? {});
-  const lines: unknown[] = [{ [META_KEY]: built }, ...messages];
-  writeJsonlFile(maestroSessionPath(sessionId), lines);
+  writeJsonlFile(maestroSessionPath(sessionId), [
+    { [META_KEY]: built },
+    ...entriesToLines(entries),
+  ]);
 }
 
 /**
@@ -454,15 +537,18 @@ export function appendRawMaestroMessages(
 ): void {
   assertUuidLike("sessionId", sessionId);
   if (messages.length === 0) return;
+  // Seqs were assigned by `assignSeqs` before the projection was built, so both
+  // files record the same number for the same message.
+  const entries = toEntries(messages);
   const path = maestroSessionPath(sessionId);
   if (!existsSync(path)) {
     // First raw write for this session: seed the meta header so a standalone
     // forensic read of the raw log is self-describing.
     const built = buildMeta(sessionId, meta ?? {});
-    writeJsonlFile(path, [{ [META_KEY]: built }, ...messages]);
+    writeJsonlFile(path, [{ [META_KEY]: built }, ...entriesToLines(entries)]);
     return;
   }
-  appendJsonlFile(path, messages);
+  appendJsonlFile(path, entriesToLines(entries));
 }
 
 /**
@@ -470,6 +556,11 @@ export function appendRawMaestroMessages(
  * Always stamps a fresh `_meta` header (merged with any prior meta, preserving
  * `createdAt`) so the projection carries the current `activeDeferredTools` and
  * cwd for the next resume.
+ *
+ * Writes nothing about the raw log. Every real message goes out with the seq it
+ * already owns, so the projection is a complete, independently readable record
+ * of the working view — the raw file may be absent, archived, or rewritten
+ * without affecting it.
  */
 export function writeActiveMaestroSession(
   sessionId: string,
@@ -479,8 +570,10 @@ export function writeActiveMaestroSession(
 ): void {
   assertUuidLike("sessionId", sessionId);
   const built = buildMeta(sessionId, meta ?? {}, existingMeta);
-  built.rawFileSize = statSync(maestroSessionPath(sessionId)).size;
-  writeJsonlFile(maestroActiveSessionPath(sessionId), [{ [META_KEY]: built }, ...messages]);
+  writeJsonlFile(maestroActiveSessionPath(sessionId), [
+    { [META_KEY]: built },
+    ...entriesToLines(toEntries(messages)),
+  ]);
 }
 
 /**
@@ -566,61 +659,56 @@ export function saveMaestroSessionSplit(
   }
   const existingMeta = loadMaestroSessionMeta(sessionId);
   const priorSet = new Set<ProviderMessage>(priorMessages);
+  // Number the new turns BEFORE either file is built, so the projection and the
+  // raw append agree on every message's identity without either one having to
+  // look at the other.
+  assignSeqs(canonical);
   const rawDelta = collectNewRawMessages(canonical, priorSet);
-  appendRawMaestroMessages(sessionId, rawDelta, meta);
   const projection = buildActiveProjection(canonical, opts?.headProtect ?? 2);
-  writeActiveMaestroSession(
-    sessionId,
-    projection,
-    { ...meta, ...computeTailMapping(sessionId, canonical, projection) },
-    existingMeta,
-  );
+  // Projection first, raw second. Both writes are individually durable, so the
+  // only exposure is a crash in between — and this order makes that window cost
+  // the archive a turn rather than the working view. The reverse order (v0.1.52)
+  // needed a `rawFileSize` checkpoint to notice the same window, which is
+  // exactly the cross-file dependency this layout removes.
+  writeActiveMaestroSession(sessionId, projection, meta, existingMeta);
+  appendRawMaestroMessages(sessionId, rawDelta, meta);
 }
 
 /**
- * Derive the `activeTailRawIndex` / `activeTailStart` pair for a projection
- * that was just built from `canonical`, with the raw delta already appended.
+ * Give every real message in `canonical` a sequence number, minting new ones
+ * for turns this process has never persisted.
  *
- * Both offsets are computed from the **tail length** rather than by adding up
- * head + filler + sentinels. `canonical` holds exactly one compaction block
- * (the compressor splices the new pair in and removes the previous one), so
- * everything after the summary turn is real conversation — the same messages
- * that were just appended to the raw log, in the same order. Hence:
+ * Messages restored from disk already carry their number (the reader registers
+ * it), so re-numbering never happens — a message keeps the same seq for the
+ * life of the session, across compactions, resumes, and forks. New turns
+ * continue from the highest number seen.
  *
- *   tailLen            = canonical.length - (summaryIdx + 1)
- *   activeTailRawIndex = rawCount - tailLen      (raw's last `tailLen` entries)
- *   activeTailStart    = projection.length - tailLen  (projection's, likewise)
- *
- * Counting backwards keeps the mapping correct even if `buildActiveProjection`
- * later changes how it assembles the head (filler assistant, head clamping) —
- * only the tail-copy contract has to hold.
- *
- * Returns an empty object when the mapping can't be established, in which case
- * the header simply omits it and `forkSessionAt` falls back to a raw-only fork.
+ * Compaction sentinels are deliberately skipped: they are synthesized by the
+ * compressor, live only in the projection, and are replaced wholesale on the
+ * next compaction. Leaving them unnumbered is what lets a reader walk a
+ * projection and separate head / sentinels / tail from the file alone.
  */
-function computeTailMapping(
-  sessionId: string,
-  canonical: ProviderMessage[],
-  projection: ProviderMessage[],
-): { activeTailRawIndex?: number; activeTailStart?: number } {
-  const summaryIdx = findLastCompactionAssistantIndex(canonical);
-  if (summaryIdx === undefined) return {};
-  const tailLen = canonical.length - (summaryIdx + 1);
-  const rawCount = loadRawMaestroSession(sessionId)?.length;
-  if (rawCount === undefined) return {};
-  const activeTailRawIndex = rawCount - tailLen;
-  const activeTailStart = projection.length - tailLen;
-  // Defensive: a negative offset means the two files disagree about how much
-  // real conversation exists (corrupt raw, hand-edited projection). Publishing
-  // it would corrupt every fork taken from this session.
-  if (activeTailRawIndex < 0 || activeTailStart < 0) {
-    logger.warn(
-      { sessionId, rawCount, tailLen, projectionLength: projection.length },
-      "computeTailMapping: inconsistent raw/active lengths, omitting fork mapping",
-    );
-    return {};
+function assignSeqs(canonical: readonly ProviderMessage[]): void {
+  let next = -1;
+  for (const message of canonical) {
+    const seq = seqOf(message);
+    if (seq !== undefined && seq > next) next = seq;
   }
-  return { activeTailRawIndex, activeTailStart };
+  for (let i = 0; i < canonical.length; i++) {
+    const message = canonical[i];
+    if (seqOf(message) !== undefined) continue;
+    if (isCompactionSentinelAt(canonical, i)) continue;
+    next += 1;
+    rememberSeq(message, next);
+  }
+}
+
+/** True when `canonical[i]` is the marker user turn of a compaction pair, or
+ *  the summary assistant that immediately follows one. */
+function isCompactionSentinelAt(canonical: readonly ProviderMessage[], i: number): boolean {
+  const msg = canonical[i];
+  if (isCompactionMarkerUser(msg) && canonical[i + 1]?.role === "assistant") return true;
+  return i > 0 && isCompactionMarkerUser(canonical[i - 1]) && msg.role === "assistant";
 }
 
 /**
@@ -743,6 +831,9 @@ export function forkSessionAt(opts: ForkSessionAtOptions): ForkSessionAtResult {
   if (opts.messageIndex < 0) {
     throw new Error(`forkSessionAt: messageIndex must be >= 0, got ${opts.messageIndex}`);
   }
+  // A pre-v0.1.55 parent has no seqs to cut on; upgrade it first so legacy
+  // sessions fork just as well as new ones.
+  migrateMaestroSessionSeq(opts.parentSessionId);
   // Fork against the full-fidelity raw history so `messageIndex` addresses the
   // complete conversation, not the compacted active projection (which would
   // shift indices once a session has been compacted).
@@ -765,6 +856,12 @@ export function forkSessionAt(opts: ForkSessionAtOptions): ForkSessionAtResult {
   // tool_use at the cut point that would 400 the next API call.
   const sliced = parentMessages.slice(0, opts.messageIndex);
   const trimmed = trimToSafePrefix(sliced);
+  // `trimToSafePrefix` returns a prefix of the same references, so the entry
+  // list lines up by length and carries the seqs the fork must preserve.
+  const trimmedEntries = (
+    readEntriesFromPath(maestroSessionPath(opts.parentSessionId)) ?? []
+  ).slice(0, trimmed.length);
+  const cutSeq = maxSeq(trimmedEntries);
 
   const cwd = opts.cwd ?? parentMeta?.cwd ?? "";
   ensureCwdExists(cwd);
@@ -787,15 +884,14 @@ export function forkSessionAt(opts: ForkSessionAtOptions): ForkSessionAtResult {
   }
   const meta = buildMeta(newSessionId, metaInput);
   const path = maestroSessionPath(newSessionId);
-  writeJsonlFile(path, [{ [META_KEY]: meta }, ...trimmed]);
-  // Must run AFTER the raw write: `writeActiveMaestroSession` stamps the
-  // projection's `rawFileSize` checkpoint by stat'ing the raw file, and a
-  // checkpoint taken against a missing/short raw would make the loader reject
-  // the projection as stale on the fork's very first resume.
+  // Seqs are copied over unchanged: the branch shares the parent's numbering
+  // for the history they have in common, which is what lets both of the fork's
+  // files agree with each other and stay comparable to the parent's.
+  writeJsonlFile(path, [{ [META_KEY]: meta }, ...entriesToLines(trimmedEntries)]);
   const activeProjectionForked = forkActiveProjection(
     opts.parentSessionId,
     newSessionId,
-    trimmed.length,
+    cutSeq,
     metaInput,
     meta,
   );
@@ -833,61 +929,237 @@ export function forkSessionAt(opts: ForkSessionAtOptions): ForkSessionAtResult {
  *
  * ## How
  *
- * The parent's header carries `activeTailStart` / `activeTailRawIndex`, which
- * encode `active[activeTailStart + j] === raw[activeTailRawIndex + j]`. A raw
- * cut at `rawCut` therefore corresponds to the active cut
- * `activeTailStart + (rawCut - activeTailRawIndex)`, and slicing there yields a
- * genuine prefix of the parent's projection — head, marker and summary
- * included, untouched.
+ * The branch point is expressed as `cutSeq` — the sequence number of the last
+ * message the fork keeps — rather than as an offset into either file. Slicing
+ * is then a local decision the projection can make on its own: keep entries
+ * while their seq is `<= cutSeq`, and keep unnumbered ones (the marker and
+ * summary sentinels) since they belong to the head region. Both segments run in
+ * increasing seq order, so the result is a genuine prefix of the parent's
+ * projection — head, marker and summary included, untouched.
+ *
+ * Nothing here reads the parent's raw log or its byte length. The two files
+ * agree because they independently record the same seq for the same message,
+ * not because one describes the other's layout.
  *
  * ## When it is skipped (returns false, fork stays raw-only)
  *
- *  - Parent never compacted, or its projection is stale/invalid — raw already
- *    is the working view, so the fork is prefix-identical without doing
- *    anything.
- *  - Parent's header predates v0.1.55 and has no mapping.
- *  - `rawCut < activeTailRawIndex`: the branch point sits inside (or before)
- *    the summarized middle. The summary describes turns that happen *after*
- *    the branch point, so inheriting it would leak the abandoned timeline into
- *    the new branch. Correctness beats the cache hit here.
+ *  - Parent never compacted, or its projection is unusable — raw already is the
+ *    working view, so the fork is prefix-identical without doing anything.
+ *  - `cutSeq < tailFirstSeq - 1`: the branch point sits inside (or before) the
+ *    summarized middle. The summary describes turns that happen *after* the
+ *    branch point, so inheriting it would leak the abandoned timeline into the
+ *    new branch. Correctness beats the cache hit here.
  *  - The derived slice fails validation (not a safe prefix, or lost its
  *    compaction block). Better a cold fork than an unusable projection.
  */
 function forkActiveProjection(
   parentSessionId: string,
   newSessionId: string,
-  rawCut: number,
+  cutSeq: number,
   metaInput: SaveSessionMetaInput,
   forkRawMeta: MaestroSessionMeta,
 ): boolean {
-  const parentActive = readMessagesFromPath(maestroActiveSessionPath(parentSessionId));
+  const parentActive = readEntriesFromPath(maestroActiveSessionPath(parentSessionId));
   if (parentActive === null) return false;
-  if (!isCurrentActiveProjection(parentSessionId, parentActive)) return false;
-  const parentActiveMeta = readMetaFromPath(maestroActiveSessionPath(parentSessionId));
-  const tailStart = parentActiveMeta?.activeTailStart;
-  const tailRawIndex = parentActiveMeta?.activeTailRawIndex;
-  if (tailStart === undefined || tailRawIndex === undefined) return false;
-  if (rawCut < tailRawIndex) return false;
-  const cut = Math.min(tailStart + (rawCut - tailRawIndex), parentActive.length);
-  const sliced = parentActive.slice(0, cut);
+  if (!isUsableActiveProjection(parentActive.map((e) => e.message))) return false;
+  // The tail starts right after the summary turn; its first seq is the oldest
+  // message the summary does NOT cover.
+  const tailFirstSeq = firstTailSeq(parentActive);
+  if (tailFirstSeq === undefined || cutSeq < tailFirstSeq - 1) return false;
+  const keep: SessionEntry[] = [];
+  for (const entry of parentActive) {
+    if (entry.seq !== undefined && entry.seq > cutSeq) break;
+    keep.push(entry);
+  }
   // The tail is a verbatim copy of the raw messages, so a cut that was safe in
-  // raw is safe here too — this only fires if the mapping is somehow off, in
-  // which case a cold fork is the right outcome.
-  if (trimToSafePrefix(sliced).length !== sliced.length) {
+  // raw is safe here too — this only fires if the files disagree, in which case
+  // a cold fork is the right outcome.
+  const keptMessages = keep.map((e) => e.message);
+  if (trimToSafePrefix(keptMessages).length !== keptMessages.length) {
     logger.warn(
-      { parentSessionId, newSessionId, rawCut, cut },
+      { parentSessionId, newSessionId, cutSeq, kept: keep.length },
       "forkActiveProjection: sliced projection is not a safe prefix, falling back to raw",
     );
     return false;
   }
-  if (findLastCompactionSummary(sliced) === undefined) return false;
-  writeActiveMaestroSession(
-    newSessionId,
-    sliced,
-    { ...metaInput, activeTailRawIndex: tailRawIndex, activeTailStart: tailStart },
-    forkRawMeta,
+  if (findLastCompactionSummary(keptMessages) === undefined) return false;
+  writeActiveMaestroSession(newSessionId, keptMessages, metaInput, forkRawMeta);
+  return true;
+}
+
+/** Result of `checkMaestroSessionIntegrity`. */
+export interface MaestroSessionIntegrity {
+  /** Highest seq present in the raw log, or -1 when it holds none. */
+  rawLastSeq: number;
+  /** Highest seq present in the active projection, or -1 / undefined when
+   *  there is no projection. */
+  activeLastSeq?: number;
+  /** Seqs the projection holds that never reached the archive. Non-empty only
+   *  after a crash landed between the two writes. */
+  missingFromRaw: number[];
+}
+
+/**
+ * Compare the two files as independent replicas and report any divergence.
+ *
+ * This is deliberately **not** on the read path. Loading a session no longer
+ * cross-checks the files — each is complete on its own terms, and the writer
+ * order guarantees the projection is never the stale one. What remains possible
+ * is the archive missing a turn, because a crash can land between the
+ * projection's rename and the raw append. Hosts that care about archival
+ * completeness can call this during maintenance and repair from the projection,
+ * whose entries carry the seqs the raw log is missing.
+ */
+export function checkMaestroSessionIntegrity(sessionId: string): MaestroSessionIntegrity {
+  const rawEntries = readEntriesFromPath(maestroSessionPath(sessionId)) ?? [];
+  const activeEntries = readEntriesFromPath(maestroActiveSessionPath(sessionId));
+  const rawSeqs = new Set<number>();
+  for (const e of rawEntries) {
+    if (e.seq !== undefined) rawSeqs.add(e.seq);
+  }
+  const out: MaestroSessionIntegrity = {
+    rawLastSeq: maxSeq(rawEntries),
+    missingFromRaw: [],
+  };
+  if (activeEntries === null) return out;
+  out.activeLastSeq = maxSeq(activeEntries);
+  for (const e of activeEntries) {
+    if (e.seq !== undefined && !rawSeqs.has(e.seq)) out.missingFromRaw.push(e.seq);
+  }
+  return out;
+}
+
+/* ── legacy migration ──────────────────────────────────────────────────── */
+
+/**
+ * Upgrade a session written by SDK <= 0.1.54 to seq-stamped lines. Idempotent
+ * and safe to call on every load: sessions already carrying seqs return
+ * immediately after one header-free scan of the raw file.
+ *
+ * Raw is trivial — it is append-only, so ordinal position *is* the sequence
+ * number, and rewriting it with those numbers preserves the content verbatim.
+ * (This one rewrite is a deliberate exception to the append-only rule: no
+ * message is added, removed, or reordered.)
+ *
+ * The projection is the interesting half. Old projections recorded nothing
+ * about which raw messages they held, so the numbers have to be recovered from
+ * the content: `buildActiveProjection` copies the protected head off the front
+ * of the history and the tail off the back, verbatim, so the projection's
+ * leading messages are a prefix of raw and its trailing messages are a suffix
+ * of raw. Matching from both ends recovers each surviving message's ordinal;
+ * anything left in the middle is the marker/summary pair and stays unnumbered.
+ *
+ * A projection that fails to match (hand-edited, corrupt, or written by a
+ * compressor with different head/tail semantics) is left alone — it still loads
+ * fine, it just won't contribute cache-preserving forks until the next
+ * compaction rewrites it with fresh seqs.
+ */
+export function migrateMaestroSessionSeq(sessionId: string): boolean {
+  const rawPath = maestroSessionPath(sessionId);
+  const rawEntries = readEntriesFromPath(rawPath);
+  if (rawEntries === null || rawEntries.length === 0) return false;
+  if (rawEntries.every((e) => e.seq !== undefined)) return false;
+
+  const numberedRaw: SessionEntry[] = rawEntries.map((e, seq) => ({ seq, message: e.message }));
+  const rawMeta = readMetaFromPath(rawPath);
+  writeJsonlFile(
+    rawPath,
+    rawMeta
+      ? [{ [META_KEY]: rawMeta }, ...entriesToLines(numberedRaw)]
+      : entriesToLines(numberedRaw),
+  );
+
+  const activePath = maestroActiveSessionPath(sessionId);
+  const activeEntries = readEntriesFromPath(activePath);
+  if (activeEntries !== null && activeEntries.length > 0) {
+    const numberedActive = numberProjectionByContent(activeEntries, numberedRaw);
+    if (numberedActive) {
+      const activeMeta = readMetaFromPath(activePath);
+      writeJsonlFile(
+        activePath,
+        activeMeta
+          ? [{ [META_KEY]: activeMeta }, ...entriesToLines(numberedActive)]
+          : entriesToLines(numberedActive),
+      );
+    } else {
+      logger.warn(
+        { sessionId },
+        "migrateMaestroSessionSeq: could not match projection to raw, left unnumbered",
+      );
+    }
+  }
+  logger.info(
+    { sessionId, messages: numberedRaw.length },
+    "migrateMaestroSessionSeq: upgraded to seq-stamped lines",
   );
   return true;
+}
+
+/**
+ * Recover seqs for a legacy projection by matching its head against raw's
+ * prefix and its tail against raw's suffix. Returns null when the two ends
+ * overlap (they would have to disagree about the same message) or when the
+ * unmatched middle is anything other than the compaction sentinels.
+ */
+function numberProjectionByContent(
+  active: readonly SessionEntry[],
+  raw: readonly SessionEntry[],
+): SessionEntry[] | null {
+  const same = (a: ProviderMessage, b: ProviderMessage): boolean =>
+    JSON.stringify(a) === JSON.stringify(b);
+
+  let head = 0;
+  while (
+    head < active.length &&
+    head < raw.length &&
+    same(active[head].message, raw[head].message)
+  ) {
+    head++;
+  }
+  let tail = 0;
+  while (
+    tail < active.length - head &&
+    tail < raw.length - head &&
+    same(active[active.length - 1 - tail].message, raw[raw.length - 1 - tail].message)
+  ) {
+    tail++;
+  }
+  const middle = active.slice(head, active.length - tail);
+  // Whatever the ends didn't claim must be exactly the synthetic pair.
+  const isSentinelPair =
+    middle.length === 2 &&
+    isCompactionMarkerUser(middle[0].message) &&
+    middle[1].message.role === "assistant";
+  const isEmptyFillerPair =
+    middle.length === 3 &&
+    middle[0].message.role === "assistant" &&
+    isCompactionMarkerUser(middle[1].message) &&
+    middle[2].message.role === "assistant";
+  if (!isSentinelPair && !isEmptyFillerPair) return null;
+
+  const out: SessionEntry[] = [];
+  for (let i = 0; i < head; i++) out.push({ seq: i, message: active[i].message });
+  for (const entry of middle) out.push({ message: entry.message });
+  for (let i = tail; i > 0; i--) {
+    out.push({ seq: raw.length - i, message: active[active.length - i].message });
+  }
+  return out;
+}
+
+/**
+ * Sequence number of the first post-compaction tail entry in a projection, or
+ * `undefined` when it has no compaction block or nothing follows the summary.
+ *
+ * Read straight off the file's own entries — the sentinels are identifiable by
+ * content and the tail is whatever carries a seq after them.
+ */
+function firstTailSeq(entries: readonly SessionEntry[]): number | undefined {
+  const summaryIdx = findLastCompactionAssistantIndex(entries.map((e) => e.message));
+  if (summaryIdx === undefined) return undefined;
+  for (let i = summaryIdx + 1; i < entries.length; i++) {
+    if (entries[i].seq !== undefined) return entries[i].seq;
+  }
+  return undefined;
 }
 
 /**
