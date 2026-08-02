@@ -366,6 +366,19 @@ export function findLastCompactionSummary(messages: ProviderMessage[]): string |
 }
 
 /**
+ * Index of the summary assistant turn of the last compaction block, or
+ * `undefined` when the array carries no compaction block.
+ *
+ * Exposed for the session writer, which needs the boundary to compute how many
+ * trailing messages of `canonical` are real (non-sentinel) conversation. That
+ * count is what anchors the raw ↔ active index mapping recorded in the active
+ * projection's meta header (`activeTailRawIndex` / `activeTailStart`).
+ */
+export function findLastCompactionAssistantIndex(messages: ProviderMessage[]): number | undefined {
+  return findLastCompaction(messages)?.assistantIdx;
+}
+
+/**
  * Build the compacted **active projection** persisted to `<id>.active.jsonl`.
  *
  * The live loop keeps the full canonical array in memory (protected head +

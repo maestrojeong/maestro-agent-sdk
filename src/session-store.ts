@@ -44,6 +44,7 @@ import {
 } from "@/agents/rollout/shared";
 import {
   buildActiveProjection,
+  findLastCompactionAssistantIndex,
   findLastCompactionSummary,
   isCompactionMarkerUser,
 } from "@/memory/compressor";
@@ -158,6 +159,30 @@ export interface MaestroSessionMeta {
    * the active atomic rename, so resume can fall back to the newer raw log.
    */
   rawFileSize?: number;
+  /**
+   * v0.1.55+: index into the **raw** log of the first message of this active
+   * projection's post-compaction tail.
+   *
+   * Together with `activeTailStart` it pins the linear mapping
+   * `active[activeTailStart + j] === raw[activeTailRawIndex + j]`, which holds
+   * because `buildActiveProjection` copies the tail verbatim out of the same
+   * messages the raw log appended. `forkSessionAt` uses it to cut the parent's
+   * active projection at the branch point, so the fork's first request shares a
+   * byte-identical prompt prefix with the parent and hits the provider's
+   * automatic prefix cache instead of re-reading an uncompacted raw history.
+   *
+   * Only ever written to the active projection's header, never to raw's.
+   * Absent on projections written by SDK <= 0.1.54 — readers must treat a
+   * missing value as "mapping unknown" and fall back to raw.
+   */
+  activeTailRawIndex?: number;
+  /**
+   * v0.1.55+: index into this active projection of the first tail message —
+   * i.e. the offset just past the protected head, the optional filler
+   * assistant, and the compaction marker/summary pair. See
+   * `activeTailRawIndex` for the invariant these two fields encode.
+   */
+  activeTailStart?: number;
 }
 
 /** Discriminator key — the first line of a v0.1.5+ rollout starts with this. */
@@ -320,6 +345,11 @@ export interface SaveSessionMetaInput {
   /** v0.1.22+: see `MaestroSessionMeta.activeDeferredTools`. Passed by
    *  `maestroProvider` on every save when `enableToolSearch` is on. */
   activeDeferredTools?: string[];
+  /** v0.1.55+: see `MaestroSessionMeta.activeTailRawIndex`. Only meaningful on
+   *  an active-projection write — the raw writer never receives it. */
+  activeTailRawIndex?: number;
+  /** v0.1.55+: see `MaestroSessionMeta.activeTailStart`. */
+  activeTailStart?: number;
 }
 
 /**
@@ -364,6 +394,16 @@ function buildMeta(
     }
   } else if (existing?.activeDeferredTools && existing.activeDeferredTools.length > 0) {
     meta.activeDeferredTools = existing.activeDeferredTools;
+  }
+  // v0.1.55+: the raw ↔ active index mapping describes ONE specific projection,
+  // so it is never inherited from `existing`. Only an explicit input records it
+  // — that keeps it off the raw log's header (whose writer never passes it)
+  // even though `loadMaestroSessionMeta` prefers the active header when both
+  // exist. A stale mapping is worse than no mapping: it would make
+  // `forkSessionAt` slice the wrong offset.
+  if (input.activeTailRawIndex !== undefined && input.activeTailStart !== undefined) {
+    meta.activeTailRawIndex = input.activeTailRawIndex;
+    meta.activeTailStart = input.activeTailStart;
   }
   return meta;
 }
@@ -529,7 +569,58 @@ export function saveMaestroSessionSplit(
   const rawDelta = collectNewRawMessages(canonical, priorSet);
   appendRawMaestroMessages(sessionId, rawDelta, meta);
   const projection = buildActiveProjection(canonical, opts?.headProtect ?? 2);
-  writeActiveMaestroSession(sessionId, projection, meta, existingMeta);
+  writeActiveMaestroSession(
+    sessionId,
+    projection,
+    { ...meta, ...computeTailMapping(sessionId, canonical, projection) },
+    existingMeta,
+  );
+}
+
+/**
+ * Derive the `activeTailRawIndex` / `activeTailStart` pair for a projection
+ * that was just built from `canonical`, with the raw delta already appended.
+ *
+ * Both offsets are computed from the **tail length** rather than by adding up
+ * head + filler + sentinels. `canonical` holds exactly one compaction block
+ * (the compressor splices the new pair in and removes the previous one), so
+ * everything after the summary turn is real conversation — the same messages
+ * that were just appended to the raw log, in the same order. Hence:
+ *
+ *   tailLen            = canonical.length - (summaryIdx + 1)
+ *   activeTailRawIndex = rawCount - tailLen      (raw's last `tailLen` entries)
+ *   activeTailStart    = projection.length - tailLen  (projection's, likewise)
+ *
+ * Counting backwards keeps the mapping correct even if `buildActiveProjection`
+ * later changes how it assembles the head (filler assistant, head clamping) —
+ * only the tail-copy contract has to hold.
+ *
+ * Returns an empty object when the mapping can't be established, in which case
+ * the header simply omits it and `forkSessionAt` falls back to a raw-only fork.
+ */
+function computeTailMapping(
+  sessionId: string,
+  canonical: ProviderMessage[],
+  projection: ProviderMessage[],
+): { activeTailRawIndex?: number; activeTailStart?: number } {
+  const summaryIdx = findLastCompactionAssistantIndex(canonical);
+  if (summaryIdx === undefined) return {};
+  const tailLen = canonical.length - (summaryIdx + 1);
+  const rawCount = loadRawMaestroSession(sessionId)?.length;
+  if (rawCount === undefined) return {};
+  const activeTailRawIndex = rawCount - tailLen;
+  const activeTailStart = projection.length - tailLen;
+  // Defensive: a negative offset means the two files disagree about how much
+  // real conversation exists (corrupt raw, hand-edited projection). Publishing
+  // it would corrupt every fork taken from this session.
+  if (activeTailRawIndex < 0 || activeTailStart < 0) {
+    logger.warn(
+      { sessionId, rawCount, tailLen, projectionLength: projection.length },
+      "computeTailMapping: inconsistent raw/active lengths, omitting fork mapping",
+    );
+    return {};
+  }
+  return { activeTailRawIndex, activeTailStart };
 }
 
 /**
@@ -611,6 +702,14 @@ export interface ForkSessionAtResult {
   /** Number of messages actually written (after `trimToSafePrefix`). May be
    *  smaller than `messageIndex` when the slice ended on an orphan turn. */
   messagesWritten: number;
+  /**
+   * v0.1.55+: true when the parent's compacted active projection was carried
+   * over (cut at the branch point) instead of the fork falling back to the raw
+   * history. False for never-compacted parents — where raw *is* the working
+   * view, so the fork is already prefix-identical — and for branch points that
+   * land inside the summarized middle, where the summary can't be reused.
+   */
+  activeProjectionForked: boolean;
 }
 
 /**
@@ -626,6 +725,15 @@ export interface ForkSessionAtResult {
  * Parent JSONL is **not modified** — the fork lives as a sibling file. A
  * later `maestroProvider` call with the new `sessionId` continues from
  * the forked prefix as if it were a fresh resume.
+ *
+ * When the parent has been compacted, the fork also inherits a **cut copy of
+ * the parent's active projection** (v0.1.55+) rather than silently reverting to
+ * the uncompacted raw log. See `forkActiveProjection` for the mechanics and the
+ * cases where inheritance is skipped. The fork additionally carries over the
+ * parent's `activeDeferredTools`: promoted tool schemas sit in front of the
+ * message list in the rendered prompt, so a fork that starts with an empty
+ * active set would miss the provider's prefix cache no matter how well the
+ * messages line up.
  *
  * Throws on missing parent or out-of-range `messageIndex` (negative or
  * larger than the parent's message count). The "exceeds length" check
@@ -672,19 +780,114 @@ export function forkSessionAt(opts: ForkSessionAtOptions): ForkSessionAtResult {
   } else if (parentMeta?.metadata !== undefined) {
     metaInput.metadata = parentMeta.metadata;
   }
+  // Tool schemas render ahead of the messages, so the fork must start from the
+  // parent's promoted set or the shared prefix breaks at token zero.
+  if (parentMeta?.activeDeferredTools !== undefined) {
+    metaInput.activeDeferredTools = parentMeta.activeDeferredTools;
+  }
   const meta = buildMeta(newSessionId, metaInput);
   const path = maestroSessionPath(newSessionId);
   writeJsonlFile(path, [{ [META_KEY]: meta }, ...trimmed]);
+  // Must run AFTER the raw write: `writeActiveMaestroSession` stamps the
+  // projection's `rawFileSize` checkpoint by stat'ing the raw file, and a
+  // checkpoint taken against a missing/short raw would make the loader reject
+  // the projection as stale on the fork's very first resume.
+  const activeProjectionForked = forkActiveProjection(
+    opts.parentSessionId,
+    newSessionId,
+    trimmed.length,
+    metaInput,
+    meta,
+  );
   logger.info(
     {
       parentSessionId: opts.parentSessionId,
       newSessionId,
       requestedIndex: opts.messageIndex,
       writtenCount: trimmed.length,
+      activeProjectionForked,
     },
     "forkSessionAt: branch created",
   );
-  return { sessionId: newSessionId, rolloutPath: path, messagesWritten: trimmed.length };
+  return {
+    sessionId: newSessionId,
+    rolloutPath: path,
+    messagesWritten: trimmed.length,
+    activeProjectionForked,
+  };
+}
+
+/**
+ * Carry a compacted parent's active projection over to a fresh fork, cut at the
+ * branch point. Returns true when the projection was written.
+ *
+ * ## Why
+ *
+ * Without this, a fork of a compacted session inherits only the raw log, so its
+ * next request re-sends the full uncompacted history: the prompt prefix no
+ * longer matches anything the provider cached for the parent (total cache miss)
+ * *and* the context balloons back to pre-compaction size. Copying the parent's
+ * projection instead means the fork's prompt is a byte-identical prefix of the
+ * parent's, which is exactly what DeepSeek/Kimi automatic prefix caching keys
+ * on — no explicit `cache_control` breakpoints exist to manage here.
+ *
+ * ## How
+ *
+ * The parent's header carries `activeTailStart` / `activeTailRawIndex`, which
+ * encode `active[activeTailStart + j] === raw[activeTailRawIndex + j]`. A raw
+ * cut at `rawCut` therefore corresponds to the active cut
+ * `activeTailStart + (rawCut - activeTailRawIndex)`, and slicing there yields a
+ * genuine prefix of the parent's projection — head, marker and summary
+ * included, untouched.
+ *
+ * ## When it is skipped (returns false, fork stays raw-only)
+ *
+ *  - Parent never compacted, or its projection is stale/invalid — raw already
+ *    is the working view, so the fork is prefix-identical without doing
+ *    anything.
+ *  - Parent's header predates v0.1.55 and has no mapping.
+ *  - `rawCut < activeTailRawIndex`: the branch point sits inside (or before)
+ *    the summarized middle. The summary describes turns that happen *after*
+ *    the branch point, so inheriting it would leak the abandoned timeline into
+ *    the new branch. Correctness beats the cache hit here.
+ *  - The derived slice fails validation (not a safe prefix, or lost its
+ *    compaction block). Better a cold fork than an unusable projection.
+ */
+function forkActiveProjection(
+  parentSessionId: string,
+  newSessionId: string,
+  rawCut: number,
+  metaInput: SaveSessionMetaInput,
+  forkRawMeta: MaestroSessionMeta,
+): boolean {
+  const parentActive = readMessagesFromPath(maestroActiveSessionPath(parentSessionId));
+  if (parentActive === null) return false;
+  if (!isCurrentActiveProjection(parentSessionId, parentActive)) return false;
+  const parentActiveMeta = readMetaFromPath(maestroActiveSessionPath(parentSessionId));
+  const tailStart = parentActiveMeta?.activeTailStart;
+  const tailRawIndex = parentActiveMeta?.activeTailRawIndex;
+  if (tailStart === undefined || tailRawIndex === undefined) return false;
+  if (rawCut < tailRawIndex) return false;
+  const cut = Math.min(tailStart + (rawCut - tailRawIndex), parentActive.length);
+  const sliced = parentActive.slice(0, cut);
+  // The tail is a verbatim copy of the raw messages, so a cut that was safe in
+  // raw is safe here too — this only fires if the mapping is somehow off, in
+  // which case a cold fork is the right outcome.
+  if (trimToSafePrefix(sliced).length !== sliced.length) {
+    logger.warn(
+      { parentSessionId, newSessionId, rawCut, cut },
+      "forkActiveProjection: sliced projection is not a safe prefix, falling back to raw",
+    );
+    return false;
+  }
+  if (findLastCompactionSummary(sliced) === undefined) return false;
+  writeActiveMaestroSession(
+    newSessionId,
+    sliced,
+    { ...metaInput, activeTailRawIndex: tailRawIndex, activeTailStart: tailStart },
+    forkRawMeta,
+  );
+  return true;
 }
 
 /**

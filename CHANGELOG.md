@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.1.55] - 2026-08-03
+
+### Changed
+- `forkSessionAt` now carries a compacted parent's active projection over to
+  the fork, cut at the branch point, instead of leaving the fork to resume from
+  the uncompacted raw log. The fork's prompt is therefore a byte-identical
+  prefix of the parent's and hits the provider's automatic prefix cache, and
+  the branch keeps the parent's compacted context size rather than expanding
+  back to the full history. The active projection's `_meta` records the
+  `activeTailRawIndex` / `activeTailStart` mapping this relies on; projections
+  written by earlier versions have no mapping and degrade to the previous
+  raw-only fork behaviour.
+- Forks inherit the parent's `activeDeferredTools`. Promoted tool schemas
+  render ahead of the message list, so a fork starting with an empty active set
+  broke prefix reuse at the very first token regardless of message alignment.
+- Branch points that land inside the summarized middle still fork raw-only: the
+  summary covers turns that exist only on the abandoned timeline, so inheriting
+  it would leak them into the new branch.
+
+### Added
+- `ForkSessionAtResult.activeProjectionForked` reports whether the projection
+  was inherited or the fork fell back to raw.
+
 ## [0.1.54] - 2026-08-03
 
 - Keep the login-PATH bootstrap silent when the login PATH is already fully
