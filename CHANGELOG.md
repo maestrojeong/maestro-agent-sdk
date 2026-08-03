@@ -1,5 +1,75 @@
 # Changelog
 
+## [0.2.0] - 2026-08-03
+
+Breaking: the on-disk session format changed and there is no migration. See
+"Migration" below.
+
+### Changed
+- **Session files are now standalone.** The append-only raw log and the
+  compacted active projection no longer reference each other. Previously the
+  projection recorded raw's byte length (`rawFileSize`) and was discarded on any
+  mismatch, so it could not be read or trusted without raw being present and
+  unchanged. Each file now carries a complete, independently loadable record of
+  its own contents, and a session resumes correctly with the raw log deleted.
+- Persisted message lines carry a session-scoped sequence number:
+  `{"_seq": N, "m": <message>}`. Both files record the same number for the same
+  message, which is what lets callers line them up when they want to — forking,
+  integrity checks — instead of one file encoding the other's layout.
+- The split writer commits the projection **before** appending to raw. A crash
+  between the two can now only leave the archive a turn short, never the working
+  view, which is what the removed `rawFileSize` checkpoint existed to detect.
+- `forkSessionAt` carries a compacted parent's active projection over to the
+  fork, cut at the branch point, instead of leaving the fork to resume from the
+  uncompacted raw log. The fork's prompt is therefore a byte-identical prefix of
+  the parent's and hits the provider's automatic prefix cache, and the branch
+  keeps the parent's compacted context size rather than expanding back to the
+  full history. The cut is expressed as a sequence number, so each file slices
+  itself without consulting the other.
+- Forks inherit the parent's `activeDeferredTools`. Promoted tool schemas render
+  ahead of the message list, so a fork starting with an empty active set broke
+  prefix reuse at the very first token regardless of message alignment.
+- Branch points that land inside the summarized middle still fork raw-only: the
+  summary covers turns that exist only on the abandoned timeline, so inheriting
+  it would leak them into the new branch.
+
+### Migration
+
+None. Sessions written by 0.1.x keep loading and can be resumed indefinitely —
+bare message lines are still parsed — but their existing messages stay
+unnumbered, and only turns added after the upgrade get sequence numbers. The
+consequence is limited to one feature: forking a session that was already
+compacted before the upgrade falls back to the raw history instead of
+inheriting the projection, so that first branch misses the prefix cache.
+Everything else behaves identically.
+
+An in-place upgrade was implemented and then dropped on purpose. Numbering raw
+by position is trivial, but an old projection records nothing about which raw
+messages it holds, so its numbers can only be guessed by matching its head and
+tail against raw — which re-introduces a dependency on `buildActiveProjection`'s
+internals, precisely the kind of implicit coupling this release removes. Paying
+that permanently to spare existing sessions a single cold fork was not worth it.
+
+### Added
+- `checkMaestroSessionIntegrity` compares the two files on demand and reports
+  any messages the archive is missing. This replaces the implicit cross-file
+  check that used to run on every read.
+- `ForkSessionAtResult.activeProjectionForked` reports whether the projection
+  was inherited or the fork fell back to raw.
+
+### Removed
+- `MaestroSessionMeta.rawFileSize`. Headers no longer describe the other file.
+
+### Internal
+- `tests/maestro-session-store.test.ts` runs in CI again. It had been excluded
+  alongside the registry suite, but it never depended on the host functions that
+  exclusion cites — so the dual-file persistence and crash-window coverage was
+  silently not executing.
+- Each test file now gets its own `MAESTRO_DATA_DIR`. The suites previously
+  shared the developer's real `~/.maestro/sessions`, where the
+  `cleanupStaleMaestroSessions` coverage would delete fixtures belonging to
+  whichever suite ran alongside it.
+
 ## [0.1.54] - 2026-08-03
 
 - Keep the login-PATH bootstrap silent when the login PATH is already fully

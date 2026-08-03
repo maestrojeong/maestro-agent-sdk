@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   rmSync,
+  unlinkSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
@@ -14,6 +15,7 @@ import { COMPACTION_MARKER } from "@/memory/compressor";
 import type { ProviderMessage } from "@/providers/base";
 import {
   appendRawMaestroMessages,
+  checkMaestroSessionIntegrity,
   cleanupStaleMaestroSessions,
   deleteMaestroSession,
   hasActiveMaestroSession,
@@ -26,6 +28,7 @@ import {
   saveMaestroSession,
   saveMaestroSessionSplit,
   trimToSafePrefix,
+  writeActiveMaestroSession,
   writeMaestroRollout,
 } from "@/session-store";
 import type { ConversationEntry } from "@/storage/conversations";
@@ -163,7 +166,50 @@ describe("maestro session store (save / load round-trip)", () => {
     expect(raw[raw.length - 1]).toEqual(newAssistant);
   });
 
-  test("falls back to newer raw after a raw-append/active-replace crash window", () => {
+  /**
+   * v0.2.0 moved the projection write ahead of the raw append, which changes
+   * which side a crash between them can damage. It can no longer strand the
+   * working view behind the archive (the old `rawFileSize` checkpoint existed
+   * to detect exactly that); it can only leave the archive a turn short. The
+   * working view stays authoritative and complete, and the gap is reported by
+   * `checkMaestroSessionIntegrity` rather than by invalidating the projection.
+   */
+  test("a crash between the projection write and the raw append costs the archive, not the working view", () => {
+    const sid = uuid();
+    tracked.push(maestroSessionPath(sid), maestroActiveSessionPath(sid));
+    const original: ProviderMessage[] = [
+      { role: "user", content: "q1" },
+      { role: "assistant", content: "a1" },
+    ];
+    saveMaestroSessionSplit(sid, original, []);
+    const prior = loadMaestroSession(sid) as ProviderMessage[];
+    const compacted = [
+      ...prior,
+      { role: "user", content: COMPACTION_MARKER } as ProviderMessage,
+      { role: "assistant", content: "summary" } as ProviderMessage,
+    ];
+    saveMaestroSessionSplit(sid, compacted, prior);
+
+    // Simulate the crash window: the projection gains a turn, the raw append
+    // never lands.
+    const resumed = loadMaestroSession(sid) as ProviderMessage[];
+    const strandedTurn: ProviderMessage = { role: "user", content: "only in the projection" };
+    writeActiveMaestroSession(sid, [...resumed, strandedTurn]);
+
+    // Resume still sees every turn the model ever saw — no silent loss, and no
+    // reverting to the uncompacted history either.
+    const recovered = loadMaestroSession(sid) as ProviderMessage[];
+    expect(recovered[recovered.length - 1]).toEqual(strandedTurn);
+    expect(recovered.some((m) => m.role === "user" && m.content === COMPACTION_MARKER)).toBe(true);
+
+    // The divergence is visible on demand instead of being inferred from byte
+    // lengths on every read.
+    const integrity = checkMaestroSessionIntegrity(sid);
+    expect(integrity.missingFromRaw).toHaveLength(0); // stranded turn has no seq yet
+    expect(loadRawMaestroSession(sid)).toEqual(original);
+  });
+
+  test("each file stays readable on its own", () => {
     const sid = uuid();
     tracked.push(maestroSessionPath(sid), maestroActiveSessionPath(sid));
     const original: ProviderMessage[] = [
@@ -182,18 +228,12 @@ describe("maestro session store (save / load round-trip)", () => {
       prior,
     );
 
-    const rawOnlyMessage: ProviderMessage = { role: "user", content: "survived in raw" };
-    appendRawMaestroMessages(sid, [rawOnlyMessage]);
-
-    // The active checkpoint is now stale, so resume must expose the newer raw
-    // history instead of silently hiding the last durable user turn.
+    // Delete the archive entirely: the working view must be unaffected, because
+    // nothing in it refers to raw's existence, length, or layout.
+    unlinkSync(maestroSessionPath(sid));
     const recovered = loadMaestroSession(sid) as ProviderMessage[];
-    expect(recovered).toEqual([...original, rawOnlyMessage]);
-
-    const answer: ProviderMessage = { role: "assistant", content: "recovered answer" };
-    saveMaestroSessionSplit(sid, [...recovered, answer], recovered);
-    expect(hasActiveMaestroSession(sid)).toBe(false);
-    expect(loadRawMaestroSession(sid)).toEqual([...original, rawOnlyMessage, answer]);
+    expect(recovered.some((m) => m.role === "user" && m.content === COMPACTION_MARKER)).toBe(true);
+    expect(recovered.slice(0, 2)).toEqual(original);
   });
 
   test("preserves active metadata while raw advances before projection rewrite", () => {

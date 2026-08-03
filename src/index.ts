@@ -104,6 +104,7 @@ export {
 export { maestroRegistry } from "@/registry";
 // ─── Session store ───────────────────────────────────────────────────────────
 export {
+  checkMaestroSessionIntegrity,
   cleanupStaleMaestroSessions,
   DEFAULT_MAESTRO_SESSION_TTL_MS,
   deleteMaestroSession,
@@ -114,6 +115,7 @@ export {
   loadMaestroSession,
   loadMaestroSessionMeta,
   loadRawMaestroSession,
+  type MaestroSessionIntegrity,
   type MaestroSessionMeta,
   maestroActiveSessionPath,
   maestroSessionPath,
