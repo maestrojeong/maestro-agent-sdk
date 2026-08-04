@@ -266,6 +266,28 @@ describe("translateMessagesToOpenAI", () => {
     ]);
   });
 
+  test("regression: blank string-content messages are dropped for BOTH roles", () => {
+    // The string form is what a host writes when it synthesizes history for a
+    // cross-agent bridge. Moonshot 400s the whole request for an empty `user`
+    // message just as it does for an empty `assistant` one — both verified
+    // against the live API (kimi-k3):
+    //   "the message at position N with role 'user' must not be empty"
+    // Whitespace-only content is dropped under the same rule.
+    const msgs: ProviderMessage[] = [
+      { role: "user", content: "hi" },
+      { role: "assistant", content: "hello" },
+      { role: "user", content: "" },
+      { role: "assistant", content: "   \n  " },
+      { role: "user", content: "go on" },
+    ];
+    const out = translateMessagesToOpenAI("", msgs, true);
+    expect(out).toEqual([
+      { role: "user", content: "hi" },
+      { role: "assistant", content: "hello" },
+      { role: "user", content: "go on" },
+    ]);
+  });
+
   test("regression: tool-calling assistant turn with empty text is kept (content:'' + tool_calls is accepted)", () => {
     const msgs: ProviderMessage[] = [
       { role: "user", content: "call the tool" },

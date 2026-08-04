@@ -497,8 +497,14 @@ export function translateMessagesToOpenAI(
   }
   for (const msg of messages) {
     if (typeof msg.content === "string") {
-      // Empty string content is allowed — preserves the slot but means the
-      // model emitted nothing. Both roles handled here.
+      // Both roles handled here. A blank slot is dropped rather than
+      // preserved: it carries no information, and strict OpenAI-compatible
+      // validators reject it outright (Moonshot 400s the whole request for an
+      // empty `user` *or* `assistant` message — see the matching guard in
+      // kimi.ts). DeepSeek is lenient about this today, but the two providers
+      // are kept behaviorally aligned so a host cannot write a history that
+      // works on one and fails on the other.
+      if (msg.content.trim().length === 0) continue;
       out.push({ role: msg.role, content: msg.content });
       continue;
     }

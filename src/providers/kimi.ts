@@ -419,6 +419,24 @@ export function translateMessagesToOpenAI(
   }
   for (const msg of messages) {
     if (typeof msg.content === "string") {
+      // Moonshot rejects a message with empty content for BOTH roles, not just
+      // assistant: `the message at position N with role 'user' must not be
+      // empty` / `... role 'assistant' must not be empty` 400s the entire
+      // request (verified against the live API, kimi-k3).
+      //
+      // The block-array assistant path below already drops empty turns, but
+      // this string path is the shape a *host* writes when it synthesizes
+      // history for a cross-agent bridge, and it bypassed that guard
+      // entirely. An empty slot carries no information for the model, so drop
+      // it — the adjacency this creates (two consecutive same-role messages)
+      // is the same one the assistant drop below already produces and is
+      // accepted by the API.
+      //
+      // Whitespace-only content is accepted by Moonshot today, but it is
+      // equally information-free and other OpenAI-compatible deployments are
+      // stricter, so it is dropped under the same rule instead of relying on
+      // that leniency.
+      if (msg.content.trim().length === 0) continue;
       out.push({ role: msg.role, content: msg.content });
       continue;
     }

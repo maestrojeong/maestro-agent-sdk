@@ -110,6 +110,26 @@ describe("translateMessagesToOpenAI", () => {
     expect(out).toEqual([{ role: "user", content: "hi" }]);
   });
 
+  test("regression: blank string-content messages are dropped for BOTH roles", () => {
+    // Kept behaviorally aligned with kimi.ts, where Moonshot 400s the whole
+    // request on an empty `user` or `assistant` message. DeepSeek tolerates it,
+    // but a host must not be able to synthesize a history that works here and
+    // fails on Kimi.
+    const msgs: ProviderMessage[] = [
+      { role: "user", content: "hi" },
+      { role: "assistant", content: "hello" },
+      { role: "user", content: "" },
+      { role: "assistant", content: "   \n  " },
+      { role: "user", content: "go on" },
+    ];
+    const out = translateMessagesToOpenAI("", msgs);
+    expect(out).toEqual([
+      { role: "user", content: "hi" },
+      { role: "assistant", content: "hello" },
+      { role: "user", content: "go on" },
+    ]);
+  });
+
   test("assistant text + tool_use becomes content + tool_calls", () => {
     const msgs: ProviderMessage[] = [
       {
