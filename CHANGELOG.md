@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.2.2] - 2026-08-04
+
+### Fixed
+- 0.2.1's empty-message guard only covered the content-*block* form
+  (`content: []`). A message whose content is a plain **string** bypassed it, so
+  `{ role: 'assistant', content: '' }` still reached the wire and 400d the whole
+  request. The string form is what a host writes when it synthesizes history for
+  a cross-agent bridge, which is exactly where empty slots come from, so the gap
+  was on the load-bearing path. Both translators now drop blank string-content
+  messages.
+- The guard now covers **`user` messages too**. Moonshot rejects an empty user
+  message with the same class of error (`the message at position N with role
+  'user' must not be empty`) and 0.2.1 had no user-side guard at all. An
+  attachment-only submission is the common source: it records a turn with no
+  text. Verified against the live Moonshot API (`kimi-k3`) in both directions —
+  the empty message 400s, and dropping it succeeds.
+- Whitespace-only content is dropped under the same rule. Moonshot accepts it
+  today, but it is equally information-free and stricter OpenAI-compatible
+  deployments reject it.
+
 ## [0.2.1] - 2026-08-04
 
 ### Fixed
