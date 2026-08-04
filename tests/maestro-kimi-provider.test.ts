@@ -212,6 +212,76 @@ describe("translateMessagesToOpenAI", () => {
     expect(asst.reasoning_content).toBeUndefined();
   });
 
+  test("regression: assistant turn with ONLY redacted_thinking is dropped, not sent empty", () => {
+    // Moonshot 400s `{role:"assistant", content:""}` with "must not be empty".
+    // A history slot holding only a redacted_thinking block (skipped during
+    // translation) must not produce such a message — it is dropped entirely.
+    const msgs: ProviderMessage[] = [
+      { role: "user", content: "look at the file" },
+      {
+        role: "assistant",
+        content: [{ type: "redacted_thinking", data: "opaque" }],
+      },
+      { role: "user", content: "now summarize" },
+    ];
+    const out = translateMessagesToOpenAI("", msgs, true);
+    expect(out).toEqual([
+      { role: "user", content: "look at the file" },
+      { role: "user", content: "now summarize" },
+    ]);
+  });
+
+  test("regression: thinking-only assistant turn is KEPT as reasoning_content on always-thinking models", () => {
+    // Kimi's thinking models (kimi-k3, kimi-k2.7-code) accept
+    // `content: ""` + reasoning_content (verified against the live API), so a
+    // turn that contains only a thinking block must not be dropped — it is
+    // the model's own reasoning history.
+    const msgs: ProviderMessage[] = [
+      { role: "user", content: "reason about it" },
+      {
+        role: "assistant",
+        content: [{ type: "thinking", thinking: "internal step one" }],
+      },
+      { role: "user", content: "proceed" },
+    ];
+    const out = translateMessagesToOpenAI("", msgs, true);
+    expect(out).toHaveLength(3);
+    expect(out[1]).toEqual({
+      role: "assistant",
+      content: "",
+      reasoning_content: "internal step one",
+    });
+  });
+
+  test("regression: empty assistant turn (no text, no tools, no thinking) is dropped", () => {
+    const msgs: ProviderMessage[] = [
+      { role: "user", content: "hi" },
+      { role: "assistant", content: [] },
+      { role: "user", content: "go on" },
+    ];
+    const out = translateMessagesToOpenAI("", msgs, true);
+    expect(out).toEqual([
+      { role: "user", content: "hi" },
+      { role: "user", content: "go on" },
+    ]);
+  });
+
+  test("regression: tool-calling assistant turn with empty text is kept (content:'' + tool_calls is accepted)", () => {
+    const msgs: ProviderMessage[] = [
+      { role: "user", content: "call the tool" },
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "call_1", name: "echo", input: {} }],
+      },
+    ];
+    const out = translateMessagesToOpenAI("", msgs, true);
+    expect(out[1]).toMatchObject({
+      role: "assistant",
+      content: "",
+      tool_calls: [{ id: "call_1", type: "function" }],
+    });
+  });
+
   test("user message with tool_result blocks splits into role:'tool' messages", () => {
     const msgs: ProviderMessage[] = [
       {
