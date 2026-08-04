@@ -474,12 +474,26 @@ export function translateMessagesToOpenAI(
       }
       // `redacted_thinking` and `tool_result` are skipped.
     }
+    // Moonshot rejects assistant messages with empty content: a message whose
+    // text is empty AND that carries neither tool_calls nor reasoning_content
+    // is "empty" — the API 400s the whole request with "the message at
+    // position N with role 'assistant' must not be empty". This happens with
+    // history slots that only hold a `redacted_thinking` block (dropped
+    // above) or empty `content: []` slots. Drop those. A tool-calling turn
+    // (`content: ""` + tool_calls is accepted, verified against the live
+    // API) and a thinking-only turn on an always-thinking model
+    // (`content: ""` + reasoning_content is accepted too, verified) are
+    // meaningful for Kimi's thinking models and are kept.
+    const hasReasoning = pendingThinking.length > 0 && (alwaysThinking || hasToolUse);
+    if (assistantText.length === 0 && toolCalls.length === 0 && !hasReasoning) {
+      continue;
+    }
     const assistantMsg: OpenAIChatMessage = { role: "assistant" };
     assistantMsg.content = assistantText;
     if (toolCalls.length > 0) {
       assistantMsg.tool_calls = toolCalls;
     }
-    if (pendingThinking.length > 0 && (alwaysThinking || hasToolUse)) {
+    if (hasReasoning) {
       assistantMsg.reasoning_content = pendingThinking;
     }
     out.push(assistantMsg);

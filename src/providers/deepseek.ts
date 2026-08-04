@@ -581,10 +581,16 @@ export function translateMessagesToOpenAI(
       }
       // `redacted_thinking` and `tool_result` are skipped.
     }
+    // Drop assistant turns with neither text nor tool calls: a history slot
+    // holding only a `redacted_thinking` block (skipped above), an empty
+    // `content: []` slot, or an interrupted thinking-only turn. Sending
+    // `content: ""` with nothing else trips strict server-side validators
+    // (Moonshot 400s with "role 'assistant' must not be empty"); such a turn
+    // has no information for the model anyway.
+    if (assistantText.length === 0 && toolCalls.length === 0) {
+      continue;
+    }
     const assistantMsg: OpenAIChatMessage = { role: "assistant" };
-    // OpenAI requires either `content` or `tool_calls`. We always set
-    // `content` (empty string if nothing) so the request doesn't trip
-    // strict validators.
     assistantMsg.content = assistantText;
     if (toolCalls.length > 0) {
       assistantMsg.tool_calls = toolCalls;
