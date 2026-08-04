@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.2.1] - 2026-08-04
+
+### Fixed
+- Moonshot (Kimi) rejects a request whose history contains an assistant message
+  with empty content and no `tool_calls` (`the message at position N with role
+  assistant must not be empty`), which 400s the whole turn. Such slots arise
+  when a stored assistant turn held only a `redacted_thinking` block — skipped
+  during translation — or was persisted with `content: []`. The Kimi translator
+  now drops only genuinely empty turns: a turn with `content: ''` plus
+  `tool_calls`, and a thinking-only turn carrying `reasoning_content` on an
+  always-thinking model, are both accepted by the live API and are kept.
+  Verified against the real Moonshot API on `kimi-k3` and `kimi-k2.7-code`.
+- The same defensive drop applies to DeepSeek. Non-thinking models never attach
+  reasoning without a tool call, so empty turns there are dropped outright.
+
 ## [0.2.0] - 2026-08-03
 
 Breaking: the on-disk session format changed and there is no migration. See
