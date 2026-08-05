@@ -43,6 +43,11 @@ function initialMessages(userText: string): ProviderMessage[] {
   return [{ role: "user", content: userText }];
 }
 
+function textBlocks(message: ProviderMessage): string[] {
+  if (typeof message.content === "string") return [message.content];
+  return message.content.flatMap((block) => (block.type === "text" ? [block.text] : []));
+}
+
 describe("runConversation", () => {
   test("text-only response yields text + result and exits", async () => {
     const { provider } = makeProvider([
@@ -71,6 +76,163 @@ describe("runConversation", () => {
     // follow-up resume sees the full dialogue.
     expect(messages).toHaveLength(2);
     expect(messages[1].role).toBe("assistant");
+  });
+
+  test("projects an ephemeral system prompt onto the wire without changing canonical history", async () => {
+    const { provider, calls } = makeProvider([
+      {
+        content: [{ type: "text", text: "done" }],
+        stopReason: "end_turn",
+        usage: { inputTokens: 5, outputTokens: 1 },
+      },
+    ]);
+    const agent = new AIAgent(provider, new ToolRegistry(), {
+      model: "test-model",
+      systemPrompt: "stable system prefix",
+      ephemeralSystemPrompt: "Use the newly selected workspace policy.",
+    });
+    const messages = initialMessages("inspect the project");
+
+    await collect(runConversation(agent, messages));
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].system).toBe("stable system prefix");
+    expect(textBlocks(calls[0].messages[0])).toEqual([
+      "inspect the project",
+      "<system-instructions>\nUse the newly selected workspace policy.\n</system-instructions>",
+    ]);
+    expect(JSON.stringify(messages)).not.toContain("newly selected workspace policy");
+    expect(messages).toEqual([
+      { role: "user", content: "inspect the project" },
+      { role: "assistant", content: [{ type: "text", text: "done" }] },
+    ]);
+  });
+
+  test("keeps ephemeral instructions on a fixed invocation anchor through a tool loop", async () => {
+    const { provider, calls } = makeProvider([
+      {
+        content: [{ type: "tool_use", id: "t1", name: "echo", input: { value: "x" } }],
+        stopReason: "tool_use",
+        usage: { inputTokens: 5, outputTokens: 2 },
+      },
+      {
+        content: [{ type: "text", text: "finished" }],
+        stopReason: "end_turn",
+        usage: { inputTokens: 8, outputTokens: 1 },
+      },
+    ]);
+    const tools = new ToolRegistry();
+    tools.register({
+      schema: defineTool({
+        name: "echo",
+        description: "echo",
+        input_schema: { type: "object", properties: {} },
+      }),
+      async execute() {
+        return "echo result";
+      },
+    });
+    const agent = new AIAgent(provider, tools, {
+      model: "test-model",
+      systemPrompt: "stable system prefix",
+      ephemeralSystemPrompt: "Apply this instruction for this run only.",
+    });
+    const messages = initialMessages("run the tool");
+
+    await collect(runConversation(agent, messages));
+
+    expect(calls).toHaveLength(2);
+    expect(textBlocks(calls[0].messages[0]).at(-1)).toBe(
+      "<system-instructions>\nApply this instruction for this run only.\n</system-instructions>",
+    );
+    expect(calls[1].messages[0]).toEqual(calls[0].messages[0]);
+    expect(textBlocks(calls[1].messages[2])).toEqual([]);
+    expect(calls.every((call) => call.system === "stable system prefix")).toBe(true);
+    expect(JSON.stringify(messages)).not.toContain("instruction for this run only");
+    expect(messages).toHaveLength(4);
+  });
+
+  test("does not carry an ephemeral prompt into historical messages on the next invocation", async () => {
+    const { provider, calls } = makeProvider([
+      {
+        content: [{ type: "text", text: "first answer" }],
+        stopReason: "end_turn",
+        usage: { inputTokens: 2, outputTokens: 1 },
+      },
+      {
+        content: [{ type: "text", text: "second answer" }],
+        stopReason: "end_turn",
+        usage: { inputTokens: 4, outputTokens: 1 },
+      },
+    ]);
+    const agent = new AIAgent(provider, new ToolRegistry(), {
+      model: "test-model",
+      systemPrompt: "stable",
+      ephemeralSystemPrompt: "Current invocation only.",
+    });
+    const messages = initialMessages("first question");
+
+    await collect(runConversation(agent, messages));
+    messages.push({ role: "user", content: "second question" });
+    await collect(runConversation(agent, messages));
+
+    expect(calls).toHaveLength(2);
+    expect(calls[1].messages[0]).toEqual({ role: "user", content: "first question" });
+    expect(textBlocks(calls[1].messages[2])).toEqual([
+      "second question",
+      "<system-instructions>\nCurrent invocation only.\n</system-instructions>",
+    ]);
+    expect(JSON.stringify(messages)).not.toContain("Current invocation only");
+  });
+
+  test("ignores a whitespace-only ephemeral system prompt", async () => {
+    const { provider, calls } = makeProvider([
+      {
+        content: [{ type: "text", text: "done" }],
+        stopReason: "end_turn",
+        usage: { inputTokens: 1, outputTokens: 1 },
+      },
+    ]);
+    const agent = new AIAgent(provider, new ToolRegistry(), {
+      model: "test-model",
+      systemPrompt: "stable",
+      ephemeralSystemPrompt: "  \n\t ",
+    });
+    const messages = initialMessages("hello");
+
+    await collect(runConversation(agent, messages));
+
+    expect(calls[0].messages[0]).toEqual({ role: "user", content: "hello" });
+  });
+
+  test("fails before the provider call when ephemeral instructions exceed the context budget", async () => {
+    const originalOverride = process.env.MAESTRO_CONTEXT_WINDOW;
+    process.env.MAESTRO_CONTEXT_WINDOW = "20000";
+    try {
+      const { provider, calls } = makeProvider([]);
+      const agent = new AIAgent(provider, new ToolRegistry(), {
+        model: "test-model",
+        systemPrompt: "stable",
+        ephemeralSystemPrompt: "X".repeat(60_000),
+      });
+      const messages = initialMessages("hello");
+
+      const events = await collect(runConversation(agent, messages));
+
+      expect(calls).toHaveLength(0);
+      expect(events).toEqual([
+        {
+          type: "error",
+          content:
+            "Request exceeds the provider context budget after applying ephemeralSystemPrompt. " +
+            "Reduce the ephemeral instructions or start a shorter session.",
+        },
+      ]);
+      expect(messages).toEqual([{ role: "user", content: "hello" }]);
+    } finally {
+      if (originalOverride === undefined) delete process.env.MAESTRO_CONTEXT_WINDOW;
+      else process.env.MAESTRO_CONTEXT_WINDOW = originalOverride;
+    }
   });
 
   test("uses the provider model's context window for compaction thresholds", async () => {

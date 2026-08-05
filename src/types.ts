@@ -228,6 +228,30 @@ export interface AgentQueryOptions {
    */
   cwd: string;
   systemPrompt: string;
+  /**
+   * System-level instructions for this provider invocation only.
+   *
+   * Before each primary conversation-model call, the SDK appends these
+   * instructions to the invocation's starting user message in a
+   * provider-facing projection. The fixed position lets prompt-cache prefixes
+   * advance across tool-call iterations. The instructions never enter
+   * canonical conversation history, compaction input, raw log, or the active
+   * projection, so the next external invocation must recompute from that user
+   * turn once when the transient block disappears or changes.
+   *
+   * This value is deliberately not inherited by `Agent`-tool subagents and is
+   * not supplied to internal compaction-model calls. Each subagent is a
+   * separate invocation, while compaction must never summarize or persist the
+   * transient instructions.
+   *
+   * This is a user-role runtime hint, not a provider-native system-role policy
+   * boundary. Only pass host-trusted instructions; enforce security policy in
+   * the stable system prompt and tool/LLM hooks.
+   *
+   * Empty and whitespace-only values are ignored. Maestro-only; hosts should
+   * not assume an equivalent option exists for other agent backends.
+   */
+  ephemeralSystemPrompt?: string;
   userId?: string;
   session?: string;
   sessionType?: "dm" | "forum" | "ephemeral" | "manager";

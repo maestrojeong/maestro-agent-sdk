@@ -458,6 +458,9 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
     model: resolvedModel,
     sessionId,
     systemPrompt: augmentedSystemPrompt,
+    ...(opts.ephemeralSystemPrompt?.trim()
+      ? { ephemeralSystemPrompt: opts.ephemeralSystemPrompt }
+      : {}),
     // Effort-derived tool-iteration cap. The model sees the same number via
     // the per-iteration `<system-reminder>` (see `buildIterReminder` above)
     // so it can self-pace — low effort tells it to wrap up fast, xhigh

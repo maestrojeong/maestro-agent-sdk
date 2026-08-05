@@ -20,6 +20,12 @@ export interface AIAgentConfig {
   model: string;
   /** System prompt — usually composed by the host before each query. */
   systemPrompt: string;
+  /**
+   * Per-invocation system instructions projected onto the invocation's
+   * starting user message before each primary model call. Canonical history
+   * never contains this value.
+   */
+  ephemeralSystemPrompt?: string;
   /** Hard cap on tool-calling iterations. Omit for unbounded (the loop
    *  runs until `end_turn` / abort). Set a finite number when the host
    *  needs to bound turn budget. */
@@ -133,6 +139,7 @@ export class AIAgent {
   > & {
     thinkingBudget?: number;
     effort?: EffortLevel;
+    ephemeralSystemPrompt?: string;
     abortSignal?: AbortSignal;
     sessionId?: string;
     buildIterReminder?: (iterationsRemaining: number) => string | null;
@@ -166,6 +173,9 @@ export class AIAgent {
         ? { thinkingBudget: config.thinkingBudget }
         : {}),
       ...(config.effort ? { effort: config.effort } : {}),
+      ...(config.ephemeralSystemPrompt?.trim()
+        ? { ephemeralSystemPrompt: config.ephemeralSystemPrompt }
+        : {}),
       ...(config.abortSignal ? { abortSignal: config.abortSignal } : {}),
       ...(config.sessionId ? { sessionId: config.sessionId } : {}),
       ...(config.buildIterReminder ? { buildIterReminder: config.buildIterReminder } : {}),
