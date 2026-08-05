@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.2.3] - 2026-08-06
+
+### Added
+- `AgentQueryOptions.ephemeralSystemPrompt` supplies late-bound system
+  instructions through the invocation's starting user message without changing
+  the stable system prompt. Its fixed wire position preserves tool-loop cache
+  continuity, while canonical history, compaction, subagents, and both raw and
+  active session files omit it. Oversized projected requests now fail before the
+  provider call instead of bypassing context compaction and producing a 400.
+
 ## [0.2.2] - 2026-08-04
 
 ### Fixed

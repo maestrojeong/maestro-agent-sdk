@@ -67,6 +67,53 @@ const TASK_TOOL_NAMES = new Set([
 ]);
 
 /**
+ * Add late-bound system instructions to the invocation's starting user
+ * message in the provider-facing view without mutating canonical history.
+ *
+ * Keeping one fixed anchor makes each tool-loop request a stable extension of
+ * the previous request, so the provider cache can advance through the entire
+ * invocation. A later external invocation sees canonical history without the
+ * block and must recompute from this anchor once; that divergence is
+ * unavoidable without persisting the supposedly ephemeral instruction.
+ *
+ * Compaction can remove the starting message from the provider-facing view.
+ * In that exceptional path, fall back to the latest user message so the
+ * instruction remains visible even though the compacted boundary already
+ * prevents exact prefix reuse.
+ */
+function projectEphemeralSystemPrompt(
+  messages: ProviderMessage[],
+  anchor: ProviderMessage | undefined,
+  prompt: string | undefined,
+): ProviderMessage[] {
+  if (!prompt?.trim()) return messages;
+
+  let target = anchor ? messages.indexOf(anchor) : -1;
+  if (target < 0) {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === "user") {
+        target = i;
+        break;
+      }
+    }
+  }
+  if (target < 0) return messages;
+
+  const text = `<system-instructions>\n${prompt}\n</system-instructions>`;
+  const message = messages[target];
+  const content: ProviderContentBlock[] =
+    typeof message.content === "string"
+      ? [
+          ...(message.content.length > 0 ? [{ type: "text" as const, text: message.content }] : []),
+          { type: "text", text },
+        ]
+      : [...message.content, { type: "text", text }];
+  const projected = messages.slice();
+  projected[target] = { ...message, content };
+  return projected;
+}
+
+/**
  * Derive a guided-compaction focus from the latest *plain* user request (the
  * active task). Tool-result-bearing user turns and compaction markers are
  * skipped so the focus is the human's actual ask, not machine plumbing.
@@ -135,6 +182,7 @@ export async function* runConversation(
   const activeContextWindow = process.env.MAESTRO_CONTEXT_WINDOW
     ? defaultContextWindow()
     : (agent.provider.contextWindowForModel?.(agent.config.model) ?? defaultContextWindow());
+  const invocationAnchor = messages.at(-1)?.role === "user" ? messages.at(-1) : undefined;
 
   while (iterations < maxIter) {
     if (agent.config.abortSignal?.aborted) {
@@ -276,6 +324,15 @@ export async function* runConversation(
       yield { type: "error", content: emergencyNotice };
     }
 
+    // Keep late-bound instructions out of canonical history and compaction.
+    // Projection happens after compression but before the hard-cap copy pass,
+    // so a trimmed tool_result still carries the trailing instruction block.
+    wireMessages = projectEphemeralSystemPrompt(
+      wireMessages,
+      invocationAnchor,
+      agent.config.ephemeralSystemPrompt,
+    );
+
     // ─── Hard context cap — last defense before the wire ───
     // Every path out of compressIfNeeded can still carry a giant RECENT
     // tool_result verbatim: prune only strips the old end, aux compaction
@@ -308,6 +365,15 @@ export async function* runConversation(
         type: "status",
         content: `trimmed ${hardCap.trimmedBlocks} oversize tool output(s)`,
       };
+    }
+    if (agent.config.ephemeralSystemPrompt && hardCap.afterTokens > hardCapTokens) {
+      yield {
+        type: "error",
+        content:
+          "Request exceeds the provider context budget after applying ephemeralSystemPrompt. " +
+          "Reduce the ephemeral instructions or start a shorter session.",
+      };
+      return;
     }
 
     // Drive the API call via stream() when available so we can emit
@@ -342,10 +408,11 @@ export async function* runConversation(
         return;
       }
       if (preResult.decision === "reject_content" && preResult.message) {
-        messages.push({
+        const rejectionMessage: ProviderMessage = {
           role: "user",
           content: [{ type: "text", text: preResult.message }],
-        });
+        };
+        messages.push(rejectionMessage);
         yield { type: "user_message", content: preResult.message };
         continue;
       }
@@ -741,7 +808,8 @@ export async function* runConversation(
       }
     }
 
-    messages.push({ role: "user", content: toolResultBlocks });
+    const toolResultMessage: ProviderMessage = { role: "user", content: toolResultBlocks };
+    messages.push(toolResultMessage);
     iterations++;
   }
 

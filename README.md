@@ -82,6 +82,31 @@ log, or persist only the events it needs.
 Pass a stable `sessionId` to resume a conversation. Sessions are stored as
 JSONL files under `~/.maestro/sessions` by default.
 
+For system-level instructions that may change between calls, pass
+`ephemeralSystemPrompt`. Before each primary model call, Maestro appends it to
+the invocation's starting user message on the provider wire, keeps that fixed
+position across tool iterations, and excludes it from compaction and persisted
+session history. It is not inherited by `Agent`-tool subagents. The stable
+`systemPrompt` remains eligible for provider prefix caching, and each tool-loop
+request stays a stable extension of the previous one. The next external call
+must recompute from the transient instruction's former position once.
+
+The value is a user-role runtime hint, not a provider-native system-role policy
+boundary. Pass only host-trusted content; keep security rules in the stable
+system prompt and enforce them with tool or LLM hooks.
+
+```ts
+for await (const event of maestroProvider({
+  agent: "maestro",
+  cwd: process.cwd(),
+  systemPrompt: stableBasePrompt,
+  ephemeralSystemPrompt: currentRuntimeInstructions,
+  prompt: userMessage,
+})) {
+  if (event.type === "text_delta") process.stdout.write(event.content);
+}
+```
+
 ## Providers and models
 
 | Provider | Models | Credential |
