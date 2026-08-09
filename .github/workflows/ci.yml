@@ -13,7 +13,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: ["20", "22"]
+        # Must track `engines.node` in package.json. The floor moved 20 ->
+        # 22.13 in 0.2.4 because pdfjs-dist v6 (the fix for the PDF.js RCE,
+        # GHSA-hq66-cqwq-w95j) declares `>=22.13.0 || >=24`. Node 20 happens
+        # to still pass today, but keeping it in the matrix would advertise
+        # support we no longer promise — and pdfjs could reach for a 22-only
+        # API in any patch release without it being a breaking change on
+        # their side.
+        node: ["22", "24"]
 
     steps:
       - uses: actions/checkout@v4
