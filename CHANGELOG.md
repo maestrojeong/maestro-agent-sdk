@@ -1,5 +1,53 @@
 # Changelog
 
+## [0.2.4] - 2026-08-09
+
+### Security
+- `pdfjs-dist` `^5.7.284` → `^6.2.108`, closing GHSA-hq66-cqwq-w95j
+  (arbitrary JavaScript execution when opening a malicious PDF, high). This was
+  the SDK's only *direct* high-severity advisory, and because npm does not
+  apply a root project's `overrides` to a dependency's own resolution, every
+  downstream consumer inherited it — a host pinning the fix locally could not
+  fix it for its own users. 5.x has no patched release, so the major bump is
+  the only remedy.
+- `@modelcontextprotocol/sdk` `^1.27.1` → `^1.30.0` and `undici` `^6.27.0` →
+  `^7.29.0` to pick up their current advisory-clean lines. The remaining
+  reported findings are all transitive through `@modelcontextprotocol/sdk`
+  (`fast-uri`, `ip-address`, `hono`, `body-parser`) and unfixable here — 1.30.0
+  is upstream's latest.
+
+### Fixed
+- **WebFetch threw on every call under Bun.** Bun resolves a bare `undici`
+  import to its own built-in shim rather than the installed package, and that
+  shim's `Agent` implements neither `destroy()` nor `close()`. `fetchPinned`
+  called `dispatcher.destroy()` unconditionally, so a *successful* HTTP
+  response was converted into `TypeError: dispatcher.destroy is not a function`
+  during teardown. Teardown is now feature-detected and best-effort, so it can
+  neither fail a good response nor mask the original error on the failure path.
+  Pre-existing bug, unrelated to the undici bump: 6 and 7 behave identically
+  because neither is the module Bun actually loads.
+- **PDF text extraction now loads pdfjs's bundled `cmaps/` and
+  `standard_fonts/`.** pdfjs v6 no longer guesses their location, and omitting
+  them degrades glyph mapping silently while still returning text — the failure
+  is visible only as a log warning. `cMapUrl` is load-bearing for CJK PDFs
+  using predefined CMap encodings, which otherwise extract as empty strings.
+  Paths are resolved from the installed package at runtime (so nested/pnpm
+  layouts work) and passed as plain filesystem paths: the Node data factory
+  `fs.readFile`s the value verbatim, so a `file://` URL fails on both node and
+  bun.
+
+### Added
+- Test coverage for the Read tool's PDF branch, which previously had none —
+  page headers, contiguous line numbering, page-based `offset`/`limit`, and
+  corrupt-input handling, against a committed 3-page fixture
+  (`tests/fixtures/sample.pdf`, regenerate with
+  `node tests/setup/make-pdf-fixture.mjs`). Plus regression tests for both
+  fixes above.
+
+### Changed
+- **`engines.node` `>=20` → `>=22.13.0`**, required by `pdfjs-dist` v6. The
+  only breaking element of this release; there are no public API changes.
+
 ## [0.2.3] - 2026-08-06
 
 ### Added

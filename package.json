@@ -1,6 +1,6 @@
 {
   "name": "maestro-agent-sdk",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Embeddable TypeScript agent SDK for DeepSeek and Kimi — built-in tools, skills, memory, and MCP.",
   "license": "MIT",
   "author": "Yeonwoo Jeong <aadd4020@gmail.com>",
@@ -61,13 +61,13 @@
     "maestro"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=22.13.0"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.27.1",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "cheerio": "^1.2.0",
-    "pdfjs-dist": "^5.7.284",
-    "undici": "^6.27.0"
+    "pdfjs-dist": "^6.2.108",
+    "undici": "^7.29.0"
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.12",
