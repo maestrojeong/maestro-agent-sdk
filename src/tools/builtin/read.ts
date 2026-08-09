@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, type Stats, statSync } from "node:fs";
-import { extname, isAbsolute } from "node:path";
+import { createRequire } from "node:module";
+import { dirname, extname, isAbsolute, join, sep } from "node:path";
 import type { MaestroToolResultBlock } from "@/providers/base";
 import { defineTool } from "@/providers/base";
 import type { FileStateTracker } from "@/tools/file-state";
@@ -303,6 +304,48 @@ function fileIdentity(stat: Stats, bytes: Uint8Array): { hash: string; dev: numb
  * the caller catches and wraps in `{error}` — matches the text-path
  * error contract.
  */
+/**
+ * Locate pdfjs-dist's bundled `cmaps/` and `standard_fonts/` directories.
+ *
+ * pdfjs ships these as data files rather than bundling them, and from v6 it
+ * no longer guesses a default location — omit them and it logs
+ * "Ensure that the `standardFontDataUrl` API parameter is provided" and
+ * silently drops glyphs. `cMapUrl` is the load-bearing one for CJK: a Korean
+ * or Japanese PDF using a predefined CMap encoding extracts as empty strings
+ * without it.
+ *
+ * Resolved from the installed package (not a build-time constant) so it
+ * follows the consumer's node_modules layout — hoisted, nested, or pnpm.
+ * Returns `{}` if resolution fails so a weird install degrades to the old
+ * best-effort behaviour instead of throwing.
+ *
+ * These MUST be plain filesystem paths with a trailing separator, not
+ * `file://` URLs. The legacy build's Node data factories `fs.readFile` the
+ * value as-is, so a `file://` URL fails with "Unable to load font data at:
+ * file:///…" on BOTH node and bun (verified against 6.2.108) even though the
+ * file is sitting right there — text still comes out, but standard-font
+ * glyph mapping is silently degraded.
+ */
+function pdfAssetPaths(): {
+  cMapUrl?: string;
+  standardFontDataUrl?: string;
+  cMapPacked?: boolean;
+} {
+  try {
+    const require_ = createRequire(import.meta.url);
+    const root = dirname(require_.resolve("pdfjs-dist/package.json"));
+    // pdfjs concatenates the base with a filename, so the trailing sep matters.
+    const dir = (name: string) => join(root, name) + sep;
+    return {
+      cMapUrl: dir("cmaps"),
+      cMapPacked: true,
+      standardFontDataUrl: dir("standard_fonts"),
+    };
+  } catch {
+    return {};
+  }
+}
+
 async function extractPdfText(
   filePath: string,
   startPage: number,
@@ -314,7 +357,7 @@ async function extractPdfText(
   // call Read on a PDF.
   const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
   const data = new Uint8Array(readFileSync(filePath));
-  const loadingTask = pdfjs.getDocument({ data });
+  const loadingTask = pdfjs.getDocument({ data, ...pdfAssetPaths() });
   const doc = await loadingTask.promise;
   const total = doc.numPages;
   const startIdx = Math.max(1, startPage);

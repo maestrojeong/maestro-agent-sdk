@@ -297,13 +297,37 @@ async function fetchPinned(
     });
     return {
       response: response as unknown as Response,
-      close: async () => {
-        await dispatcher.destroy();
-      },
+      close: () => destroyDispatcher(dispatcher),
     };
   } catch (error) {
-    await dispatcher.destroy();
+    await destroyDispatcher(dispatcher);
     throw error;
+  }
+}
+
+/**
+ * Tear down a dispatcher, tolerating runtimes whose `undici` is not undici.
+ *
+ * Bun resolves a bare `undici` import to its OWN built-in shim rather than the
+ * package in node_modules (`import.meta.resolve("undici") === "undici"`), and
+ * that shim's `Agent` implements neither `destroy()` nor `close()` — it also
+ * ignores the `dispatcher` option entirely. Calling `dispatcher.destroy()`
+ * unconditionally therefore threw `TypeError: dispatcher.destroy is not a
+ * function` out of every WebFetch call under Bun, turning a successful fetch
+ * into a tool error. This is a Bun-shim quirk, not a version thing: undici 6
+ * and 7 behave identically because neither is the module actually loaded.
+ *
+ * A failed teardown must never mask the response (or the original error in the
+ * catch path), so anything thrown here is swallowed — the worst case is a
+ * connection pool that lives until GC, which is exactly what Bun does anyway.
+ */
+async function destroyDispatcher(dispatcher: unknown): Promise<void> {
+  const d = dispatcher as { destroy?: () => Promise<void>; close?: () => Promise<void> };
+  try {
+    if (typeof d?.destroy === "function") await d.destroy();
+    else if (typeof d?.close === "function") await d.close();
+  } catch {
+    // Teardown is best-effort; never surface it to the caller.
   }
 }
 
