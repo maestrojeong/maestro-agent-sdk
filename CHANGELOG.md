@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.5] - 2026-08-16
+
+### Changed
+- Successful login-shell PATH merges are now logged at `debug` rather than
+  `info`, keeping normal SDK startup quiet while retaining diagnostics when
+  debug logging is enabled.
+
 ## [0.2.4] - 2026-08-09
 
 ### Security

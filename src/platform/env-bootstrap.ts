@@ -134,7 +134,7 @@ export function bootstrapHostPath(): void {
   }
 
   process.env.PATH = current ? `${current}:${additions.join(":")}` : additions.join(":");
-  _log.info(
+  _log.debug(
     { added: additions.length, dirs: additions, shell },
     "env-bootstrap: merged login shell PATH",
   );
