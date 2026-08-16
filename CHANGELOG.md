@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.6] - 2026-08-16
+
+### Fixed
+- `MAESTRO_SDK_VERSION` was still stamped as `0.2.4` in the `0.2.5` npm
+  publish, so the SDK advertised an older version than its package version.
+  `0.2.6` re-publishes with the version constant back in sync.
+
 ## [0.2.5] - 2026-08-16
 
 ### Changed
