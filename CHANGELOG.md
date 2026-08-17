@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.2.8] - 2026-08-17
+
+### Fixed
+- The `type: "sse"` MCP transport now passes `spec.headers` through to
+  `SSEClientTransport`, mirroring the `type: "http"` support added in 0.2.7.
+  The 0.2.7 Streamable HTTP work only wired headers into the `http` branch of
+  `buildTransport()` — the older SSE branch silently dropped `spec.headers`,
+  forcing SSE servers that need auth (e.g. a browser-automation MCP requiring
+  an `X-Browser-Capability` header) through a stdio proxy-process workaround
+  instead of connecting directly. Headers are now applied to both the
+  initial `EventSource`-style GET and the recurring POST sends; specs with no
+  `headers` configured keep building the exact same bare `SSEClientTransport`
+  as before, so unauthenticated SSE servers see no behavior change.
+
 ## [0.2.7] - 2026-08-17
 
 ### Added
