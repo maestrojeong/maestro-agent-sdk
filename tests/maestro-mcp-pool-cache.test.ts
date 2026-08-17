@@ -132,6 +132,27 @@ describe("hashSpec", () => {
     expect(hashSpec(a)).not.toBe(hashSpec(rotated));
   });
 
+  test("sse header values participate without depending on name casing or order", () => {
+    const a: MaestroMcpServerSpec = {
+      type: "sse",
+      url: "https://example.com/sse",
+      headers: { Authorization: "Bearer first", "X-Tenant": "acme" },
+    };
+    const reordered: MaestroMcpServerSpec = {
+      type: "sse",
+      url: "https://example.com/sse",
+      headers: { "x-tenant": "acme", authorization: "Bearer first" },
+    };
+    const rotated: MaestroMcpServerSpec = {
+      type: "sse",
+      url: "https://example.com/sse",
+      headers: { Authorization: "Bearer second", "X-Tenant": "acme" },
+    };
+
+    expect(hashSpec(a)).toBe(hashSpec(reordered));
+    expect(hashSpec(a)).not.toBe(hashSpec(rotated));
+  });
+
   test("per-tool timeout participates (specs differing only in timeout must not collide)", () => {
     const a: MaestroMcpServerSpec = { command: "bun", timeout: 30_000 };
     const b: MaestroMcpServerSpec = { command: "bun", timeout: 600_000 };

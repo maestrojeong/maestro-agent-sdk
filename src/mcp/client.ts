@@ -31,7 +31,7 @@ export interface MaestroMcpServerSpec {
   /** Remote servers. */
   type?: "sse" | "http";
   url?: string;
-  /** Headers sent with every Streamable HTTP request. */
+  /** Headers sent with every Streamable HTTP or SSE request. */
   headers?: Record<string, string>;
   /** Per-tool request timeout in milliseconds. Defaults to the MCP SDK's 60s. */
   timeout?: number;
@@ -184,6 +184,36 @@ export class MaestroMcpClient {
       // 127.0.0.1` so every transport reaches the same address family
       // without per-client hacks, and a future remote-MCP URL won't get
       // silently rewritten under us.
+      //
+      // `spec.headers` mirrors the `http` branch above (auth tokens, tenant
+      // headers, etc). Unlike Streamable HTTP, SSE's initial connection is a
+      // plain `EventSource` GET which doesn't accept custom headers on its
+      // own — so on top of `requestInit` (used for the recurring POST sends)
+      // we also thread a custom `eventSourceInit.fetch` that stamps the same
+      // headers onto that first GET. We only build the options object when
+      // headers are actually configured, so unauthenticated SSE servers keep
+      // getting the exact same bare `SSEClientTransport` as before this
+      // change (no behavior change for existing callers).
+      if (this.spec.headers) {
+        const headers = this.spec.headers;
+        return new SSEClientTransport(new URL(this.spec.url), {
+          eventSourceInit: {
+            // `Headers.set` is case-insensitive, unlike a plain-object spread
+            // — merging via object spread here would leave e.g. `authorization`
+            // (from `init.headers`, already normalized to lowercase by the
+            // MCP SDK's own `_commonHeaders()`) and `Authorization` (our
+            // literal spec key) as two distinct object keys, and the `Headers`
+            // constructor would then treat them as two headers and comma-join
+            // the values instead of overwriting.
+            fetch: (url, init) => {
+              const merged = new Headers(init?.headers);
+              for (const [name, value] of Object.entries(headers)) merged.set(name, value);
+              return fetch(url, { ...init, headers: merged });
+            },
+          },
+          requestInit: { headers: new Headers(headers) },
+        });
+      }
       return new SSEClientTransport(new URL(this.spec.url));
     }
     if (!this.spec.command) {
