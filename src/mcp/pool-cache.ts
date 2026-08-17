@@ -75,8 +75,9 @@ let clientFactory: ClientFactory = (name, spec) => new MaestroMcpClient(name, sp
 
 /**
  * Build a stable hash of a server spec. We hash command + args + transport
- * url + sorted env keys (values excluded — they often contain per-turn
- * variables like depth, group ids; would defeat caching) + per-tool timeout.
+ * url + HTTP headers + sorted env keys (values excluded — they often contain
+ * per-turn variables like depth, group ids; would defeat caching) + per-tool
+ * timeout.
  *
  * Two callers with the same hash get the same client back — caller is
  * responsible for ensuring that's semantically correct (i.e. they pass the
@@ -88,6 +89,12 @@ export function hashSpec(spec: MaestroMcpServerSpec): string {
     args: spec.args ?? [],
     type: spec.type ?? null,
     url: spec.url ?? null,
+    // Streamable HTTP transports retain headers for their lifetime. Include
+    // values so credential rotation cannot reuse a client with stale auth.
+    // Header names are case-insensitive, so canonicalize them before hashing.
+    headers: spec.headers
+      ? [...new Headers(spec.headers).entries()].sort(([a], [b]) => a.localeCompare(b))
+      : [],
     // env values vary per turn (e.g. session-comm --depth). Hash only the keys
     // so an env-mutating caller still gets a cache hit on the same shape.
     envKeys: spec.env ? Object.keys(spec.env).sort() : [],

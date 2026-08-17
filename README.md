@@ -241,7 +241,7 @@ images are PNG, JPG, WebP, and GIF up to 10 MB.
 ## MCP
 
 Register an MCP resolver once in the host. Servers start lazily for a query and
-support stdio or SSE transport.
+support stdio, SSE, or Streamable HTTP transport.
 
 ```ts
 import { setMcpResolver } from "maestro-agent-sdk";
@@ -249,6 +249,11 @@ import { setMcpResolver } from "maestro-agent-sdk";
 setMcpResolver((opts) => ({
   playwright: { command: "playwright-mcp", args: [] },
   search: { type: "sse", url: "https://internal.example.com/mcp" },
+  remote: {
+    type: "http",
+    url: "https://remote.example.com/mcp",
+    headers: { Authorization: "Bearer <token>" },
+  },
 }));
 ```
 

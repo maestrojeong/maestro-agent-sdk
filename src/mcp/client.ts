@@ -1,6 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { logger } from "@/platform/logger";
 import { MAESTRO_SDK_VERSION } from "@/platform/version";
@@ -27,9 +28,11 @@ export interface MaestroMcpServerSpec {
   command?: string;
   args?: string[];
   env?: Record<string, string>;
-  /** sse servers. */
-  type?: "sse";
+  /** Remote servers. */
+  type?: "sse" | "http";
   url?: string;
+  /** Headers sent with every Streamable HTTP request. */
+  headers?: Record<string, string>;
   /** Per-tool request timeout in milliseconds. Defaults to the MCP SDK's 60s. */
   timeout?: number;
 }
@@ -162,6 +165,14 @@ export class MaestroMcpClient {
   }
 
   private buildTransport(): Transport {
+    if (this.spec.type === "http") {
+      if (!this.spec.url) {
+        throw new Error(`Maestro MCP '${this.name}': http spec missing url`);
+      }
+      return new StreamableHTTPClientTransport(new URL(this.spec.url), {
+        requestInit: { headers: new Headers(this.spec.headers) },
+      });
+    }
     if (this.spec.type === "sse") {
       if (!this.spec.url) {
         throw new Error(`Maestro MCP '${this.name}': sse spec missing url`);

@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.7] - 2026-08-17
+
+### Added
+- Native MCP Streamable HTTP client support via `{ type: "http", url,
+  headers? }`, including authenticated requests. HTTP header values participate
+  in the pooled-client cache identity so credential changes cannot reuse a
+  stale connection.
+
 ## [0.2.6] - 2026-08-16
 
 ### Fixed
