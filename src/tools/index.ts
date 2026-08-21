@@ -32,14 +32,6 @@ export {
   type ReadToolOutputToolOptions,
 } from "@/tools/builtin/read_tool_output";
 export {
-  createTaskCreateTool,
-  createTaskGetTool,
-  createTaskListTool,
-  createTaskOutputTool,
-  createTaskStopTool,
-  createTaskUpdateTool,
-} from "@/tools/builtin/tasks";
-export {
   createWebFetchTool,
   htmlToMarkdown,
   htmlToText,

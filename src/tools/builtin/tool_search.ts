@@ -12,9 +12,13 @@ import type { ToolHandler, ToolRegistry } from "@/tools/registry";
  *
  *   - **Deferred tools** — typically MCP tools registered via the pool
  *     (auto-defer when `AgentQueryOptions.enableToolSearch` is set).
- *     They show up in the system-reminder as `name + 60-char summary`
- *     but their full JSON Schema is NOT shipped on the wire. The model
- *     learns they exist from the catalog but can't call them yet.
+ *     They show up as `name + summary` in a catalog note injected via the
+ *     ephemeral system-instructions path (v0.3.0+; previously the per-turn
+ *     `<system-reminder>` — moved so the catalog stops compounding into
+ *     canonical history every turn, see `memory/reminder.ts`'s
+ *     `buildDeferredToolsNote` docstring) but their full JSON Schema is NOT
+ *     shipped on the wire. The model learns they exist from the catalog but
+ *     can't call them yet.
  *
  * `ToolSearch` is the bridge: the model invokes it with either an exact
  * name list ("select:Foo,Bar") or a keyword query, the registry promotes
@@ -25,7 +29,7 @@ import type { ToolHandler, ToolRegistry } from "@/tools/registry";
  * ## Why both modes exist
  *
  *   - **`select:` mode** — used when the model already knows the exact
- *     tool name from the catalog (one line per tool name in the reminder).
+ *     tool name from the catalog (one line per tool name in the note).
  *     Deterministic: each comma-separated name is looked up verbatim;
  *     no fuzzy matching that could promote the wrong tool.
  *
@@ -67,8 +71,8 @@ import type { ToolHandler, ToolRegistry } from "@/tools/registry";
 export const TOOL_SEARCH_NAME = "ToolSearch" as const;
 
 /**
- * Bound the keyword-mode result size. 5 matches the system-reminder's
- * catalog density: pulling more than ~5 tools into active per turn defeats
+ * Bound the keyword-mode result size. 5 matches the catalog note's
+ * density: pulling more than ~5 tools into active per turn defeats
  * the budget-tightening purpose of deferral. Callers can raise via
  * `max_results` input if they really want more, capped at 25 (above which
  * the result text gets unwieldy for the model to parse).
@@ -84,7 +88,7 @@ export function createToolSearchTool(opts: { registry: ToolRegistry }): ToolHand
       name: TOOL_SEARCH_NAME,
       description:
         "Activate one or more deferred tools so you can call them on subsequent turns. " +
-        "Deferred tools are listed by name+summary in the system-reminder; their full " +
+        "Deferred tools are listed by name+summary in a system note; their full " +
         "schema is only sent on the wire after you ToolSearch for them. " +
         "Two query forms: 'select:Name1,Name2,...' for exact name selection (use this " +
         "when you already know the tool name from the catalog), or any other string " +
@@ -155,7 +159,7 @@ export function createToolSearchTool(opts: { registry: ToolRegistry }): ToolHand
       if (picked.length === 0) {
         return (
           `ToolSearch: no deferred tools match keyword "${query}". ` +
-          `Try 'select:ExactName' from the deferred-catalog section of the system-reminder, ` +
+          `Try 'select:ExactName' from the deferred-tools catalog note, ` +
           `or refine the keyword.`
         );
       }

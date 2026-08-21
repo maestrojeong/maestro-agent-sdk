@@ -2,7 +2,7 @@ import type { ToolResultTruncationConfig } from "@/core/tool-result-truncation";
 import type { Provider } from "@/providers/base";
 import { getNativeMaxOutputTokens } from "@/registry";
 import type { ToolRegistry } from "@/tools/registry";
-import type { EffortLevel, LlmPostHook, LlmPreHook, TaskSnapshot } from "@/types";
+import type { EffortLevel, LlmPostHook, LlmPreHook } from "@/types";
 
 /**
  * AIAgent — minimal TS port of upstream `run_agent.py::AIAgent`.
@@ -110,14 +110,6 @@ export interface AIAgentConfig {
    * only fires for subsequent tool_result turns.
    */
   buildIterReminder?: (iterationsRemaining: number) => string | null;
-  /**
-   * Task-list snapshot provider. When set, the loop calls this after any turn
-   * that executed a built-in task tool (TaskCreate/Update/List/Get/Output/Stop)
-   * and emits the result as a `tasks` UnifiedEvent, so hosts can render a live
-   * task panel without reading the on-disk task store. Return the current full
-   * list (replace, not delta).
-   */
-  snapshotTasks?: () => TaskSnapshot[];
   /** LLM Pre Hook — fires right before every provider API call. */
   llmPreHook?: LlmPreHook;
   /** LLM Post Hook — fires on turn-complete (no tool calls) before `result` event. */
@@ -143,7 +135,6 @@ export class AIAgent {
     abortSignal?: AbortSignal;
     sessionId?: string;
     buildIterReminder?: (iterationsRemaining: number) => string | null;
-    snapshotTasks?: () => TaskSnapshot[];
     llmPreHook?: LlmPreHook;
     llmPostHook?: LlmPostHook;
     /** Optional aux model override; consumed by the loop's compressIfNeeded
@@ -179,7 +170,6 @@ export class AIAgent {
       ...(config.abortSignal ? { abortSignal: config.abortSignal } : {}),
       ...(config.sessionId ? { sessionId: config.sessionId } : {}),
       ...(config.buildIterReminder ? { buildIterReminder: config.buildIterReminder } : {}),
-      ...(config.snapshotTasks ? { snapshotTasks: config.snapshotTasks } : {}),
       ...(config.llmPreHook ? { llmPreHook: config.llmPreHook } : {}),
       ...(config.llmPostHook ? { llmPostHook: config.llmPostHook } : {}),
       ...(config.auxModel ? { auxModel: config.auxModel } : {}),

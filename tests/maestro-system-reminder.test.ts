@@ -9,25 +9,31 @@ import { iterationBudgetLine, wrapUpOverlayLine } from "@/provider";
  * single-attach per turn) live closer to the maestroProvider integration
  * level — see maestro-provider.integration tests when they land. The
  * smoke check below covers what we can verify without standing up a
- * real provider / loop: shape, session id surfacing, and that extras
- * render verbatim.
+ * real provider / loop: shape and that extras render verbatim.
+ *
+ * v0.3.0: `sessionId` and the deferred-tool catalog no longer go through
+ * this builder (session id was dead weight and got removed outright; the
+ * catalog moved to the ephemeral system-instructions path — see
+ * `buildDeferredToolsNote` in `memory/reminder.ts` and its own tests in
+ * `maestro-tool-search.test.ts`). This block now carries only the caller's
+ * `extras` (iteration budget / wrap-up overlay in practice).
  */
 
 describe("buildSystemReminder", () => {
-  test("renders an opening + closing `<system-reminder>` tag pair", () => {
-    const out = buildSystemReminder({ sessionId: "abc" });
+  test("renders an opening + closing `<system-reminder>` tag pair when extras are present", () => {
+    const out = buildSystemReminder({ extras: ["Tool iterations remaining: 5/10"] });
     expect(out.startsWith("<system-reminder>")).toBe(true);
     expect(out.endsWith("</system-reminder>")).toBe(true);
   });
 
-  test("includes the resolved sessionId so cross-session tools can reference it", () => {
-    const out = buildSystemReminder({ sessionId: "deadbeef-1234" });
-    expect(out).toContain("Session: deadbeef-1234");
+  test("returns an empty string when there are no extras — no pointless empty tag pair", () => {
+    expect(buildSystemReminder({})).toBe("");
+    expect(buildSystemReminder({ extras: [] })).toBe("");
+    expect(buildSystemReminder({ extras: [""] })).toBe("");
   });
 
   test("appends extras verbatim, dropping empties", () => {
     const out = buildSystemReminder({
-      sessionId: "s",
       extras: ["Active task: refactor migrations", "", "Open files: 2"],
     });
     expect(out).toContain("Active task: refactor migrations");
@@ -40,8 +46,8 @@ describe("buildSystemReminder", () => {
 
   test("output for the same input is deterministic (byte-stable across turns)", () => {
     // Critical for Anthropic prompt-cache safety — see reminder.ts header.
-    const a = buildSystemReminder({ sessionId: "stable" });
-    const b = buildSystemReminder({ sessionId: "stable" });
+    const a = buildSystemReminder({ extras: ["stable line"] });
+    const b = buildSystemReminder({ extras: ["stable line"] });
     expect(a).toBe(b);
   });
 });

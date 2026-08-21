@@ -65,7 +65,6 @@ import { appendJsonlFile, writeJsonlFile } from "@/platform/jsonl";
 import { logger } from "@/platform/logger";
 import { MAESTRO_SDK_VERSION } from "@/platform/version";
 import type { ProviderContentBlock, ProviderMessage } from "@/providers/base";
-import { dropTaskStore } from "@/state/tasks";
 import type { ConversationEntry } from "@/storage/conversations";
 import { dropFileStateTracker } from "@/tools/file-state";
 
@@ -734,7 +733,6 @@ export function deleteMaestroSession(sessionId: string): void {
       logger.warn({ err: e, sessionId }, "deleteMaestroSession: unlink failed (non-ENOENT)");
       // Still drop the in-memory caches — caller treats the session as gone.
       dropFileStateTracker(sessionId);
-      dropTaskStore(sessionId);
       throw e;
     }
   }
@@ -758,9 +756,6 @@ export function deleteMaestroSession(sessionId: string): void {
       logger.warn({ err: e, sessionId }, "deleteMaestroSession: memory state unlink failed");
     }
   }
-  // Drops the in-memory store AND unlinks the on-disk `.tasks.json` sidecar
-  // (plus the legacy `.todos.json` if a migration hasn't fired yet).
-  dropTaskStore(sessionId);
 }
 
 /**
@@ -1290,8 +1285,6 @@ export function cleanupStaleMaestroSessions(maxAgeMs: number = DEFAULT_MAESTRO_S
         }
       }
       dropFileStateTracker(sessionId);
-      // Also unlinks the on-disk `.tasks.json` sidecar (+ legacy `.todos.json`).
-      dropTaskStore(sessionId);
     } catch (e) {
       if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") {
         logger.warn(
@@ -1301,7 +1294,6 @@ export function cleanupStaleMaestroSessions(maxAgeMs: number = DEFAULT_MAESTRO_S
       } else {
         // ENOENT mid-loop = raced. File gone → caches moot.
         dropFileStateTracker(sessionId);
-        dropTaskStore(sessionId);
       }
     }
   }

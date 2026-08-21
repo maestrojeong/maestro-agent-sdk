@@ -55,7 +55,7 @@ export {
   type CompactMaestroSessionResult,
   compactMaestroSession,
 } from "@/memory/manual-compaction";
-export { buildSystemReminder } from "@/memory/reminder";
+export { buildDeferredToolsNote, buildSystemReminder } from "@/memory/reminder";
 export { estimateTokens } from "@/memory/token-estimate";
 export { onShutdown, runShutdown } from "@/platform/lifecycle";
 // ─── Host integration points (dependency injection) ──────────────────────────
@@ -122,8 +122,6 @@ export {
   maestroSessionsDir,
   type SaveSessionMetaInput,
 } from "@/session-store";
-// ─── State (todos) ───────────────────────────────────────────────────────────
-export { dropTaskStore, getTaskStore, type TaskEntry, type TaskStatus } from "@/state/tasks";
 export type { ConversationEntry } from "@/storage/conversations";
 export { type ConversationReader, setConversationReader } from "@/storage/conversations";
 export { createAgentTool } from "@/tools/builtin/agent";
@@ -138,12 +136,6 @@ export {
   createReadToolOutputTool,
   type ReadToolOutputToolOptions,
 } from "@/tools/builtin/read_tool_output";
-export {
-  createTaskCreateTool,
-  createTaskGetTool,
-  createTaskListTool,
-  createTaskUpdateTool,
-} from "@/tools/builtin/tasks";
 export {
   createWebFetchTool,
   type WebFetchToolOptions,
@@ -180,7 +172,6 @@ export type {
   LlmPostHook,
   LlmPreHook,
   ProviderApiKeyOverrides,
-  TaskSnapshot,
   TokenUsage,
   UnifiedEvent,
 } from "@/types";

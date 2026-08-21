@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { buildSystemReminder } from "@/memory/reminder";
+import { buildDeferredToolsNote } from "@/memory/reminder";
 import { defineTool } from "@/providers/base";
 import { createToolSearchTool, TOOL_SEARCH_NAME } from "@/tools/builtin/tool_search";
 import { type ToolHandler, ToolRegistry } from "@/tools/registry";
@@ -16,8 +16,9 @@ import { type ToolHandler, ToolRegistry } from "@/tools/registry";
  *     deferredCatalog() lists only still-deferred; serialize / restore round-trip.
  *   - ToolSearch: "select:" exact-name selection, keyword fuzzy match,
  *     unknown-name NOT_FOUND, idempotent ALREADY_ACTIVE.
- *   - Reminder: deferred-catalog section rendered only when non-empty,
- *     omitted otherwise (byte-shape preserved for non-opt-in callers).
+ *   - `buildDeferredToolsNote`: renders the catalog note only when non-empty
+ *     (v0.3.0+ this rides the ephemeral system-instructions path, not the
+ *     per-turn reminder — see `provider.ts`'s `deferredToolsNote`).
  */
 
 // Minimal stub tool factory — every test wants several distinct schemas
@@ -286,28 +287,24 @@ describe("ToolSearch built-in", () => {
   });
 });
 
-describe("system-reminder: deferred catalog", () => {
-  test("renders Deferred tools section only when non-empty", () => {
-    const withCatalog = buildSystemReminder({
-      sessionId: "s1",
-      deferredTools: [
-        { name: "Foo", summary: "do foo things" },
-        { name: "Bar", summary: "do bar things" },
-      ],
-    });
-    expect(withCatalog).toContain("Deferred tools (2):");
-    expect(withCatalog).toContain("- Foo: do foo things");
-    expect(withCatalog).toContain("- Bar: do bar things");
-    expect(withCatalog).toContain('ToolSearch("select:');
-
-    const withoutCatalog = buildSystemReminder({ sessionId: "s1" });
-    expect(withoutCatalog).not.toContain("Deferred tools");
-    expect(withoutCatalog).not.toContain("ToolSearch");
+// v0.3.0: the deferred catalog moved out of `buildSystemReminder` entirely —
+// it's now rendered by `buildDeferredToolsNote` and injected via the
+// ephemeral system-instructions path (see `provider.ts`'s
+// `deferredToolsNote`/`combinedEphemeralPrompt`), not the per-turn frozen
+// reminder. These tests cover the standalone renderer directly.
+describe("buildDeferredToolsNote", () => {
+  test("renders the catalog with a name+summary line per tool", () => {
+    const note = buildDeferredToolsNote([
+      { name: "Foo", summary: "do foo things" },
+      { name: "Bar", summary: "do bar things" },
+    ]);
+    expect(note).toContain("Deferred tools (2):");
+    expect(note).toContain("- Foo: do foo things");
+    expect(note).toContain("- Bar: do bar things");
+    expect(note).toContain('ToolSearch("select:');
   });
 
-  test("empty deferredTools array is treated as 'no catalog'", () => {
-    // Symmetry: caller passing [] should NOT render an empty section header.
-    const result = buildSystemReminder({ sessionId: "s1", deferredTools: [] });
-    expect(result).not.toContain("Deferred tools");
+  test("empty catalog renders to an empty string, not a pointless empty section", () => {
+    expect(buildDeferredToolsNote([])).toBe("");
   });
 });

@@ -4,25 +4,26 @@
 [![npm version](https://img.shields.io/npm/v/maestro-agent-sdk.svg)](https://www.npmjs.com/package/maestro-agent-sdk)
 [![license](https://img.shields.io/npm/l/maestro-agent-sdk.svg)](./LICENSE)
 
-**A lightweight, composable TypeScript agent SDK.**
+**The lightweight harness engine for agent products.**
 
 Import the agent loop into your product, then assemble only what you need:
 built-in or custom tools, sessions, memory compaction, MCP, guardrails, and
 subagents. Your host keeps control of the UI, workflow, storage policy, auth,
 and deployment.
 
-![Maestro Agent SDK composable architecture](./assets/composable-agent-sdk.svg)
+![Maestro Agent SDK harness engine architecture](./assets/composable-agent-sdk.svg)
 
 Maestro is an ESM library, not a CLI wrapper, sidecar, gateway, or bundled app.
-The current npm tarball is about 311 kB (1.16 MB unpacked), excluding
+The current npm tarball is about 324 kB (1.2 MB unpacked), excluding
 dependencies.
 
 ## Why Maestro?
 
-- **Composable:** start with `maestroProvider()` or build from `AIAgent`,
-  providers, tools, and hooks.
-- **Lightweight:** one imported library and direct provider API calls—no agent
-  CLI subprocess to install or supervise.
+- **A harness engine, not a product:** `maestroProvider()` gets you a
+  batteries-included loop, or build from `AIAgent`, providers, tools, and
+  hooks directly.
+- **Lightweight:** one imported library and direct provider API calls, no
+  agent CLI subprocess to install or supervise.
 - **Host-controlled:** keep ownership of presentation, persistence, tenancy,
   approvals, and tool policy.
 - **Ready for real workflows:** streaming events, resumable sessions, context
@@ -30,12 +31,13 @@ dependencies.
 
 ## Positioning
 
-![Agent SDK positioning comparison](./assets/sdk-positioning.svg)
+![Three ways to run agent code](./assets/sdk-positioning.svg)
 
 Maestro sits at the library layer. CLI-wrapper SDKs keep another product's
-harness underneath your application; standalone agents bring their own
-operating model. Maestro gives your host the loop and runtime primitives while
-leaving the product boundary with you.
+harness underneath your application, and standalone agent products make you
+adopt their whole operating model. Maestro gives your host the loop and
+runtime primitives as a direct library call, leaving the product boundary
+with you.
 
 ## Install
 
@@ -76,8 +78,8 @@ DEEPSEEK_API_KEY=... node app.js
 ```
 
 The async generator emits normalized events such as `text_delta`, `tool_use`,
-`tool_result`, `tasks`, `session`, `result`, and `error`. A host can render,
-log, or persist only the events it needs.
+`tool_result`, `session`, `result`, and `error`. A host can render, log, or
+persist only the events it needs.
 
 Pass a stable `sessionId` to resume a conversation. Sessions are stored as
 JSONL files under `~/.maestro/sessions` by default.
@@ -157,16 +159,31 @@ updated during the turn, so a custom host can persist it however it prefers.
 - Provider-driven tool-calling loop with abort support and configurable
   `maxIterations`, `maxTokens`, and reasoning `effort`.
 - Built-in `Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`, `WebFetch`, and
-  `Agent` tools, plus `TaskCreate`, `TaskUpdate`, `TaskList`, `TaskGet`,
-  `TaskOutput`, and `TaskStop` for multi-step work.
-- Custom tools through `defineTool()` and `ToolRegistry`.
+  `Agent` tools.
+- Custom tools through `defineTool()` and `ToolRegistry`. Multi-step task
+  tracking is intentionally left to the host (e.g. an MCP `task` server) rather
+  than shipped as a built-in — see [No built-in task
+  tools](#no-built-in-task-tools) below.
 - Automatic context compaction and oversized tool-result truncation.
-- Session persistence and multi-turn resume, with task state kept per session.
+- Session persistence and multi-turn resume.
 - MCP stdio and SSE client support through a host-provided resolver.
 - Unified streaming events instead of a UI or CLI imposed by the SDK.
 
 `Glob` and `Grep` use `rg` (ripgrep). Install it when those tools are needed.
 Tool primitives are also available from the `maestro-agent-sdk/tools` subpath.
+
+### Request composition
+
+![How one wire request is composed](./assets/request-composition.svg)
+
+The `system` prompt is stable across every call. `tools[]` reflects whichever
+deferred tools have been activated so far, and is forced to `[]` during the
+final turns before `maxIterations` (the wrap-up zone). Ephemeral instructions
+(host-supplied plus the deferred-tool catalog note) are snapshotted
+once per invocation and injected onto a wire-only copy, never written to
+canonical history. The per-turn `<system-reminder>` carries only the iteration
+budget, the one fact that genuinely changes every turn, and is the only thing
+frozen into saved history on each call.
 
 ### Custom tools
 
@@ -209,6 +226,31 @@ for await (const event of runConversation(agent, [
 }
 ```
 
+### No built-in task tools
+
+Earlier versions shipped `TaskCreate`/`TaskUpdate`/`TaskList`/`TaskGet`/
+`TaskOutput`/`TaskStop` as always-loaded built-ins, backed by a per-session
+`TaskStore` and rendered into the `<system-reminder>` on every turn. As of
+this version they're removed:
+
+- **Not free even when unused.** The reminder queried the store every turn
+  regardless of whether any consumer read it, and the schemas rode the wire
+  on every call — cost paid by every host, whether or not it wanted the
+  feature.
+- **State that doesn't survive a session doesn't earn its keep.** Multi-agent
+  hosts (a topic that can switch between Maestro/Claude/Codex, or that runs
+  several agents against the same unit of work) need task state that outlives
+  any single provider's session — an in-process store scoped to one
+  `sessionId` can't do that.
+- **The task-management surface is a host concern**, not an SDK concern —
+  same reasoning as sessions, storage policy, and tool approvals staying with
+  the host per this SDK's design.
+
+If your host needs task tracking, register it as a normal tool (via
+`ToolRegistry`/`defineTool`) or, for state shared across agents/sessions,
+expose it as an MCP server and pass it through `AgentQueryOptions`' MCP
+resolver like any other MCP tool.
+
 ## Configuration
 
 The SDK reads environment variables at module load. It does not load `.env`
@@ -222,7 +264,7 @@ See [`.env.example`](./.env.example) for the complete template.
 | `MOONSHOT_BASE_URL` | `https://api.moonshot.ai/v1` | Kimi endpoint or proxy |
 | `GEMINI_API_KEY` | none | Optional DeepSeek image-QA fallback |
 | `GEMINI_IMAGE_QA_MODEL` | `gemini-2.5-flash` | Model for the `View` tool |
-| `MAESTRO_DATA_DIR` | `~/.maestro` | Session and task storage root |
+| `MAESTRO_DATA_DIR` | `~/.maestro` | Session storage root |
 | `MAESTRO_CONTEXT_WINDOW` | provider value | Compaction tuning/testing |
 | `MAESTRO_MCP_POOL_IDLE_TTL_MS` | `300000` | MCP idle eviction time |
 | `MAESTRO_MCP_POOL_MAX` | `16` | Maximum cached MCP clients |

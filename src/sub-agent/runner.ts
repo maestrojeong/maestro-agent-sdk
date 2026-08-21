@@ -5,7 +5,6 @@ import { fileURLToPath } from "node:url";
 import { AIAgent } from "@/core/agent";
 import { isAbortError } from "@/core/is-abort-error";
 import { runConversation } from "@/core/loop";
-import { buildSystemReminder } from "@/memory/reminder";
 import { logger } from "@/platform/logger";
 import { providerForModel } from "@/provider";
 import type { Provider, ProviderContentBlock, ProviderMessage } from "@/providers/base";
@@ -272,14 +271,14 @@ export async function runSubAgent(opts: RunSubAgentOptions): Promise<RunSubAgent
   const overlay = loadOverlay(opts.subagentType);
   const systemPrompt = `${opts.parentSystemPrompt}\n\n${overlay}`;
   const maxTokens = resolveMaxTokens(opts.parentModel);
-  // Sub-agent's user message follows the parent contract: prompt + own
-  // system reminder. The reminder reflects the SUB-SESSION's state
-  // (its own session id), not the parent's.
-  const reminderText = buildSystemReminder({ sessionId: subSessionId });
-  const userBlocks: ProviderContentBlock[] = [
-    { type: "text", text: opts.prompt },
-    { type: "text", text: reminderText },
-  ];
+  // v0.3.0: session id was removed from the SDK's system-reminder/prompt
+  // surface entirely (dead weight — no tool schema across this SDK's real
+  // consumers ever required the model to state its own session id; targeted
+  // operations like `ask_session`/`tell_session` resolve the caller from
+  // server-side request context, not from model-supplied text). Sub-agents
+  // don't wire `buildIterReminder` either, so there's nothing left for a
+  // per-turn `<system-reminder>` to carry — just the plain prompt.
+  const userBlocks: ProviderContentBlock[] = [{ type: "text", text: opts.prompt }];
   const messages: ProviderMessage[] = [{ role: "user", content: userBlocks }];
 
   const agent = new AIAgent(provider, tools, {

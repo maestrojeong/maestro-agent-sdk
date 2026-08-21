@@ -1,13 +1,23 @@
-import type { TaskEntry } from "@/state/tasks";
-
 /**
  * System-reminder builder.
  *
  * Renders the `<system-reminder>…</system-reminder>` block that gets
- * attached to every new user message in `maestroProvider`. The reminder
- * carries invariants the model needs to keep in mind for the current turn
- * — session id, task list, caller-supplied extras — and is what keeps long
- * sessions from forgetting the rules after the compactor evicts the middle.
+ * attached to every new user message in `maestroProvider`. As of v0.3.0 this
+ * carries only per-turn-varying facts (currently: the iteration budget /
+ * wrap-up overlay only) — anything that's invariant for a single invocation
+ * belongs in the ephemeral system-instructions path instead (see
+ * `buildDeferredToolsNote` below). This block exists specifically because
+ * the iteration count changes on essentially every turn, so it has nowhere
+ * cache-safe to live except frozen into canonical history turn-by-turn.
+ *
+ * v0.3.0 also removed the session-id line this block used to carry on every
+ * turn (`Session: <id>`). It was dead weight, not a relocation candidate:
+ * across this SDK's actual consumers, no tool ever required the model to
+ * state its own session id as a call argument — targeted operations
+ * (cross-session messaging, sub-agent delegation) resolve "who's calling"
+ * from server-side request context, not from text the model echoes back.
+ * A host that genuinely needs the model to know its own session id can
+ * still surface it via `AgentQueryOptions.systemPrompt` or `extras` below.
  *
  * Why this lives outside `loop.ts`:
  *
@@ -29,32 +39,6 @@ import type { TaskEntry } from "@/state/tasks";
 
 export interface SystemReminderContext {
   /**
-   * Resolved maestro session id. Surfaced so the model can refer to it in
-   * cross-session tool calls (ask_session, tell_session) without re-asking.
-   */
-  sessionId: string;
-  /**
-   * Current task list snapshot (non-deleted entries). When non-empty, the
-   * reminder renders a compact status header so the model carries the plan
-   * across turns without having to call TaskList. TaskList exists for
-   * programmatic refresh after large batches; the reminder is the always-on
-   * read path.
-   */
-  tasks?: readonly TaskEntry[];
-  /**
-   * v0.1.22+: deferred-tool catalog. When non-empty, the reminder renders a
-   * compact `name → summary` block so the model knows which tools exist
-   * without their full schemas on the wire. The model promotes any
-   * needed entries to active by calling `ToolSearch("select:Name1,Name2")`
-   * (or by keyword); active tools drop off this list automatically so the
-   * catalog only ever advertises what hasn't been pulled in yet.
-   *
-   * Token cost: roughly `tools.length × ~100 chars` per turn. A topic with
-   * 50 deferred MCP tools costs ~1.5K tokens of reminder vs ~25K tokens of
-   * full schema — order-of-magnitude savings, hence the indirection.
-   */
-  deferredTools?: ReadonlyArray<{ name: string; summary: string }>;
-  /**
    * Anything additional the caller wants to render verbatim. Each entry
    * becomes one line at the tail of the reminder. Caller owns formatting.
    */
@@ -65,69 +49,54 @@ export interface SystemReminderContext {
  * Build the `<system-reminder>` block. Returns a self-contained string that
  * callers attach verbatim as a `text` content block on a user message.
  *
- * Empty extras renders to ~2 lines so the per-turn token cost is bounded;
- * the catalog of facts only grows as later phases add semantic state.
+ * Returns `""` when there's nothing to say (e.g. `extras` empty because
+ * `maxIter` is unbounded) — callers should skip attaching an empty block
+ * rather than pay two lines of pure ceremony every turn.
  */
 export function buildSystemReminder(ctx: SystemReminderContext): string {
-  const lines: string[] = ["<system-reminder>"];
-
-  // Session id — emitted so cross-session tools (ask_session, tell_session,
-  // fork helpers) have a stable handle to reference without round-tripping.
-  lines.push(`Session: ${ctx.sessionId}`);
-
-  // Task list read-side: render the current list (if any) so the model
-  // doesn't need to call TaskList every turn. Compact one-line-per-entry
-  // format `[✓/→/ ] #N  subject (blocked by #M)` matches Claude Code's
-  // TaskList rendering closely enough that the model's pretrained instincts
-  // about the shape transfer cleanly.
-  if (ctx.tasks && ctx.tasks.length > 0) {
-    lines.push(`Tasks (${taskSummaryCount(ctx.tasks)}):`);
-    for (const t of ctx.tasks) {
-      const mark = t.status === "completed" ? "✓" : t.status === "in_progress" ? "→" : " ";
-      const deps =
-        t.blockedBy.length > 0
-          ? ` (blocked by ${t.blockedBy.map((id) => `#${id}`).join(", ")})`
-          : "";
-      const owner = t.owner ? ` [@${t.owner}]` : "";
-      lines.push(`  [${mark}] #${t.id}  ${t.subject}${owner}${deps}`);
-    }
-    lines.push(
-      "Use TaskCreate to add tasks, TaskUpdate(taskId, status) to advance them, " +
-        "TaskUpdate(taskId, addBlockedBy/addBlocks) for dependencies. Only ONE " +
-        "task may be in_progress at a time — setting another flips the prior one " +
-        "back to pending.",
-    );
-  }
-
-  // v0.1.22+: deferred-tool catalog. Rendered AFTER the task list (which is
-  // the highest-signal block — what should I be working on?) but BEFORE
-  // caller extras (which carry the iter budget / wrap-up overlay — those
-  // need to be the last thing the model reads). Compact format keeps the
-  // per-turn token cost bounded even with 50+ deferred tools.
-  if (ctx.deferredTools && ctx.deferredTools.length > 0) {
-    lines.push(`Deferred tools (${ctx.deferredTools.length}):`);
-    for (const t of ctx.deferredTools) {
-      lines.push(`  - ${t.name}: ${t.summary}`);
-    }
-    lines.push(
-      'These tools\' schemas are NOT loaded yet. Call ToolSearch("select:Name1,Name2,...") ' +
-        'to activate exact tools by name, or ToolSearch("keyword") to fuzzy-match by ' +
-        "description. Activated tools become callable from the next turn.",
-    );
-  }
-
-  // Caller-supplied tail. Each extra is one line — caller owns formatting.
-  for (const e of ctx.extras ?? []) {
-    if (e.length > 0) lines.push(e);
-  }
-
-  lines.push("</system-reminder>");
-  return lines.join("\n");
+  const lines = (ctx.extras ?? []).filter((e) => e.length > 0);
+  if (lines.length === 0) return "";
+  return ["<system-reminder>", ...lines, "</system-reminder>"].join("\n");
 }
 
-/** Compact "3/5" style summary — completed over total. Used in the list
- *  header so the model gets progress at a glance without re-counting. */
-function taskSummaryCount(tasks: readonly TaskEntry[]): string {
-  const done = tasks.filter((t) => t.status === "completed").length;
-  return `${done}/${tasks.length}`;
+/**
+ * Render the deferred-tool catalog as a standalone text block — NOT wrapped
+ * in `<system-reminder>` tags, because as of v0.3.0 this is injected via the
+ * ephemeral system-instructions path (`AIAgentConfig.ephemeralSystemPrompt`
+ * / `projectEphemeralSystemPrompt`), not frozen into canonical history.
+ *
+ * Why the move: the catalog previously lived in the per-turn
+ * `<system-reminder>` and got frozen into canonical `messages` every single
+ * turn until every deferred tool was activated (or the conversation ended).
+ * With 100+ deferred MCP tools that's ~100 lines re-persisted turn after
+ * turn — real token cost on every replay of the history, not just the live
+ * wire call. The ephemeral path fixes this: the caller snapshots the catalog
+ * ONCE per invocation (before the tool loop starts) and injects it onto a
+ * wire-only copy of the invocation's anchor message — never written to
+ * canonical, so it costs nothing on replay and doesn't compound over a long
+ * session.
+ *
+ * Cache safety: this is call-site's responsibility, not this function's —
+ * the caller MUST compute this once per invocation and hold it fixed across
+ * every iteration of that invocation's tool loop (matching
+ * `ephemeralSystemPrompt`'s existing contract), never recompute it mid-loop.
+ * A tool activated mid-invocation simply won't drop off this snapshot until
+ * the NEXT invocation — harmless, since `ToolSearch`'s own response already
+ * tells the model the activation succeeded and the tool's schema rides the
+ * wire from the very next turn regardless of what this note still lists.
+ */
+export function buildDeferredToolsNote(
+  deferredTools: ReadonlyArray<{ name: string; summary: string }>,
+): string {
+  if (deferredTools.length === 0) return "";
+  const lines: string[] = [`Deferred tools (${deferredTools.length}):`];
+  for (const t of deferredTools) {
+    lines.push(`  - ${t.name}: ${t.summary}`);
+  }
+  lines.push(
+    'These tools\' schemas are NOT loaded yet. Call ToolSearch("select:Name1,Name2,...") ' +
+      'to activate exact tools by name, or ToolSearch("keyword") to fuzzy-match by ' +
+      "description. Activated tools become callable from the next turn.",
+  );
+  return lines.join("\n");
 }
