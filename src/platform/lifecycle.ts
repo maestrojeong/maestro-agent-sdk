@@ -1,7 +1,8 @@
 import { logger } from "@/platform/logger";
 
 /**
- * Shared process-shutdown registry for SDK subsystems (MCP pool, sub-agents).
+ * Shared process-shutdown registry for SDK subsystems (currently just the
+ * MCP pool; open to future subsystems that hold live connections/processes).
  *
  * Modules call `onShutdown(name, priority, fn)`;
  * the first SIGINT/SIGTERM/beforeExit drains them in descending priority order

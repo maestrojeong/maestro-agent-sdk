@@ -67,6 +67,7 @@ import { MAESTRO_SDK_VERSION } from "@/platform/version";
 import type { ProviderContentBlock, ProviderMessage } from "@/providers/base";
 import type { ConversationEntry } from "@/storage/conversations";
 import { dropFileStateTracker } from "@/tools/file-state";
+import { dropMaestroTrajectory } from "@/trajectory-store";
 
 /**
  * Root directory for maestro session/rollout files.
@@ -756,6 +757,7 @@ export function deleteMaestroSession(sessionId: string): void {
       logger.warn({ err: e, sessionId }, "deleteMaestroSession: memory state unlink failed");
     }
   }
+  dropMaestroTrajectory(sessionId);
 }
 
 /**
@@ -1256,10 +1258,11 @@ export function cleanupStaleMaestroSessions(maxAgeMs: number = DEFAULT_MAESTRO_S
   const cutoff = Date.now() - maxAgeMs;
   for (const name of entries) {
     if (!name.endsWith(".jsonl")) continue;
-    // Skip the compacted active projection sidecars — they are removed
-    // alongside their raw parent below, and are not sessions in their own
-    // right (treating `<id>.active` as a sessionId would strand caches).
-    if (name.endsWith(".active.jsonl")) continue;
+    // Skip the compacted active projection and trajectory sidecars — they
+    // are removed alongside their raw parent below, and are not sessions in
+    // their own right (treating `<id>.active`/`<id>.trajectory` as a
+    // sessionId would strand caches and never actually clean up the file).
+    if (name.endsWith(".active.jsonl") || name.endsWith(".trajectory.jsonl")) continue;
     scanned++;
     const path = join(dir, name);
     // saveMaestroSession writes `${sessionsDir}/${sessionId}.jsonl`, so the
@@ -1285,6 +1288,7 @@ export function cleanupStaleMaestroSessions(maxAgeMs: number = DEFAULT_MAESTRO_S
         }
       }
       dropFileStateTracker(sessionId);
+      dropMaestroTrajectory(sessionId);
     } catch (e) {
       if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") {
         logger.warn(
@@ -1294,6 +1298,7 @@ export function cleanupStaleMaestroSessions(maxAgeMs: number = DEFAULT_MAESTRO_S
       } else {
         // ENOENT mid-loop = raced. File gone → caches moot.
         dropFileStateTracker(sessionId);
+        dropMaestroTrajectory(sessionId);
       }
     }
   }

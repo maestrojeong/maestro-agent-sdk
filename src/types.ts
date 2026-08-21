@@ -115,7 +115,18 @@ export function isAgentKind(value: unknown): value is AgentKind {
 export type UnifiedEvent =
   | { type: "user_message"; content: string }
   | { type: "session"; sessionId: string }
-  | { type: "tool_use"; name: string; input: Record<string, unknown> }
+  | {
+      type: "tool_use";
+      /** v0.4.0+: the same id `tool_result.toolUseId` below refers back to.
+       *  Always present — previously dropped even though the loop already
+       *  had it, which made a host unable to pair a specific `tool_use` to
+       *  its `tool_result` when a turn ran more than one tool (parallelSafe
+       *  tools execute concurrently, so `tool_use` events for a batch can
+       *  arrive with no result in between). */
+      id: string;
+      name: string;
+      input: Record<string, unknown>;
+    }
   | { type: "tool_progress"; toolName: string; elapsed: number }
   | { type: "tool_use_summary"; summary: string }
   | {
@@ -130,6 +141,17 @@ export type UnifiedEvent =
        *  to infer from error-shaped text. Omitted (not `false`) on success,
        *  matching how `is_error` itself is only ever present when true. */
       isError?: boolean;
+      /** v0.4.0+: epoch-ms timestamp for when this tool's dispatch actually
+       *  began (after any serial-barrier wait, not when the model emitted
+       *  the `tool_use`) and how long it took. Together with `tool_use.id`
+       *  this is enough for a host to build its own execution timeline
+       *  (à la deepseek-harness's Trajectory view) without the SDK owning
+       *  any rendering — computing and shipping this pair is a few lines
+       *  the loop can do once; every host would otherwise reimplement it
+       *  themselves, incorrectly, around the wrong span (arrival time of
+       *  the UnifiedEvent, not actual dispatch time). Always present. */
+      startedAt: number;
+      durationMs: number;
     }
   | { type: "text_delta"; content: string }
   | { type: "text"; content: string }
@@ -175,7 +197,7 @@ export interface ProviderApiKeyOverrides {
  *
  * Most fields are optional; only `prompt`, `cwd`, `systemPrompt` are strictly
  * required to drive the loop. The rest let the host plug in session
- * persistence, sub-agent delegation, MCP servers, and abort control.
+ * persistence, MCP servers, and abort control.
  */
 export interface AgentQueryOptions {
   agent: AgentKind;
@@ -212,10 +234,8 @@ export interface AgentQueryOptions {
    * projection, so the next external invocation must recompute from that user
    * turn once when the transient block disappears or changes.
    *
-   * This value is deliberately not inherited by `Agent`-tool subagents and is
-   * not supplied to internal compaction-model calls. Each subagent is a
-   * separate invocation, while compaction must never summarize or persist the
-   * transient instructions.
+   * This value is not supplied to internal compaction-model calls, which
+   * must never summarize or persist the transient instructions.
    *
    * This is a user-role runtime hint, not a provider-native system-role policy
    * boundary. Only pass host-trusted instructions; enforce security policy in

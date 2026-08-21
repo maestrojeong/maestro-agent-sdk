@@ -325,6 +325,16 @@ describe("runConversation", () => {
       echoed: { msg: "ping" },
     });
 
+    // v0.4.0: tool_use carries the same id tool_result.toolUseId refers back
+    // to, and tool_result carries dispatch timing, so a host can correlate
+    // and time each call without re-deriving either from arrival order.
+    const tu = events[0];
+    expect(tu.type === "tool_use" && tu.id).toBe("t1");
+    expect(tr.type === "tool_result" && tr.toolUseId).toBe("t1");
+    expect(tr.type === "tool_result" && typeof tr.startedAt).toBe("number");
+    expect(tr.type === "tool_result" && typeof tr.durationMs).toBe("number");
+    expect(tr.type === "tool_result" && tr.durationMs).toBeGreaterThanOrEqual(0);
+
     // Usage accumulates across turns
     const last = events[3];
     expect(last.type === "result" && last.usage?.inputTokens).toBe(18);
@@ -1133,6 +1143,18 @@ describe("runConversation (streaming path)", () => {
       { type: "tool_result", tool_use_id: "slow", content: "SLOW" },
       { type: "tool_result", tool_use_id: "fast", content: "FAST" },
     ]);
+
+    // v0.4.0: each tool_use carries its own id, and each tool_result carries
+    // its own dispatch timing keyed to that id — concurrent dispatch must not
+    // let one call's start/duration leak onto the other's event.
+    const toolUseEvents = events.filter((e) => e.type === "tool_use");
+    expect(toolUseEvents.map((e) => e.type === "tool_use" && e.id)).toEqual(["slow", "fast"]);
+    if (toolResults[0].type === "tool_result" && toolResults[1].type === "tool_result") {
+      expect(toolResults[0].durationMs).toBeGreaterThanOrEqual(190); // slow_read sleeps 200ms
+      expect(toolResults[1].durationMs).toBeLessThan(190); // fast_read sleeps 30ms, dispatched concurrently
+      expect(toolResults[0].startedAt).toBeGreaterThanOrEqual(t0);
+      expect(toolResults[1].startedAt).toBeGreaterThanOrEqual(t0);
+    }
   });
 
   test("function parallelSafe uses each tool input and serial calls are ordering barriers", async () => {
@@ -1515,4 +1537,3 @@ describe("runConversation (streaming path)", () => {
     expect(trBlock.content[1].type).toBe("image");
   });
 });
-

@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="460" viewBox="0 0 1200 460" role="img" aria-labelledby="title desc">
+  <title id="title">Reconstructing a session's tool-call trajectory</title>
+  <desc id="desc">While a session runs, the loop appends one record per dispatched tool call (id, name, timing, result preview) to a per-session trajectory sidecar file. A host calls loadMaestroTrajectory with the session id at any later point to get the full array back, and is free to render it however it wants; the SDK does not render anything itself.</desc>
+
+  <rect width="1200" height="460" rx="20" fill="#fbfaf6"/>
+  <rect x="1" y="1" width="1198" height="458" rx="19" fill="none" stroke="#ded2b0" stroke-width="2"/>
+
+  <text x="64" y="64" fill="#b4790a" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="700" letter-spacing="1.4">TOOL TRAJECTORY</text>
+  <text x="64" y="98" fill="#221f18" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="28" font-weight="750">Reconstruct a session's tool calls after the fact</text>
+  <rect x="64" y="114" width="46" height="3" fill="#b4790a"/>
+  <text x="64" y="146" fill="#7a715c" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="15">One record per dispatched tool call, durably written as the loop runs. Read it back with a session id,</text>
+  <text x="64" y="166" fill="#7a715c" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="15">whenever you want, and render it however your host needs.</text>
+
+  <!-- Step 1: while the loop runs -->
+  <rect x="64" y="196" width="330" height="220" rx="12" fill="#ffffff" stroke="#ded2b0" stroke-width="1.5"/>
+  <text x="88" y="230" fill="#221f18" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="16" font-weight="700">While the session runs</text>
+  <text x="88" y="252" fill="#7a715c" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="12.5">Every dispatched tool call appends one</text>
+  <text x="88" y="270" fill="#7a715c" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="12.5">line, durably, best-effort.</text>
+  <rect x="88" y="286" width="282" height="106" rx="8" fill="#fdfaf1" stroke="#ded2b0"/>
+  <text x="102" y="306" fill="#4b4433" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10.5">{ "seq": 3,</text>
+  <text x="102" y="322" fill="#4b4433" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10.5">  "callId": "call-9",</text>
+  <text x="102" y="338" fill="#4b4433" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10.5">  "name": "mcp__github__create_pr",</text>
+  <text x="102" y="354" fill="#4b4433" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10.5">  "startedAt": 1755..., "durationMs": 842,</text>
+  <text x="102" y="370" fill="#4b4433" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10.5">  "isError": false,</text>
+  <text x="102" y="386" fill="#4b4433" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10.5">  "resultPreview": "PR #42 opened" }</text>
+
+  <path d="M 394 306 L 418 306" fill="none" stroke="#7a715c" stroke-width="1.5"/>
+  <path d="M 418 300 L 430 306 L 418 312 Z" fill="#7a715c"/>
+
+  <!-- Step 2: the sidecar file -->
+  <rect x="434" y="196" width="248" height="220" rx="12" fill="#fffdf7" stroke="#b4790a" stroke-width="2"/>
+  <text x="458" y="230" fill="#221f18" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="16" font-weight="700">Sidecar file</text>
+  <text x="458" y="252" fill="#7a715c" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="12.5">Append-only, one JSON line</text>
+  <text x="458" y="270" fill="#7a715c" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="12.5">per call. Never rewritten.</text>
+  <rect x="458" y="292" width="200" height="52" rx="8" fill="#f4e6c8" stroke="#d9c08a"/>
+  <text x="558" y="313" fill="#4b4433" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" text-anchor="middle">&lt;sessionId&gt;</text>
+  <text x="558" y="330" fill="#4b4433" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" text-anchor="middle">.trajectory.jsonl</text>
+  <text x="458" y="368" fill="#7a715c" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="12">Lives beside the session's</text>
+  <text x="458" y="384" fill="#7a715c" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="12">own JSONL, same directory.</text>
+
+  <path d="M 682 306 L 706 306" fill="none" stroke="#7a715c" stroke-width="1.5"/>
+  <path d="M 706 300 L 718 306 L 706 312 Z" fill="#7a715c"/>
+
+  <!-- Step 3: host reads it back -->
+  <rect x="722" y="196" width="414" height="220" rx="12" fill="#ffffff" stroke="#ded2b0" stroke-width="1.5"/>
+  <text x="746" y="230" fill="#221f18" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="16" font-weight="700">Your host, any time later</text>
+  <text x="746" y="252" fill="#7a715c" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="12.5">One call, no live event stream needed:</text>
+  <rect x="746" y="266" width="366" height="34" rx="8" fill="#fdfaf1" stroke="#ded2b0"/>
+  <text x="762" y="288" fill="#221f18" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12">loadMaestroTrajectory(sessionId)</text>
+  <text x="746" y="322" fill="#7a715c" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="12.5">returns the full</text>
+  <text x="856" y="322" fill="#221f18" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12.5" font-weight="700">TrajectoryRecord[]</text>
+  <rect x="746" y="336" width="366" height="60" rx="8" fill="none" stroke="#b4790a" stroke-width="1.5" stroke-dasharray="4,3"/>
+  <text x="929" y="358" fill="#8a5a0a" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="12.5" font-weight="700" text-anchor="middle">table, timeline, anything</text>
+  <text x="929" y="377" fill="#7a715c" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="11.5" text-anchor="middle">the SDK renders nothing;</text>
+  <text x="929" y="392" fill="#7a715c" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="11.5" text-anchor="middle">this part is entirely up to you</text>
+</svg>

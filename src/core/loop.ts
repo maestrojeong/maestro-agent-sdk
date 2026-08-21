@@ -24,6 +24,7 @@ import type {
 } from "@/providers/base";
 import type { PreparedToolDispatch, ToolExecuteResult } from "@/tools/registry";
 import { unwrapToolExecuteResult } from "@/tools/registry";
+import { appendMaestroTrajectoryRecord } from "@/trajectory-store";
 import type { TokenUsage, UnifiedEvent } from "@/types";
 
 // v0.1.16: removed `EFFORT_LEVELS` + `nextEffortLevel`. The previous
@@ -153,6 +154,12 @@ export async function* runConversation(
   messages: ProviderMessage[],
 ): AsyncGenerator<UnifiedEvent> {
   let iterations = 0;
+  // Monotonic per-invocation counter for `TrajectoryRecord.seq` (trajectory-store.ts).
+  // Resumed sessions restart this at 0 each invocation rather than continuing
+  // the prior invocation's count — the sidecar is best-effort telemetry a
+  // host sorts by `startedAt` when it needs a total order, not canonical
+  // history, so a per-invocation-local counter is enough.
+  let trajectorySeq = 0;
   const maxIter = agent.config.maxIterations;
   const usageAcc: Required<Pick<TokenUsage, "inputTokens" | "outputTokens">> & {
     cacheCreationInputTokens: number;
@@ -449,7 +456,7 @@ export async function* runConversation(
           }
           toolUses.push({ id: chunk.id, name: chunk.name, input });
           assistantBlocks.push({ type: "tool_use", id: chunk.id, name: chunk.name, input });
-          yield { type: "tool_use", name: chunk.name, input };
+          yield { type: "tool_use", id: chunk.id, name: chunk.name, input };
           toolInputBuffer.delete(chunk.id);
         } else if (chunk.type === "thinking_complete") {
           assistantBlocks.push(chunk.block);
@@ -529,7 +536,7 @@ export async function* runConversation(
         } else if (block.type === "tool_use") {
           toolUses.push({ id: block.id, name: block.name, input: block.input });
           assistantBlocks.push(block);
-          yield { type: "tool_use", name: block.name, input: block.input };
+          yield { type: "tool_use", id: block.id, name: block.name, input: block.input };
         } else if (block.type === "thinking" || block.type === "redacted_thinking") {
           assistantBlocks.push(block);
         }
@@ -666,12 +673,26 @@ export async function* runConversation(
     // hook could turn a read-only Agent call into a write-capable one after it
     // had already been classified as parallel-safe.
     const results = new Array<ToolExecuteResult>(toolUses.length);
+    // Per-tool dispatch timing, surfaced on the `tool_result` UnifiedEvent so
+    // a host can build its own execution timeline (start/duration per call,
+    // matching `tool_use.id`) without the SDK owning any rendering. Recorded
+    // right before each dispatch actually fires — not when the model emitted
+    // the `tool_use` — so a call queued behind a serial barrier reports the
+    // time it was genuinely running, not time spent waiting.
+    const startedAt = new Array<number>(toolUses.length);
+    const durationMs = new Array<number>(toolUses.length);
     const parallelBatch: Array<{ index: number; prepared: PreparedToolDispatch }> = [];
     const flushParallelBatch = async () => {
       if (parallelBatch.length === 0) return;
       const batch = parallelBatch.splice(0);
       const batchResults = await Promise.all(
-        batch.map(({ prepared }) => agent.tools.dispatchPrepared(prepared)),
+        batch.map(({ index, prepared }) => {
+          startedAt[index] = Date.now();
+          return agent.tools.dispatchPrepared(prepared).then((result) => {
+            durationMs[index] = Date.now() - startedAt[index];
+            return result;
+          });
+        }),
       );
       for (let i = 0; i < batch.length; i++) {
         results[batch[i].index] = batchResults[i];
@@ -693,7 +714,9 @@ export async function* runConversation(
         continue;
       }
       await flushParallelBatch();
+      startedAt[i] = Date.now();
       results[i] = await agent.tools.dispatchPrepared(prepared);
+      durationMs[i] = Date.now() - startedAt[i];
     }
 
     await flushParallelBatch();
@@ -749,9 +772,27 @@ export async function* runConversation(
         type: "tool_result",
         toolUseId: tu.id,
         content: preview,
+        startedAt: startedAt[i],
+        durationMs: durationMs[i],
         ...(metadata ? { metadata } : {}),
         ...(isError ? { isError: true } : {}),
       };
+      // Durably record the same facts so a host can call
+      // `loadMaestroTrajectory(sessionId)` after the fact instead of having
+      // to capture this turn's live event stream itself. No-op when the
+      // caller never supplied a sessionId (a sessionless `AIAgent` has
+      // nowhere to persist it).
+      if (agent.config.sessionId) {
+        appendMaestroTrajectoryRecord(agent.config.sessionId, {
+          seq: trajectorySeq++,
+          callId: tu.id,
+          name: tu.name,
+          startedAt: startedAt[i],
+          durationMs: durationMs[i],
+          isError,
+          resultPreview: preview,
+        });
+      }
       toolResultBlocks.push({
         type: "tool_result",
         tool_use_id: tu.id,
