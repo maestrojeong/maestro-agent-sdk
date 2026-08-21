@@ -124,12 +124,6 @@ export {
 } from "@/session-store";
 export type { ConversationEntry } from "@/storage/conversations";
 export { type ConversationReader, setConversationReader } from "@/storage/conversations";
-// ─── Tool-call trajectory ─────────────────────────────────────────────────────
-export {
-  loadMaestroTrajectory,
-  maestroTrajectoryPath,
-  type TrajectoryRecord,
-} from "@/trajectory-store";
 // ─── Built-in tools ──────────────────────────────────────────────────────────
 export { bashTool, createBashTool } from "@/tools/builtin/bash";
 export { createEditTool } from "@/tools/builtin/edit";
@@ -166,6 +160,12 @@ export {
   type ToolRegistryOptions,
   unwrapToolExecuteResult,
 } from "@/tools/registry";
+// ─── Tool-call trajectory ─────────────────────────────────────────────────────
+export {
+  loadMaestroTrajectory,
+  maestroTrajectoryPath,
+  type TrajectoryRecord,
+} from "@/trajectory-store";
 // ─── Shared types ────────────────────────────────────────────────────────────
 export type {
   AgentHooks,

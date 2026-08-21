@@ -16,7 +16,6 @@ import {
   saveMaestroMemoryState,
 } from "@/memory/state";
 import { logger } from "@/platform/logger";
-import { appendMaestroTrajectoryRecord } from "@/trajectory-store";
 import type {
   MaestroToolResultBlock,
   ProviderContentBlock,
@@ -25,6 +24,7 @@ import type {
 } from "@/providers/base";
 import type { PreparedToolDispatch, ToolExecuteResult } from "@/tools/registry";
 import { unwrapToolExecuteResult } from "@/tools/registry";
+import { appendMaestroTrajectoryRecord } from "@/trajectory-store";
 import type { TokenUsage, UnifiedEvent } from "@/types";
 
 // v0.1.16: removed `EFFORT_LEVELS` + `nextEffortLevel`. The previous

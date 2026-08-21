@@ -7,7 +7,6 @@ import type { Provider, ProviderResponse } from "@/providers/base";
 import { defineTool } from "@/providers/base";
 import { maestroSessionPath, maestroSessionsDir } from "@/session-store";
 import { ToolRegistry } from "@/tools/registry";
-import type { UnifiedEvent } from "@/types";
 import {
   appendMaestroTrajectoryRecord,
   dropMaestroTrajectory,
@@ -15,6 +14,7 @@ import {
   maestroTrajectoryPath,
   type TrajectoryRecord,
 } from "@/trajectory-store";
+import type { UnifiedEvent } from "@/types";
 
 /**
  * v0.4.0 — per-tool-call trajectory sidecar.
@@ -129,9 +129,7 @@ describe("trajectory-store (loop integration)", () => {
     });
     const agent = new AIAgent(provider, tools, { model: "x", systemPrompt: "", sessionId });
 
-    await collect(
-      runConversation(agent, [{ role: "user" as const, content: "go" }]),
-    );
+    await collect(runConversation(agent, [{ role: "user" as const, content: "go" }]));
 
     const records = loadMaestroTrajectory(sessionId);
     expect(records).toHaveLength(1);
@@ -210,9 +208,7 @@ describe("trajectory-store (loop integration)", () => {
       },
     });
     const agent = new AIAgent(provider, tools, { model: "x", systemPrompt: "", sessionId });
-    await collect(
-      runConversation(agent, [{ role: "user" as const, content: "go" }]),
-    );
+    await collect(runConversation(agent, [{ role: "user" as const, content: "go" }]));
 
     const records = loadMaestroTrajectory(sessionId);
     expect(records.map((r) => r.callId)).toEqual(["a", "b"]);
