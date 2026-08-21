@@ -43,7 +43,7 @@
   <text x="964" y="285" fill="#8a5a0a" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14" text-anchor="middle">↓</text>
   <rect x="818" y="296" width="292" height="40" rx="8" fill="#f4e6c8" stroke="#b4790a"/>
   <text x="964" y="320" fill="#4b4433" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12.5" font-weight="650" text-anchor="middle">harness engine (loop, tools,</text>
-  <text x="964" y="334" fill="#4b4433" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12.5" font-weight="650" text-anchor="middle">MCP, memory)</text>
+  <text x="964" y="334" fill="#4b4433" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12.5" font-weight="650" text-anchor="middle">MCP, compaction)</text>
   <line x1="818" y1="424" x2="1110" y2="424" stroke="#e6cf8f" stroke-width="1" stroke-dasharray="3,3"/>
   <text x="818" y="448" fill="#221f18" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="13" font-weight="700">Your host owns the product.</text>
   <text x="818" y="465" fill="#7a715c" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="13">The engine is a library call, not a layer.</text>

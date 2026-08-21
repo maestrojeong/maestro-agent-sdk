@@ -174,16 +174,19 @@ Tool primitives are also available from the `maestro-agent-sdk/tools` subpath.
 
 ### Request composition
 
-![How one wire request is composed](./assets/request-composition.svg)
+![What actually goes out on the wire](./assets/request-composition.svg)
 
-The `system` prompt is stable across every call. `tools[]` reflects whichever
-deferred tools have been activated so far, and is forced to `[]` during the
-final turns before `maxIterations` (the wrap-up zone). Ephemeral instructions
-(host-supplied plus the deferred-tool catalog note) are snapshotted
-once per invocation and injected onto a wire-only copy, never written to
-canonical history. The per-turn `<system-reminder>` carries only the iteration
-budget, the one fact that genuinely changes every turn, and is the only thing
-frozen into saved history on each call.
+The `system` prompt is identical on every call. The first user message of an
+invocation (its "anchor") carries the prompt, the per-turn `<system-reminder>`
+(iteration budget only, frozen into saved history every turn), and, when
+`enableToolSearch` is on, an ephemeral `<system-instructions>` block with the
+deferred-tool catalog note. That note never touches saved history, is
+recomputed once per invocation, and only ever rides the anchor message, so
+later turns in the same run carry a fresh reminder but no ephemeral note.
+`tools[]` reflects whichever deferred tools `ToolSearch` has activated so far,
+and is forced to `[]` in the wrap-up zone (the final turns before
+`maxIterations`) so the model finalizes from what it already has instead of
+attempting another call.
 
 ### Custom tools
 

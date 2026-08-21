@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="520" viewBox="0 0 1200 520" role="img" aria-labelledby="title desc">
   <title id="title">Maestro Agent SDK harness engine architecture</title>
-  <desc id="desc">Your application owns the UI, workflow, storage policy, auth, and deployment. It imports the Maestro Agent SDK as a harness engine (loop, tools, MCP, memory, sessions, hooks, subagents) and calls DeepSeek or Kimi through it.</desc>
+  <desc id="desc">Your application owns the UI, workflow, storage policy, auth, and deployment. It imports the Maestro Agent SDK as a harness engine with built-in tools, composable MCP servers and hooks, compaction, sessions, and subagents, then calls DeepSeek or Kimi through it.</desc>
 
   <rect width="1200" height="520" rx="20" fill="#fbfaf6"/>
   <rect x="1" y="1" width="1198" height="518" rx="19" fill="none" stroke="#ded2b0" stroke-width="2"/>
@@ -8,7 +8,7 @@
   <text x="64" y="68" fill="#b4790a" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="700" letter-spacing="1.4">NPM PACKAGE</text>
   <text x="64" y="102" fill="#221f18" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="32" font-weight="750">A harness engine, not a product.</text>
   <rect x="64" y="118" width="46" height="3" fill="#b4790a"/>
-  <text x="64" y="152" fill="#7a715c" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="16">You own the UI, the workflow, and the storage policy. Maestro is the loop, tools, and</text>
+  <text x="64" y="152" fill="#7a715c" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="16">You own the UI, the workflow, and the storage policy. Maestro runs the tools and</text>
   <text x="64" y="174" fill="#7a715c" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="16">provider calls underneath it.</text>
 
   <!-- Your application -->
@@ -27,23 +27,22 @@
   <text x="412" y="234" fill="#221f18" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="20" font-weight="750">Maestro Agent SDK</text>
   <text x="412" y="260" fill="#7a715c" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13.5">imported library, no CLI subprocess</text>
 
-  <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#4b4433" text-anchor="middle">
-    <rect x="412" y="284" width="82" height="32" rx="6" fill="#fdfaf1" stroke="#ded2b0"/>
-    <text x="453" y="305">loop</text>
-    <rect x="502" y="284" width="82" height="32" rx="6" fill="#fdfaf1" stroke="#ded2b0"/>
-    <text x="543" y="305">tools</text>
-    <rect x="592" y="284" width="82" height="32" rx="6" fill="#fdfaf1" stroke="#ded2b0"/>
-    <text x="633" y="305">MCP</text>
-    <rect x="682" y="284" width="106" height="32" rx="6" fill="#fdfaf1" stroke="#ded2b0"/>
-    <text x="735" y="305">memory</text>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" text-anchor="middle">
+    <rect x="412" y="284" width="168" height="32" rx="6" fill="#fdfaf1" stroke="#ded2b0"/>
+    <text x="496" y="305" fill="#4b4433">built-in tools</text>
+    <rect x="590" y="284" width="92" height="32" rx="6" fill="none" stroke="#b4790a" stroke-width="1.3" stroke-dasharray="3,3"/>
+    <text x="636" y="305" fill="#8a5a0a">+ MCP</text>
+    <rect x="692" y="284" width="96" height="32" rx="6" fill="none" stroke="#b4790a" stroke-width="1.3" stroke-dasharray="3,3"/>
+    <text x="740" y="305" fill="#8a5a0a">+ hooks</text>
 
-    <rect x="412" y="326" width="106" height="32" rx="6" fill="#fdfaf1" stroke="#ded2b0"/>
-    <text x="465" y="347">sessions</text>
-    <rect x="528" y="326" width="82" height="32" rx="6" fill="#fdfaf1" stroke="#ded2b0"/>
-    <text x="569" y="347">hooks</text>
-    <rect x="620" y="326" width="120" height="32" rx="6" fill="#fdfaf1" stroke="#ded2b0"/>
-    <text x="680" y="347">subagents</text>
+    <rect x="412" y="326" width="120" height="32" rx="6" fill="#fdfaf1" stroke="#ded2b0"/>
+    <text x="472" y="347" fill="#4b4433">compaction</text>
+    <rect x="542" y="326" width="106" height="32" rx="6" fill="#fdfaf1" stroke="#ded2b0"/>
+    <text x="595" y="347" fill="#4b4433">sessions</text>
+    <rect x="658" y="326" width="120" height="32" rx="6" fill="#fdfaf1" stroke="#ded2b0"/>
+    <text x="718" y="347" fill="#4b4433">subagents</text>
   </g>
+  <text x="412" y="378" fill="#8a5a0a" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="11.5" font-style="italic">dashed = compose your own, not required</text>
 
   <text x="600" y="440" fill="#7a715c" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14" text-anchor="middle">Use the batteries-included provider, or compose the</text>
   <text x="600" y="460" fill="#7a715c" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14" text-anchor="middle">lower-level pieces yourself.</text>
@@ -63,7 +62,4 @@
   <path d="M 818 341 L 838 341" fill="none" stroke="#7a715c" stroke-width="1.5"/>
   <path d="M 838 335 L 850 341 L 838 347 Z" fill="#7a715c"/>
 
-  <rect x="64" y="470" width="234" height="34" rx="8" fill="#221f18"/>
-  <text x="181" y="492" fill="#fbfaf6" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="13.5" font-weight="650" text-anchor="middle">324 kB packed package*</text>
-  <text x="330" y="492" fill="#7a715c" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="13">* v0.3.0 npm tarball, excluding dependencies</text>
 </svg>
