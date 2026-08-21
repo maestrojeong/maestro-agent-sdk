@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.3.3] - 2026-08-21
+
+### Fixed
+
+- The `0.3.1` npm publish shipped a broken `build` script: `scripts/copy-prompts.mjs`
+  copied `src/prompts` into `dist/prompts`, but that directory's only content
+  (the sub-agent overlay markdown) was removed in the same release, and git
+  doesn't track the now-empty directory — so a fresh checkout (npm's publish
+  environment, any CI) failed with `prompt source directory does not exist`
+  even though the same build succeeded locally against a pre-existing,
+  merely-empty local directory. Removed the step and the now-dead script
+  entirely; nothing reads `src/prompts`/`dist/prompts` anymore. Verified
+  against an actual fresh clone, not just a local rebuild, this time.
+- No functional changes versus `0.3.1` otherwise. `0.3.2` was also published
+  before this fix's version bump had actually landed; skipping straight to
+  `0.3.3` rather than overwriting either broken tarball, per npm's own
+  guidance against republishing an existing version.
+
 ## [0.3.1] - 2026-08-21
 
 ### Removed
