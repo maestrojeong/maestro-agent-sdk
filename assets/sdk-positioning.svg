@@ -1,68 +1,50 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="540" viewBox="0 0 1200 540" role="img" aria-labelledby="title desc">
-  <title id="title">Agent SDK positioning comparison</title>
-  <desc id="desc">A structural comparison of CLI wrapper SDKs, standalone agent products, and the composable Maestro Agent SDK library.</desc>
-  <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#fbfcfe"/>
-      <stop offset="1" stop-color="#f4f1e8"/>
-    </linearGradient>
-    <linearGradient id="maestro" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#fff4c4"/>
-      <stop offset="1" stop-color="#ffe39a"/>
-    </linearGradient>
-    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
-      <feDropShadow dx="0" dy="7" stdDeviation="10" flood-color="#302810" flood-opacity=".1"/>
-    </filter>
-    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#88909d"/>
-    </marker>
-    <marker id="gold-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#b98200"/>
-    </marker>
-  </defs>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="500" viewBox="0 0 1200 500" role="img" aria-labelledby="title desc">
+  <title id="title">Three ways to run agent code</title>
+  <desc id="desc">Comparison of a CLI wrapper SDK, a standalone agent product, and the Maestro Agent SDK, showing what owns the harness underneath your application in each case.</desc>
 
-  <rect width="1200" height="540" rx="28" fill="url(#bg)"/>
-  <rect x="1" y="1" width="1198" height="538" rx="27" fill="none" stroke="#dde1e7" stroke-width="2"/>
-  <text x="58" y="68" fill="#20242b" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="32" font-weight="760">Where Maestro fits</text>
-  <text x="58" y="102" fill="#69717d" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="17">The difference is architectural: what your application imports, owns, and runs.</text>
+  <rect width="1200" height="500" rx="20" fill="#fbfaf6"/>
+  <rect x="1" y="1" width="1198" height="498" rx="19" fill="none" stroke="#ded2b0" stroke-width="2"/>
 
-  <g filter="url(#shadow)">
-    <rect x="58" y="144" width="330" height="338" rx="22" fill="#ffffff" stroke="#d9dee6" stroke-width="2"/>
-    <rect x="435" y="144" width="330" height="338" rx="22" fill="#ffffff" stroke="#d9dee6" stroke-width="2"/>
-    <rect x="812" y="132" width="330" height="362" rx="24" fill="url(#maestro)" stroke="#d49a00" stroke-width="3"/>
-  </g>
+  <text x="64" y="64" fill="#b4790a" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="700" letter-spacing="1.4">POSITIONING</text>
+  <text x="64" y="98" fill="#221f18" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="28" font-weight="750">Three ways to run agent code</text>
+  <rect x="64" y="114" width="46" height="3" fill="#b4790a"/>
+  <text x="64" y="146" fill="#7a715c" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="15.5">The difference is what owns the harness underneath your application: another product's, or yours.</text>
 
-  <g font-family="Inter, ui-sans-serif, system-ui, sans-serif" text-anchor="middle">
-    <text x="223" y="188" fill="#4f5865" font-size="19" font-weight="740">CLI wrapper SDK</text>
-    <text x="600" y="188" fill="#4f5865" font-size="19" font-weight="740">Standalone agent product</text>
-    <text x="977" y="178" fill="#765600" font-size="20" font-weight="780">Maestro Agent SDK</text>
+  <!-- CLI wrapper SDK -->
+  <rect x="64" y="176" width="344" height="300" rx="12" fill="#ffffff" stroke="#ded2b0" stroke-width="1.5"/>
+  <text x="90" y="212" fill="#221f18" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="16.5" font-weight="700">CLI wrapper SDK</text>
+  <rect x="90" y="230" width="292" height="40" rx="8" fill="#f4e6c8" stroke="#d9c08a"/>
+  <text x="236" y="255" fill="#4b4433" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14.5" font-weight="650" text-anchor="middle">Your application</text>
+  <text x="236" y="285" fill="#7a715c" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14" text-anchor="middle">↓</text>
+  <rect x="90" y="296" width="292" height="40" rx="8" fill="#f4f1e6" stroke="#ded2b0"/>
+  <text x="236" y="321" fill="#7a715c" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14.5" text-anchor="middle">SDK wrapper</text>
+  <text x="236" y="351" fill="#7a715c" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14" text-anchor="middle">↓</text>
+  <rect x="90" y="362" width="292" height="40" rx="8" fill="#f4f1e6" stroke="#ded2b0"/>
+  <text x="236" y="387" fill="#7a715c" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14.5" text-anchor="middle">CLI subprocess and harness</text>
+  <line x1="90" y1="424" x2="382" y2="424" stroke="#ded2b0" stroke-width="1" stroke-dasharray="3,3"/>
+  <text x="90" y="448" fill="#7a715c" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="13">The product's runtime stays underneath, opaque.</text>
 
-    <rect x="105" y="220" width="236" height="48" rx="12" fill="#eef4fb" stroke="#a9bfd8"/>
-    <text x="223" y="250" fill="#34495f" font-size="16" font-weight="670">Your application</text>
-    <path d="M223 270 L223 300" stroke="#88909d" stroke-width="3" marker-end="url(#arrow)"/>
-    <rect x="105" y="307" width="236" height="48" rx="12" fill="#f4efff" stroke="#b9a7df"/>
-    <text x="223" y="337" fill="#5b478a" font-size="16" font-weight="670">SDK wrapper</text>
-    <path d="M223 357 L223 387" stroke="#88909d" stroke-width="3" marker-end="url(#arrow)"/>
-    <rect x="105" y="394" width="236" height="48" rx="12" fill="#f7f8fa" stroke="#bfc5ce"/>
-    <text x="223" y="424" fill="#4f5865" font-size="16" font-weight="670">CLI subprocess + harness</text>
-    <text x="223" y="466" fill="#7b838e" font-size="14">The product runtime stays underneath.</text>
+  <!-- Standalone agent product -->
+  <rect x="428" y="176" width="344" height="300" rx="12" fill="#ffffff" stroke="#ded2b0" stroke-width="1.5"/>
+  <text x="454" y="212" fill="#221f18" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="16.5" font-weight="700">Standalone agent product</text>
+  <rect x="454" y="230" width="292" height="40" rx="8" fill="#f4e6c8" stroke="#d9c08a"/>
+  <text x="600" y="255" fill="#4b4433" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14.5" font-weight="650" text-anchor="middle">Your application</text>
+  <text x="600" y="285" fill="#7a715c" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14" text-anchor="middle">↓</text>
+  <rect x="454" y="296" width="292" height="40" rx="8" fill="#f4f1e6" stroke="#ded2b0"/>
+  <text x="600" y="321" fill="#7a715c" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14.5" text-anchor="middle">Agent product (UI, harness, workflow)</text>
+  <line x1="454" y1="424" x2="746" y2="424" stroke="#ded2b0" stroke-width="1" stroke-dasharray="3,3"/>
+  <text x="454" y="448" fill="#7a715c" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="13">You adopt the product's operating model whole.</text>
 
-    <rect x="482" y="220" width="236" height="48" rx="12" fill="#eef4fb" stroke="#a9bfd8"/>
-    <text x="600" y="250" fill="#34495f" font-size="16" font-weight="670">Your application</text>
-    <path d="M600 270 L600 300" stroke="#88909d" stroke-width="3" marker-end="url(#arrow)"/>
-    <rect x="482" y="307" width="236" height="100" rx="14" fill="#edf3f9" stroke="#8eabc9" stroke-width="2"/>
-    <text x="600" y="345" fill="#34495f" font-size="17" font-weight="700">Agent product</text>
-    <text x="600" y="374" fill="#65798e" font-size="14">UI · harness · workflow</text>
-    <text x="600" y="466" fill="#7b838e" font-size="14">Adopt the product's operating model.</text>
-
-    <rect x="859" y="208" width="236" height="48" rx="12" fill="#fffdf7" stroke="#d2ad3b"/>
-    <text x="977" y="238" fill="#56440d" font-size="16" font-weight="690">Your application</text>
-    <path d="M977 258 L977 288" stroke="#b98200" stroke-width="3" marker-end="url(#gold-arrow)"/>
-    <rect x="859" y="295" width="236" height="104" rx="14" fill="#fff9df" stroke="#c89300" stroke-width="2"/>
-    <text x="977" y="329" fill="#765600" font-size="17" font-weight="750">Imported library</text>
-    <text x="977" y="357" fill="#796425" font-size="14">loop · tools · MCP · memory</text>
-    <text x="977" y="380" fill="#796425" font-size="14">sessions · hooks · subagents</text>
-    <text x="977" y="432" fill="#765600" font-size="15" font-weight="680">Your host owns the product.</text>
-    <text x="977" y="460" fill="#8b7430" font-size="14">Compose the runtime you need.</text>
-  </g>
+  <!-- Maestro Agent SDK -->
+  <rect x="792" y="176" width="344" height="300" rx="12" fill="#fffdf7" stroke="#b4790a" stroke-width="2"/>
+  <text x="818" y="212" fill="#221f18" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="16.5" font-weight="700">Maestro Agent SDK</text>
+  <rect x="818" y="230" width="292" height="40" rx="8" fill="#f4e6c8" stroke="#b4790a"/>
+  <text x="964" y="255" fill="#4b4433" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14.5" font-weight="650" text-anchor="middle">Your application</text>
+  <text x="964" y="285" fill="#8a5a0a" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14" text-anchor="middle">↓</text>
+  <rect x="818" y="296" width="292" height="40" rx="8" fill="#f4e6c8" stroke="#b4790a"/>
+  <text x="964" y="320" fill="#4b4433" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12.5" font-weight="650" text-anchor="middle">harness engine (loop, tools,</text>
+  <text x="964" y="334" fill="#4b4433" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12.5" font-weight="650" text-anchor="middle">MCP, memory)</text>
+  <line x1="818" y1="424" x2="1110" y2="424" stroke="#e6cf8f" stroke-width="1" stroke-dasharray="3,3"/>
+  <text x="818" y="448" fill="#221f18" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="13" font-weight="700">Your host owns the product.</text>
+  <text x="818" y="465" fill="#7a715c" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="13">The engine is a library call, not a layer.</text>
 </svg>

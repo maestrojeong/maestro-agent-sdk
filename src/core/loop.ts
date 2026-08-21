@@ -52,21 +52,6 @@ const TOOL_RESULT_PREVIEW_MAX = 200;
 const FOCUS_TOPIC_MAX_CHARS = 400;
 
 /**
- * Exact names of the six built-in task tools. A turn that ran any of these
- * triggers a `tasks` snapshot emit. We match by exact membership rather than a
- * `startsWith("Task")` prefix so a host- or MCP-registered tool that merely
- * begins with "Task" can't spuriously trigger a snapshot.
- */
-const TASK_TOOL_NAMES = new Set([
-  "TaskCreate",
-  "TaskUpdate",
-  "TaskList",
-  "TaskGet",
-  "TaskOutput",
-  "TaskStop",
-]);
-
-/**
  * Add late-bound system instructions to the invocation's starting user
  * message in the provider-facing view without mutating canonical history.
  *
@@ -773,16 +758,6 @@ export async function* runConversation(
         content: modelContent,
         ...(isError ? { is_error: true } : {}),
       });
-    }
-
-    // Emit a full task-list snapshot whenever this turn ran a built-in task
-    // tool (TaskCreate/Update/Output/Stop mutate; List/Get don't, but emitting
-    // on a read is cheap and keeps a host panel fresh). One event per turn —
-    // the snapshot already reflects every mutation in the batch — so the cost
-    // is bounded regardless of how many task tools fired. Skipped entirely when
-    // the host didn't wire `snapshotTasks`, so non-consumers pay nothing.
-    if (agent.config.snapshotTasks && toolUses.some((tu) => TASK_TOOL_NAMES.has(tu.name))) {
-      yield { type: "tasks", tasks: agent.config.snapshotTasks() };
     }
 
     // Append a fresh `<system-reminder>` text block AFTER the tool_result

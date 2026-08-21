@@ -1,5 +1,63 @@
 # Changelog
 
+## [0.3.0] - 2026-08-21
+
+### Removed
+
+- **Built-in `Task*` tools** (`TaskCreate`, `TaskUpdate`, `TaskList`,
+  `TaskGet`, `TaskOutput`, `TaskStop`) and their backing `TaskStore`
+  (`src/state/tasks.ts`) are gone, along with the `tasks` `UnifiedEvent`,
+  `AIAgentConfig.snapshotTasks`, and the reminder's `Tasks (n/m):` block.
+  BREAKING for any host that called these tools directly, read
+  `TaskSnapshot`/`TaskEntry`, or wired `snapshotTasks`.
+
+  Rationale: the store was queried and its (empty-until-used) reminder
+  block computed on every single turn regardless of whether a host ever
+  read it, and the six schemas rode the wire on every call — a fixed cost
+  every embedder paid whether or not they wanted task tracking. Worse, the
+  store is scoped to one `sessionId`, so it can't hold state that survives
+  a multi-agent host switching providers mid-topic (exactly the situation
+  Otium hits routinely) — a host that actually needs durable, cross-agent
+  task state was always going to need its own storage anyway, making the
+  built-in version dead weight for both the embedder that never used it
+  and the one that outgrew it. Task tracking is a host concern, same as
+  session storage and tool-approval policy: register it as a normal tool
+  or an MCP server instead. See the README's "No built-in task tools"
+  section for the migration note.
+
+- **`Session: <id>` line** dropped from the per-turn `<system-reminder>`
+  entirely (not relocated). Across this SDK's real embedders, no tool
+  schema ever required the model to state its own session id as a call
+  argument — targeted cross-session operations resolve "who's calling"
+  from server-side request context, not from model-supplied text — so the
+  line was pure dead weight, repeated verbatim into canonical history every
+  single turn for a value that never changes and nothing ever read back. A
+  host that genuinely needs the model to know its own session id can still
+  surface it via `AgentQueryOptions.systemPrompt`.
+
+### Changed
+
+- **Deferred-tool catalog moved off the per-turn reminder onto the
+  ephemeral system-instructions path** (`AIAgentConfig.ephemeralSystemPrompt`
+  / `projectEphemeralSystemPrompt`). Previously the catalog was recomputed
+  and frozen into canonical `messages` every turn until every deferred tool
+  was activated — with 100+ deferred MCP tools (a real config once a host
+  wires up a handful of MCP servers) that's ~100 lines re-persisted turn
+  after turn, real token cost on every future replay of the history, not
+  just the live wire call. It's now snapshotted ONCE per invocation (before
+  the tool loop starts, matching the ephemeral path's existing cache-safety
+  contract) and injected onto a wire-only copy of the invocation's anchor
+  message — never written to canonical, so it costs nothing on replay and
+  stops compounding over a long session. A tool activated mid-invocation
+  simply won't drop off this snapshot until the next invocation; harmless,
+  since `ToolSearch`'s own response already confirms the activation in-band
+  and the tool's schema rides the wire from the very next turn regardless.
+  Merged with any caller-supplied `opts.ephemeralSystemPrompt` into one
+  block. New export: `buildDeferredToolsNote` (`memory/reminder.ts`),
+  replacing `SystemReminderContext.deferredTools` (removed — the per-turn
+  `<system-reminder>` now carries only the iteration budget / wrap-up
+  overlay, the one thing that genuinely changes turn to turn).
+
 ## [0.2.8] - 2026-08-17
 
 ### Fixed

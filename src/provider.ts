@@ -3,7 +3,7 @@ import { AIAgent } from "@/core/agent";
 import { isAbortError, isTimeoutError } from "@/core/is-abort-error";
 import { runConversation } from "@/core/loop";
 import { type MaestroMcpPool, registerMcpTools, startMcpPool } from "@/mcp/pool";
-import { buildSystemReminder } from "@/memory/reminder";
+import { buildDeferredToolsNote, buildSystemReminder } from "@/memory/reminder";
 import { bootstrapHostPath } from "@/platform/env-bootstrap";
 import { logger } from "@/platform/logger";
 import { getMcpServersForQuery } from "@/platform/mcp-config";
@@ -27,7 +27,6 @@ import {
   saveMaestroSessionSplit,
   trimToSafePrefix,
 } from "@/session-store";
-import { getTaskStore } from "@/state/tasks";
 import { createAgentTool } from "@/tools/builtin/agent";
 import { bashTool } from "@/tools/builtin/bash";
 import { createEditTool } from "@/tools/builtin/edit";
@@ -36,14 +35,6 @@ import { globTool } from "@/tools/builtin/glob";
 import { grepTool } from "@/tools/builtin/grep";
 import { createReadTool } from "@/tools/builtin/read";
 import { createReadToolOutputTool } from "@/tools/builtin/read_tool_output";
-import {
-  createTaskCreateTool,
-  createTaskGetTool,
-  createTaskListTool,
-  createTaskOutputTool,
-  createTaskStopTool,
-  createTaskUpdateTool,
-} from "@/tools/builtin/tasks";
 import { createToolSearchTool } from "@/tools/builtin/tool_search";
 import { webFetchTool } from "@/tools/builtin/web_fetch";
 import { createWriteTool } from "@/tools/builtin/write";
@@ -165,13 +156,6 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
   // turns so a Read in turn N is still recorded when an Edit fires in N+1.
   const fileTracker = getFileStateTracker(sessionId);
 
-  // Per-session task store backing the TaskCreate/Update/List/Get family.
-  // Same module-level cache pattern as the file-state tracker — the store
-  // hydrates from `~/.maestro/sessions/<sid>.tasks.json` on first access
-  // (auto-migrating from the legacy `.todos.json` when present) so a
-  // multi-turn plan survives across calls.
-  const taskStore = getTaskStore(sessionId);
-
   const requestedModel = opts.model ?? maestroRegistry.defaultModel;
   const resolvedModel = maestroRegistry.expandModelAlias(requestedModel);
 
@@ -209,16 +193,6 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
   if (shouldRegisterGeminiImageQATool(resolvedModel)) {
     tools.register(createGeminiImageQATool({ apiKey: process.env.GEMINI_API_KEY }));
   }
-  // Task family — granular CRUD replacing the v0.1.x TodoWrite. All four
-  // share the same per-session store; the system reminder renders the list
-  // every turn so the model rarely needs to call TaskList explicitly.
-  tools.register(createTaskCreateTool({ store: taskStore }));
-  tools.register(createTaskUpdateTool({ store: taskStore }));
-  tools.register(createTaskListTool({ store: taskStore }));
-  tools.register(createTaskGetTool({ store: taskStore }));
-  tools.register(createTaskOutputTool(taskStore));
-  tools.register(createTaskStopTool(taskStore));
-
   // --- MCP pool: spawn every configured server, register their tools -------
   //
   // Failures here are logged but non-fatal: a turn can still serve from
@@ -375,23 +349,20 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
       const overlay = wrapUpOverlayLine(iterationsRemaining, maxIter);
       if (overlay) extras.push(overlay);
     }
-    // v0.1.22+: deferred-tool catalog. Recomputed every turn so any tool the
-    // model promoted via ToolSearch last turn falls off the list (the model
-    // no longer needs to be reminded a tool exists once it can call it
-    // directly). Skipped when no deferred tools — keeps the reminder byte-
-    // identical to v0.1.21 for callers who don't opt into enableToolSearch.
-    const deferredTools = tools.hasDeferred() ? tools.deferredCatalog() : undefined;
-    return buildSystemReminder({
-      sessionId,
-      tasks: taskStore.list(),
-      ...(deferredTools !== undefined ? { deferredTools } : {}),
-      extras,
-    });
+    // v0.3.0: session id and the deferred-tool catalog no longer live here —
+    // session id moved to the `system` prompt (truly invariant for the whole
+    // session, so it belongs where it's sent once and never repeated) and
+    // the deferred catalog moved to the ephemeral system-instructions path
+    // (see `deferredToolsNote` below) so it stops compounding into canonical
+    // history every turn. This reminder now carries ONLY the iteration
+    // budget, because that's the one fact that genuinely changes turn to
+    // turn and therefore has nowhere cache-safe to live except frozen here.
+    return buildSystemReminder({ extras });
   };
   const reminderText = buildIterReminder(maxIter);
   const userBlocks: ProviderContentBlock[] = [
     { type: "text", text: opts.prompt },
-    { type: "text", text: reminderText },
+    ...(reminderText.length > 0 ? [{ type: "text" as const, text: reminderText }] : []),
   ];
   const messages: ProviderMessage[] = [...priorMessages, { role: "user", content: userBlocks }];
 
@@ -454,12 +425,30 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
       },
     }),
   );
+  // v0.3.0: the deferred-tool catalog moves from the per-turn frozen
+  // reminder to the ephemeral system-instructions path. Snapshotting it HERE
+  // (once, before the tool loop starts) and holding it fixed for the whole
+  // invocation matches `ephemeralSystemPrompt`'s existing cache-safety
+  // contract — see `buildDeferredToolsNote`'s docstring for why recomputing
+  // it mid-invocation would be unsafe. A tool activated mid-invocation just
+  // won't drop off this snapshot until the NEXT invocation; harmless, since
+  // `ToolSearch`'s own response already confirms the activation in-band.
+  // Merged with the caller's own `opts.ephemeralSystemPrompt` (if any) into
+  // one block — both are "late-bound, this-invocation-only" instructions,
+  // so sharing one wrapper is the natural fit.
+  const deferredToolsNote = tools.hasDeferred()
+    ? buildDeferredToolsNote(tools.deferredCatalog())
+    : "";
+  const combinedEphemeralPrompt = [deferredToolsNote, opts.ephemeralSystemPrompt?.trim()]
+    .filter((s): s is string => typeof s === "string" && s.length > 0)
+    .join("\n\n");
+
   const agent = new AIAgent(provider, tools, {
     model: resolvedModel,
     sessionId,
     systemPrompt: augmentedSystemPrompt,
-    ...(opts.ephemeralSystemPrompt?.trim()
-      ? { ephemeralSystemPrompt: opts.ephemeralSystemPrompt }
+    ...(combinedEphemeralPrompt.length > 0
+      ? { ephemeralSystemPrompt: combinedEphemeralPrompt }
       : {}),
     // Effort-derived tool-iteration cap. The model sees the same number via
     // the per-iteration `<system-reminder>` (see `buildIterReminder` above)
@@ -467,22 +456,6 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
     // gives it room to dig.
     maxIterations: maxIter,
     buildIterReminder,
-    // Project the per-session task store into wire-safe snapshots so the loop
-    // can emit a `tasks` UnifiedEvent after any Task* tool turn. `list()`
-    // already excludes deleted entries; the extra filter keeps the status
-    // type narrow even if that contract ever loosens.
-    snapshotTasks: () =>
-      taskStore
-        .list()
-        .filter((t) => t.status !== "deleted")
-        .map((t) => ({
-          id: t.id,
-          subject: t.subject,
-          status: t.status as "pending" | "in_progress" | "completed",
-          ...(t.blockedBy.length > 0 ? { blockedBy: [...t.blockedBy] } : {}),
-          ...(t.activeForm ? { activeForm: t.activeForm } : {}),
-          ...(t.owner ? { owner: t.owner } : {}),
-        })),
     // v0.1.21+: caller-supplied per-call `maxTokens` rides through to the
     // provider request body. Omitting it lets `AIAgent` fall back to the
     // model-catalog default (`getNativeMaxOutputTokens(resolvedModel)`):

@@ -111,11 +111,6 @@ export function extractChatPairs(
       case "tool_use_summary":
       case "file":
         break;
-      // Ephemeral live-UI event: a full task-list snapshot for host task
-      // panels. It carries no conversation content, so the rollout digest
-      // deliberately drops it (and hosts should not persist it).
-      case "tasks":
-        break;
     }
   }
   flushAssistant();

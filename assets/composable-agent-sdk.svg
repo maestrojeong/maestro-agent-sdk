@@ -1,81 +1,69 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="620" viewBox="0 0 1200 620" role="img" aria-labelledby="title desc">
-  <title id="title">Maestro Agent SDK composable architecture</title>
-  <desc id="desc">A host application composes the Maestro agent loop with tools, memory, MCP, guardrails, sessions, and subagents, then connects it to DeepSeek or Kimi.</desc>
-  <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#fffdf7"/>
-      <stop offset="1" stop-color="#f8f2df"/>
-    </linearGradient>
-    <linearGradient id="core" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#fff5c7"/>
-      <stop offset="1" stop-color="#ffe49a"/>
-    </linearGradient>
-    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
-      <feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#6b4f00" flood-opacity=".12"/>
-    </filter>
-    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#b98200"/>
-    </marker>
-  </defs>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="520" viewBox="0 0 1200 520" role="img" aria-labelledby="title desc">
+  <title id="title">Maestro Agent SDK harness engine architecture</title>
+  <desc id="desc">Your application owns the UI, workflow, storage policy, auth, and deployment. It imports the Maestro Agent SDK as a harness engine (loop, tools, MCP, memory, sessions, hooks, subagents) and calls DeepSeek or Kimi through it.</desc>
 
-  <rect width="1200" height="620" rx="28" fill="url(#bg)"/>
-  <rect x="1" y="1" width="1198" height="618" rx="27" fill="none" stroke="#ead99f" stroke-width="2"/>
+  <rect width="1200" height="520" rx="20" fill="#fbfaf6"/>
+  <rect x="1" y="1" width="1198" height="518" rx="19" fill="none" stroke="#ded2b0" stroke-width="2"/>
 
-  <text x="64" y="72" fill="#231f16" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="34" font-weight="750">Lightweight. Composable. Yours.</text>
-  <text x="64" y="108" fill="#72664d" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="18">Import an agent runtime into your product. Keep the UI, workflow, and policy in your hands.</text>
+  <text x="64" y="68" fill="#b4790a" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="700" letter-spacing="1.4">NPM PACKAGE</text>
+  <text x="64" y="102" fill="#221f18" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="32" font-weight="750">A harness engine, not a product.</text>
+  <rect x="64" y="118" width="46" height="3" fill="#b4790a"/>
+  <text x="64" y="152" fill="#7a715c" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="16">You own the UI, the workflow, and the storage policy. Maestro is the loop, tools, and</text>
+  <text x="64" y="174" fill="#7a715c" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="16">provider calls underneath it.</text>
 
-  <g filter="url(#shadow)">
-    <rect x="64" y="166" width="255" height="354" rx="22" fill="#ffffff" stroke="#ddd4bf" stroke-width="2"/>
-    <rect x="382" y="148" width="436" height="390" rx="26" fill="url(#core)" stroke="#d49a00" stroke-width="3"/>
-    <rect x="881" y="166" width="255" height="354" rx="22" fill="#ffffff" stroke="#ddd4bf" stroke-width="2"/>
+  <!-- Your application -->
+  <rect x="64" y="206" width="290" height="270" rx="12" fill="#ffffff" stroke="#ded2b0" stroke-width="1.5"/>
+  <text x="90" y="244" fill="#221f18" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="17" font-weight="700">Your application</text>
+  <g fill="#7a715c" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14.5">
+    <text x="90" y="282">UI and event rendering</text>
+    <text x="90" y="310">Workflow and approvals</text>
+    <text x="90" y="338">Storage policy</text>
+    <text x="90" y="366">Auth and tenancy</text>
+    <text x="90" y="394">Deployment</text>
   </g>
 
-  <text x="96" y="214" fill="#8a6500" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14" font-weight="750" letter-spacing="1.5">YOUR PRODUCT</text>
-  <text x="96" y="252" fill="#231f16" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="24" font-weight="700">Host-owned</text>
-  <g fill="#5f5747" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="17">
-    <text x="96" y="302">UI and event rendering</text>
-    <text x="96" y="342">Workflow and approvals</text>
-    <text x="96" y="382">Storage policy</text>
-    <text x="96" y="422">Auth and tenancy</text>
-    <text x="96" y="462">Deployment</text>
+  <!-- Maestro Agent SDK (engine) -->
+  <rect x="386" y="192" width="428" height="298" rx="12" fill="#fffdf7" stroke="#b4790a" stroke-width="2"/>
+  <text x="412" y="234" fill="#221f18" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="20" font-weight="750">Maestro Agent SDK</text>
+  <text x="412" y="260" fill="#7a715c" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13.5">imported library, no CLI subprocess</text>
+
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#4b4433" text-anchor="middle">
+    <rect x="412" y="284" width="82" height="32" rx="6" fill="#fdfaf1" stroke="#ded2b0"/>
+    <text x="453" y="305">loop</text>
+    <rect x="502" y="284" width="82" height="32" rx="6" fill="#fdfaf1" stroke="#ded2b0"/>
+    <text x="543" y="305">tools</text>
+    <rect x="592" y="284" width="82" height="32" rx="6" fill="#fdfaf1" stroke="#ded2b0"/>
+    <text x="633" y="305">MCP</text>
+    <rect x="682" y="284" width="106" height="32" rx="6" fill="#fdfaf1" stroke="#ded2b0"/>
+    <text x="735" y="305">memory</text>
+
+    <rect x="412" y="326" width="106" height="32" rx="6" fill="#fdfaf1" stroke="#ded2b0"/>
+    <text x="465" y="347">sessions</text>
+    <rect x="528" y="326" width="82" height="32" rx="6" fill="#fdfaf1" stroke="#ded2b0"/>
+    <text x="569" y="347">hooks</text>
+    <rect x="620" y="326" width="120" height="32" rx="6" fill="#fdfaf1" stroke="#ded2b0"/>
+    <text x="680" y="347">subagents</text>
   </g>
 
-  <text x="420" y="200" fill="#8a6500" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14" font-weight="750" letter-spacing="1.5">NPM LIBRARY · NO CLI SUBPROCESS</text>
-  <text x="420" y="244" fill="#231f16" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="29" font-weight="780">Maestro Agent SDK</text>
-  <text x="420" y="276" fill="#6e571a" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="17">A provider-neutral agent loop you assemble.</text>
+  <text x="600" y="440" fill="#7a715c" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14" text-anchor="middle">Use the batteries-included provider, or compose the</text>
+  <text x="600" y="460" fill="#7a715c" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14" text-anchor="middle">lower-level pieces yourself.</text>
 
-  <g font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="16" font-weight="650" text-anchor="middle">
-    <rect x="420" y="318" width="112" height="48" rx="12" fill="#fffdf7" stroke="#d9b653"/>
-    <text x="476" y="348" fill="#4f420f">Tools</text>
-    <rect x="544" y="318" width="112" height="48" rx="12" fill="#fffdf7" stroke="#d9b653"/>
-    <text x="600" y="348" fill="#4f420f">Memory</text>
-    <rect x="668" y="318" width="112" height="48" rx="12" fill="#fffdf7" stroke="#d9b653"/>
-    <text x="724" y="348" fill="#4f420f">MCP</text>
-    <rect x="420" y="382" width="112" height="48" rx="12" fill="#fffdf7" stroke="#d9b653"/>
-    <text x="476" y="412" fill="#4f420f">Sessions</text>
-    <rect x="544" y="382" width="112" height="48" rx="12" fill="#fffdf7" stroke="#d9b653"/>
-    <text x="600" y="412" fill="#4f420f">Guardrails</text>
-    <rect x="668" y="382" width="112" height="48" rx="12" fill="#fffdf7" stroke="#d9b653"/>
-    <text x="724" y="412" fill="#4f420f">Subagents</text>
-  </g>
-  <text x="600" y="476" fill="#6e571a" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="15" text-anchor="middle">Use the batteries-included provider</text>
-  <text x="600" y="498" fill="#6e571a" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="15" text-anchor="middle">or compose the lower-level pieces.</text>
+  <!-- Model providers -->
+  <rect x="846" y="206" width="290" height="270" rx="12" fill="#ffffff" stroke="#ded2b0" stroke-width="1.5"/>
+  <text x="872" y="244" fill="#221f18" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="17" font-weight="700">Model providers</text>
+  <rect x="872" y="270" width="238" height="70" rx="10" fill="#f7fbff" stroke="#9bbce0" stroke-width="1.5"/>
+  <text x="991" y="302" fill="#204f80" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="18" font-weight="700" text-anchor="middle">DeepSeek V4</text>
+  <text x="991" y="324" fill="#57738f" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="13.5" text-anchor="middle">Pro, Flash</text>
+  <rect x="872" y="356" width="238" height="70" rx="10" fill="#faf8ff" stroke="#b3a2db" stroke-width="1.5"/>
+  <text x="991" y="388" fill="#59438e" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="18" font-weight="700" text-anchor="middle">Kimi</text>
+  <text x="991" y="410" fill="#77679c" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="13.5" text-anchor="middle">K3, K2.7 Code</text>
 
-  <text x="913" y="214" fill="#8a6500" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14" font-weight="750" letter-spacing="1.5">MODEL PROVIDERS</text>
-  <text x="913" y="252" fill="#231f16" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="24" font-weight="700">Choose per call</text>
-  <rect x="913" y="294" width="191" height="72" rx="14" fill="#f7fbff" stroke="#9bbce0" stroke-width="2"/>
-  <text x="1008" y="326" fill="#204f80" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="20" font-weight="720" text-anchor="middle">DeepSeek V4</text>
-  <text x="1008" y="349" fill="#57738f" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14" text-anchor="middle">Pro · Flash</text>
-  <rect x="913" y="386" width="191" height="72" rx="14" fill="#faf8ff" stroke="#b3a2db" stroke-width="2"/>
-  <text x="1008" y="418" fill="#59438e" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="20" font-weight="720" text-anchor="middle">Kimi</text>
-  <text x="1008" y="441" fill="#77679c" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14" text-anchor="middle">K3 · K2.7 Code</text>
+  <path d="M 358 341 L 378 341" fill="none" stroke="#7a715c" stroke-width="1.5"/>
+  <path d="M 378 335 L 390 341 L 378 347 Z" fill="#7a715c"/>
+  <path d="M 818 341 L 838 341" fill="none" stroke="#7a715c" stroke-width="1.5"/>
+  <path d="M 838 335 L 850 341 L 838 347 Z" fill="#7a715c"/>
 
-  <path d="M 319 343 C 342 343, 352 343, 378 343" fill="none" stroke="#b98200" stroke-width="3" marker-end="url(#arrow)"/>
-  <path d="M 818 343 C 842 343, 852 343, 877 343" fill="none" stroke="#b98200" stroke-width="3" marker-end="url(#arrow)"/>
-
-  <g font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="15" font-weight="650">
-    <rect x="64" y="558" width="218" height="38" rx="19" fill="#231f16"/>
-    <text x="173" y="583" fill="#fff9e8" text-anchor="middle">~311 kB packed package*</text>
-    <text x="302" y="583" fill="#7b705a">* v0.1.51 npm tarball, excluding dependencies</text>
-  </g>
+  <rect x="64" y="470" width="234" height="34" rx="8" fill="#221f18"/>
+  <text x="181" y="492" fill="#fbfaf6" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="13.5" font-weight="650" text-anchor="middle">324 kB packed package*</text>
+  <text x="330" y="492" fill="#7a715c" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="13">* v0.3.0 npm tarball, excluding dependencies</text>
 </svg>
