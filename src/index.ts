@@ -124,7 +124,12 @@ export {
 } from "@/session-store";
 export type { ConversationEntry } from "@/storage/conversations";
 export { type ConversationReader, setConversationReader } from "@/storage/conversations";
-export { createAgentTool } from "@/tools/builtin/agent";
+// ─── Tool-call trajectory ─────────────────────────────────────────────────────
+export {
+  loadMaestroTrajectory,
+  maestroTrajectoryPath,
+  type TrajectoryRecord,
+} from "@/trajectory-store";
 // ─── Built-in tools ──────────────────────────────────────────────────────────
 export { bashTool, createBashTool } from "@/tools/builtin/bash";
 export { createEditTool } from "@/tools/builtin/edit";

@@ -61,11 +61,11 @@ const bashSchema = {
 } as const;
 
 // ───────────────────────────────────────────────
-// Factory — wraps the shared shell-out logic with
-// an AbortSignal so the sub-agent runner can wire
-// parent abort through to `spawn({ signal })`.
+// Factory — wraps the shared shell-out logic with an optional AbortSignal
+// so a caller (or a host building its own scoped registry) can wire its
+// own abort controller through to `spawn({ signal })`.
 //
-// Usage in runner.ts:
+// Usage:
 //   tools.register(createBashTool({ signal: abortSignal }));
 // ───────────────────────────────────────────────
 export function createBashTool(opts?: { signal?: AbortSignal }): ToolHandler {

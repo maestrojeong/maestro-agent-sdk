@@ -20,7 +20,6 @@
  */
 
 // ─── Built-in tools ────────────────────────────────────────────────────────
-export { createAgentTool } from "@/tools/builtin/agent";
 export { bashTool, createBashTool } from "@/tools/builtin/bash";
 export { createEditTool, editTool } from "@/tools/builtin/edit";
 export { createGeminiImageQATool } from "@/tools/builtin/gemini_image_qa";

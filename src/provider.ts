@@ -27,7 +27,6 @@ import {
   saveMaestroSessionSplit,
   trimToSafePrefix,
 } from "@/session-store";
-import { createAgentTool } from "@/tools/builtin/agent";
 import { bashTool } from "@/tools/builtin/bash";
 import { createEditTool } from "@/tools/builtin/edit";
 import { createGeminiImageQATool } from "@/tools/builtin/gemini_image_qa";
@@ -393,38 +392,6 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
     .filter((s): s is string => typeof s === "string" && s.length > 0)
     .join("\n\n");
 
-  // Collect MCP tool handlers that `general` sub-agents may receive. Only
-  // tools whose name starts with "mcp__" are forwarded — builtins are always
-  // registered fresh in the sub-agent's own registry, and deferred tools that
-  // haven't been activated yet are excluded (the sub-agent would see unknown
-  // schemas if we forwarded a deferred but un-promoted handler). `explore`
-  // and `plan` ignore these in the runner so they remain builtin-only read
-  // scopes.
-  const mcpToolHandlers = tools
-    .allHandlers()
-    .filter(
-      (h) =>
-        h.schema.function.name.startsWith("mcp__") && !tools.isDeferred(h.schema.function.name),
-    );
-
-  // Register the `Agent` tool last — it captures the resolved model,
-  // effort, augmented system prompt (parent base for sub-agents), and the
-  // MCP tool handlers available to `general`. Registered only on the PARENT call;
-  // sub-agents do NOT get an Agent tool because `runSubAgent` builds its
-  // own registry without registering one (advisor: depth=1 cap).
-  tools.register(
-    createAgentTool({
-      parent: {
-        parentSessionId: sessionId,
-        parentSystemPrompt: augmentedSystemPrompt,
-        parentModel: resolvedModel,
-        ...(opts.apiKeyOverrides ? { apiKeyOverrides: opts.apiKeyOverrides } : {}),
-        ...(resolvedEffort ? { parentEffort: resolvedEffort } : {}),
-        ...(opts.abortController?.signal ? { parentAbortSignal: opts.abortController.signal } : {}),
-        ...(mcpToolHandlers.length > 0 ? { extraTools: mcpToolHandlers } : {}),
-      },
-    }),
-  );
   // v0.3.0: the deferred-tool catalog moves from the per-turn frozen
   // reminder to the ephemeral system-instructions path. Snapshotting it HERE
   // (once, before the tool loop starts) and holding it fixed for the whole
@@ -661,8 +628,8 @@ export async function* maestroProvider(opts: AgentQueryOptions): AsyncGenerator<
  * acknowledged but doesn't change behavior much. Pairing the count with a
  * verb the model can act on ("start wrapping up", "finalize NOW") is what
  * shifts the next-token distribution toward "emit final answer" instead
- * of "call another tool". Exported so sub-agent / tests can share the
- * exact phrasing if they need parity.
+ * of "call another tool". Exported so tests can assert on the exact
+ * phrasing without duplicating it.
  */
 export function iterationBudgetLine(remaining: number, max: number): string {
   const pct = max > 0 ? remaining / max : 0;

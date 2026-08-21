@@ -1,5 +1,46 @@
 # Changelog
 
+## [0.3.1] - 2026-08-21
+
+### Removed
+
+- **Built-in `Agent` (sub-agent) tool** and its entire implementation
+  (`src/sub-agent/`, `src/tools/builtin/agent.ts`, the `src/prompts/sub-agents/*`
+  overlays) are gone. BREAKING for any host that called `Agent` directly or
+  imported `createAgentTool` from `maestro-agent-sdk`/`maestro-agent-sdk/tools`.
+  Same rationale as the v0.3.0 Task-tool removal: every real embedder of this
+  SDK already disallows `Agent` by default and redirects the model to its own
+  delegation surface (e.g. a `spawn_subagent` MCP tool), because that surface
+  needs to survive a multi-agent host switching providers mid-topic, which a
+  depth-capped, single-provider built-in can't do. `AIAgent`/`ToolRegistry`
+  remain fully exported, so a host that wants sub-agent delegation can still
+  build it directly on those primitives; `ToolRegistry.allHandlers()` (the
+  forwarding helper the removed tool used) stays available for that.
+- `MAESTRO_SUBAGENT_MAX_TOKENS` env var (had no other reader once the tool
+  implementation using it was removed).
+
+### Added
+
+- **`tool_use` UnifiedEvent now carries `id`.** Previously dropped even
+  though the loop already had it (`chunk.id`/`block.id`), which made it
+  impossible for a host to pair a specific `tool_use` to its later
+  `tool_result` when a turn ran more than one tool concurrently.
+- **`tool_result` UnifiedEvent now carries `startedAt` (epoch ms) and
+  `durationMs`.** Recorded around the actual dispatch call, not the
+  model's `tool_use` emission, so a call queued behind a serial-tool
+  barrier reports genuine execution time, not wait time.
+- **New `loadMaestroTrajectory(sessionId)` export** plus a
+  `<sessionId>.trajectory.jsonl` sidecar (alongside the session's own
+  JSONL) that the loop appends to on every dispatched tool call: `callId`,
+  `name`, `startedAt`, `durationMs`, `isError`, and a truncated
+  `resultPreview`. Lets a host reconstruct a session's full tool-call
+  sequence after the fact — e.g. to build a per-tool result/timing view
+  like deepseek-harness's Trajectory UI — without having captured the live
+  event stream itself. The SDK only returns the data; rendering it is a
+  host concern, same as everything else UI-shaped in this SDK. Cleaned up
+  automatically by `deleteMaestroSession` / `cleanupStaleMaestroSessions`
+  alongside the other per-session sidecars.
+
 ## [0.3.0] - 2026-08-21
 
 ### Removed

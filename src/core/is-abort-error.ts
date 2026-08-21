@@ -1,8 +1,8 @@
 /**
  * Shared abort-detection utility.
  *
- * Extracted from `maestroProvider` so both the provider and the
- * sub-agent runner use the same function without inlining.
+ * Extracted from `maestroProvider` into its own module so the loop and any
+ * future caller can reuse it without inlining.
  */
 export function isAbortError(err: unknown): boolean {
   if (!err || typeof err !== "object") return false;

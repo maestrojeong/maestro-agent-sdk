@@ -604,13 +604,15 @@ export class ToolRegistry {
 
   /**
    * Return every callable handler. Useful for forwarding a selected subset
-   * of the parent registry (e.g. MCP tools) to a `general` sub-agent via
-   * `RunSubAgentOptions.extraTools`.
+   * of this registry (e.g. MCP tools) into a separate `ToolRegistry` a host
+   * builds itself — v0.4.0 dropped the SDK's own built-in `Agent`/sub-agent
+   * tool (see CHANGELOG), so this is no longer used internally, but stays
+   * exported as a generic building block.
    *
    * Ordering matches insertion order. Disallowed tools are omitted so a
-   * parent-call denylist cannot leak into sub-agents. Deferred / active state
-   * is NOT carried — the caller decides registration options for the
-   * sub-agent.
+   * parent-call denylist cannot leak into whatever the caller forwards to.
+   * Deferred / active state is NOT carried — the caller decides registration
+   * options for the target registry.
    */
   allHandlers(): ToolHandler[] {
     return Array.from(this.tools.entries())

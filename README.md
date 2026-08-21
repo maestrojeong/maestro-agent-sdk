@@ -7,14 +7,14 @@
 **The lightweight harness engine for agent products.**
 
 Import the agent loop into your product, then assemble only what you need:
-built-in or custom tools, sessions, memory compaction, MCP, guardrails, and
-subagents. Your host keeps control of the UI, workflow, storage policy, auth,
-and deployment.
+built-in or custom tools, sessions, memory compaction, MCP, and guardrails.
+Your host keeps control of the UI, workflow, storage policy, auth, and
+deployment.
 
 ![Maestro Agent SDK harness engine architecture](./assets/composable-agent-sdk.svg)
 
 Maestro is an ESM library, not a CLI wrapper, sidecar, gateway, or bundled app.
-The current npm tarball is about 324 kB (1.2 MB unpacked), excluding
+The current npm tarball is about 315 kB (1.2 MB unpacked), excluding
 dependencies.
 
 ## Why Maestro?
@@ -27,7 +27,7 @@ dependencies.
 - **Host-controlled:** keep ownership of presentation, persistence, tenancy,
   approvals, and tool policy.
 - **Ready for real workflows:** streaming events, resumable sessions, context
-  compaction, MCP tools, and subagent delegation are included.
+  compaction, and MCP tools are included.
 
 ## Positioning
 
@@ -88,10 +88,10 @@ For system-level instructions that may change between calls, pass
 `ephemeralSystemPrompt`. Before each primary model call, Maestro appends it to
 the invocation's starting user message on the provider wire, keeps that fixed
 position across tool iterations, and excludes it from compaction and persisted
-session history. It is not inherited by `Agent`-tool subagents. The stable
-`systemPrompt` remains eligible for provider prefix caching, and each tool-loop
-request stays a stable extension of the previous one. The next external call
-must recompute from the transient instruction's former position once.
+session history. The stable `systemPrompt` remains eligible for provider
+prefix caching, and each tool-loop request stays a stable extension of the
+previous one. The next external call must recompute from the transient
+instruction's former position once.
 
 The value is a user-role runtime hint, not a provider-native system-role policy
 boundary. Pass only host-trusted content; keep security rules in the stable
@@ -158,8 +158,8 @@ updated during the turn, so a custom host can persist it however it prefers.
 
 - Provider-driven tool-calling loop with abort support and configurable
   `maxIterations`, `maxTokens`, and reasoning `effort`.
-- Built-in `Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`, `WebFetch`, and
-  `Agent` tools.
+- Built-in `Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`, and `WebFetch`
+  tools.
 - Custom tools through `defineTool()` and `ToolRegistry`. Multi-step task
   tracking is intentionally left to the host (e.g. an MCP `task` server) rather
   than shipped as a built-in — see [No built-in task
@@ -187,6 +187,31 @@ later turns in the same run carry a fresh reminder but no ephemeral note.
 and is forced to `[]` in the wrap-up zone (the final turns before
 `maxIterations`) so the model finalizes from what it already has instead of
 attempting another call.
+
+### Tool trajectory
+
+![Reconstructing a session's tool-call trajectory](./assets/tool-trajectory.svg)
+
+Every dispatched tool call appends one record to
+`<sessionId>.trajectory.jsonl`, alongside the session's own JSONL: the call
+id (the same one `tool_use`/`tool_result` UnifiedEvents carry), name,
+`startedAt`/`durationMs`, error state, and a truncated result preview.
+Call `loadMaestroTrajectory(sessionId)` any time after the fact to get the
+full `TrajectoryRecord[]` back, without needing to have captured the live
+event stream yourself. This is the same shape of data a tool like
+[deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)'s
+Trajectory view renders as a timeline; this SDK stops at returning the
+records; a table, a Gantt-style timeline, or nothing at all is entirely up
+to your host.
+
+```ts
+import { loadMaestroTrajectory } from "maestro-agent-sdk";
+
+const records = loadMaestroTrajectory(sessionId);
+for (const r of records) {
+  console.log(`${r.name} (${r.durationMs}ms): ${r.resultPreview}`);
+}
+```
 
 ### Custom tools
 
@@ -254,6 +279,22 @@ If your host needs task tracking, register it as a normal tool (via
 expose it as an MCP server and pass it through `AgentQueryOptions`' MCP
 resolver like any other MCP tool.
 
+### No built-in subagent tool
+
+Earlier versions shipped an always-loaded `Agent` tool that spawned a
+depth-capped, single-provider sub-agent. As of this version it's removed,
+for the same reason as the built-in task tools: it was dead weight for
+every host that already runs its own delegation surface (a multi-agent
+host needs delegation that survives a topic switching providers, which a
+built-in scoped to one provider's session can't offer), and a fixed cost
+for hosts that never called it.
+
+`AIAgent` and `ToolRegistry` are unaffected; a host that wants sub-agent
+delegation can still build it directly by constructing a second `AIAgent`
+with its own registry and forwarding a filtered set of tools via
+`ToolRegistry.allHandlers()`, the same building block the removed tool used
+internally.
+
 ## Configuration
 
 The SDK reads environment variables at module load. It does not load `.env`
@@ -271,7 +312,6 @@ See [`.env.example`](./.env.example) for the complete template.
 | `MAESTRO_CONTEXT_WINDOW` | provider value | Compaction tuning/testing |
 | `MAESTRO_MCP_POOL_IDLE_TTL_MS` | `300000` | MCP idle eviction time |
 | `MAESTRO_MCP_POOL_MAX` | `16` | Maximum cached MCP clients |
-| `MAESTRO_SUBAGENT_MAX_TOKENS` | model-derived | Spawned-agent output limit |
 | `MAESTRO_SDK_SILENT_BOOTSTRAP` | none | Set to `1` to silence bootstrap output |
 
 `MAESTRO_DATA_DIR` must be set before the first SDK import. The memory
