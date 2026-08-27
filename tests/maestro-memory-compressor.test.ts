@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { COMPACTED_MARKER_OPEN } from "@/memory/active-task-template";
-import { compactMessagesNow, compressIfNeeded } from "@/memory/compressor";
+import { compactMessagesNow, compressIfNeeded, tokenBoundedTailStart } from "@/memory/compressor";
 import { estimateTokens } from "@/memory/token-estimate";
 import type {
   Provider,
@@ -106,6 +106,49 @@ describe("compressIfNeeded — threshold gating", () => {
     expect(
       out.find((m) => typeof m.content === "string" && m.content.startsWith(COMPACTED_MARKER_OPEN)),
     ).toBeUndefined();
+  });
+});
+
+describe("token-bounded compaction tail", () => {
+  test("keeps the newest complete turns without exceeding the token budget", () => {
+    const messages = buildBigHistory(4, 200);
+    const newestTurnTokens = estimateTokens(messages.slice(-2));
+    const start = tokenBoundedTailStart(messages, newestTurnTokens * 2);
+
+    expect(start).toBe(4);
+    expect(estimateTokens(messages.slice(start))).toBeLessThanOrEqual(newestTurnTokens * 2);
+    expect(messages[start]?.role).toBe("user");
+  });
+
+  test("keeps no partial turn when the newest complete turn exceeds the budget", () => {
+    const messages = buildBigHistory(2, 2_000);
+    const start = tokenBoundedTailStart(messages, 10);
+
+    expect(start).toBe(messages.length);
+  });
+
+  test("uses the default context-scaled token budget in the compacted wire", async () => {
+    const provider = new RecordingProvider();
+    const messages = buildBigHistory(40, 2_000);
+    const contextWindow = 50_000;
+    const out = await compressIfNeeded(messages, {
+      auxProvider: provider,
+      auxModel: TEST_AUX_MODEL,
+      contextWindow,
+      triggerRatio: 0.6,
+    });
+    const summaryIndex = out.findIndex(
+      (message) =>
+        message.role === "user" &&
+        typeof message.content === "string" &&
+        message.content.startsWith(COMPACTED_MARKER_OPEN),
+    );
+    const tail = out.slice(summaryIndex + 1);
+
+    expect(summaryIndex).toBeGreaterThanOrEqual(0);
+    expect(tail.length).toBeGreaterThan(6);
+    expect(tail[0]?.role).toBe("user");
+    expect(estimateTokens(tail)).toBeLessThanOrEqual(Math.floor(contextWindow / 4));
   });
 });
 

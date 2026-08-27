@@ -251,11 +251,10 @@ export interface Provider {
    */
   readonly compactionTriggerRatio?: number;
   /**
-   * Optional tail-protect override (how many of the most-recent messages are
-   * kept verbatim instead of folded into the summary). Stateless providers
-   * (Codex) keep a SHORTER tail so each compaction folds more of the middle —
-   * closer to Hermes' "summarize the middle hard" behavior, keeping the
-   * re-uploaded residual small. `undefined` → compressor default (6).
+   * Optional legacy tail-protect override (how many of the most-recent
+   * messages are kept verbatim instead of folded into the summary).
+   * `undefined` uses the compressor's default recent-turn budget of 64K
+   * estimated tokens.
    */
   readonly compactionTailProtect?: number;
   /**

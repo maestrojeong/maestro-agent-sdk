@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.4.0] - 2026-08-27
+
+### Changed
+
+- Compaction now preserves the newest complete conversation turns by estimated
+  token budget instead of retaining a fixed six-message tail. The default is
+  the smaller of 64K tokens and one quarter of the active model context window,
+  while an explicit `tailProtect` still selects the legacy message-count
+  behavior for compatibility.
+- Incremental re-compaction uses the same token-derived boundary when selecting
+  the post-summary delta, so the aux model summarizes only the middle that is
+  actually removed from the provider-facing wire.
+- Forced/manual compaction of a short session still preserves one complete
+  recent turn when the full session fits inside the normal tail budget.
+
+### Tests
+
+- Added direct and end-to-end coverage for token-bounded complete-turn
+  selection, oversized newest turns, and context-scaled default retention.
+
 ## [0.3.3] - 2026-08-21
 
 ### Fixed
