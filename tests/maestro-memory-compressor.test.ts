@@ -107,6 +107,29 @@ describe("compressIfNeeded — threshold gating", () => {
       out.find((m) => typeof m.content === "string" && m.content.startsWith(COMPACTED_MARKER_OPEN)),
     ).toBeUndefined();
   });
+
+  test("defaults automatic compaction to 90% of the context window", async () => {
+    const belowProvider = new RecordingProvider();
+    const below = buildBigHistory(70, 2_000);
+    await compressIfNeeded(below, {
+      auxProvider: belowProvider,
+      auxModel: TEST_AUX_MODEL,
+      contextWindow: 100_000,
+    });
+    expect(estimateTokens(below)).toBeGreaterThan(60_000);
+    expect(estimateTokens(below)).toBeLessThan(90_000);
+    expect(belowProvider.calls).toHaveLength(0);
+
+    const aboveProvider = new RecordingProvider();
+    const above = buildBigHistory(80, 2_000);
+    await compressIfNeeded(above, {
+      auxProvider: aboveProvider,
+      auxModel: TEST_AUX_MODEL,
+      contextWindow: 100_000,
+    });
+    expect(estimateTokens(above)).toBeGreaterThan(90_000);
+    expect(aboveProvider.calls.length).toBeGreaterThan(0);
+  });
 });
 
 describe("token-bounded compaction tail", () => {
@@ -1001,6 +1024,7 @@ describe("compressIfNeeded — H1/H2 regression", () => {
       auxProvider: rec,
       auxModel: TEST_AUX_MODEL,
       contextWindow: 8192, // small window forces compaction
+      triggerRatio: 0.6,
       headProtect: 2, // just the first pair
     });
 
@@ -1045,6 +1069,7 @@ describe("compressIfNeeded — H1/H2 regression", () => {
       auxProvider: rec,
       auxModel: TEST_AUX_MODEL,
       contextWindow: 8192,
+      triggerRatio: 0.6,
       headProtect: 2,
     });
 
@@ -1132,6 +1157,7 @@ describe("compressIfNeeded — H1/H2 regression", () => {
       auxProvider: provider,
       auxModel: TEST_AUX_MODEL,
       contextWindow: 8192,
+      triggerRatio: 0.6,
       headProtect: 2,
       tailProtect: 2,
     });

@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.4.1] - 2026-08-27
+
+### Changed
+
+- Automatic context compaction now defaults to 90% of the active model context
+  window instead of 60%. Explicit caller and provider-specific
+  `triggerRatio` overrides still take precedence.
+- Existing tests that intentionally force early compaction now state their
+  lower test threshold explicitly, keeping tool-chain, linearization, and
+  hard-cap coverage independent from the production default.
+
 ## [0.4.0] - 2026-08-27
 
 ### Changed
