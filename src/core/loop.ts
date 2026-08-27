@@ -284,7 +284,8 @@ export async function* runConversation(
       ...(agent.provider.compactionTriggerRatio !== undefined
         ? { triggerRatio: agent.provider.compactionTriggerRatio }
         : {}),
-      // Provider-specific tail protect; undefined → default (6).
+      // Provider-specific legacy message-count override; undefined → the
+      // compressor's default recent-turn budget (64K estimated tokens).
       ...(agent.provider.compactionTailProtect !== undefined
         ? { tailProtect: agent.provider.compactionTailProtect }
         : {}),

@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 import { ACTIVE_TASK_TEMPLATE, wrapCompactedSummary } from "@/memory/active-task-template";
 import { pruneMessages } from "@/memory/prune";
-import { estimateTokens } from "@/memory/token-estimate";
+import { estimateMessageTokens, estimateTokens } from "@/memory/token-estimate";
 import { logger } from "@/platform/logger";
 import type { Provider, ProviderContentBlock, ProviderMessage } from "@/providers/base";
 import { defineTool } from "@/providers/base";
@@ -36,7 +36,7 @@ import { defineTool } from "@/providers/base";
  *
  * Head + tail protection:
  *   - Head: first user prompt + first assistant turn.
- *   - Tail: last 3 turns (6 messages) for working memory.
+ *   - Tail: recent complete turns up to 64K estimated tokens for working memory.
  *   - Middle: everything else gets summarized.
  */
 
@@ -44,7 +44,14 @@ export interface CompressOptions {
   contextWindow?: number;
   triggerRatio?: number;
   headProtect?: number;
+  /** Legacy explicit message-count override for tail retention. */
   tailProtect?: number;
+  /**
+   * Token budget for the most-recent complete conversation turns kept
+   * verbatim after compaction. Used when `tailProtect` is not explicitly set.
+   * Defaults to 64K, matching Codex remote-compaction's retained-message cap.
+   */
+  tailProtectTokens?: number;
   /**
    * Force the aux compaction path even when token estimates are below the
    * automatic threshold. Used by the public manual-compaction wrapper.
@@ -161,6 +168,7 @@ export interface CompactMessagesNowResult {
 }
 
 const COMPACTOR_MIN_SAVINGS_RATIO = 0.1;
+export const DEFAULT_COMPACTION_TAIL_TOKENS = 64_000;
 
 /** Sentinel user message that marks a compaction block pair.
  *  Uses NUL-bytes to make accidental user-content collision extremely unlikely.
@@ -302,6 +310,42 @@ function hasToolResultBlocks(msg: ProviderMessage): boolean {
   if (typeof content === "string") return false;
   if (!Array.isArray(content)) return false;
   return content.some((b) => b.type === "tool_result");
+}
+
+/**
+ * Select the largest recent suffix, bounded by tokens, that starts at a plain
+ * user-message boundary. Keeping whole turns avoids orphaning tool results or
+ * starting the compacted wire in the middle of an assistant/tool exchange.
+ */
+export function tokenBoundedTailStart(
+  messages: ProviderMessage[],
+  maxTokens = DEFAULT_COMPACTION_TAIL_TOKENS,
+): number {
+  if (!Number.isFinite(maxTokens) || maxTokens <= 0 || messages.length === 0) {
+    return messages.length;
+  }
+
+  let start = messages.length;
+  let used = 0;
+  while (start > 0) {
+    let candidate = start - 1;
+    while (
+      candidate >= 0 &&
+      (messages[candidate]?.role !== "user" || hasToolResultBlocks(messages[candidate]))
+    ) {
+      candidate--;
+    }
+    if (candidate < 0) break;
+
+    let turnTokens = 0;
+    for (let index = candidate; index < start; index++) {
+      turnTokens += estimateMessageTokens(messages[index]);
+    }
+    if (used + turnTokens > maxTokens) break;
+    used += turnTokens;
+    start = candidate;
+  }
+  return start;
 }
 
 /**
@@ -537,13 +581,16 @@ export async function compressIfNeeded(
     const contextWindow = opts.contextWindow ?? defaultContextWindow();
     const triggerRatio = opts.triggerRatio ?? 0.6;
     const headProtect = opts.headProtect ?? 2;
-    const tailProtect = opts.tailProtect ?? 6;
+    const tailProtect = opts.tailProtect;
+    const tailProtectTokens =
+      opts.tailProtectTokens ??
+      Math.min(DEFAULT_COMPACTION_TAIL_TOKENS, Math.max(1, Math.floor(contextWindow / 4)));
     const auxModel = opts.auxModel;
     const force = opts.force === true;
     const minSavingsRatio = opts.minSavingsRatio ?? COMPACTOR_MIN_SAVINGS_RATIO;
 
     // Fast-path: short conversations can't trigger compaction.
-    const minSize = headProtect + 1 + tailProtect;
+    const minSize = headProtect + 3 + (tailProtect ?? 0);
     if (messages.length < minSize) {
       return messages;
     }
@@ -596,10 +643,17 @@ export async function compressIfNeeded(
       cleanPrunedMessages,
       Math.min(headProtect, cleanPrunedMessages.length),
     );
-    const cleanTailStart = snapTailStart(
-      cleanPrunedMessages,
-      Math.max(cleanPrunedMessages.length - tailProtect, 0),
-    );
+    let cleanTailStart =
+      tailProtect !== undefined
+        ? snapTailStart(cleanPrunedMessages, Math.max(cleanPrunedMessages.length - tailProtect, 0))
+        : tokenBoundedTailStart(cleanPrunedMessages, tailProtectTokens);
+    // A forced/manual compact of a short session may fit entirely inside the
+    // recent-tail budget. Preserve one complete recent turn in that case so
+    // the operation can still produce a smaller checkpoint instead of being a
+    // guaranteed no-op.
+    if (force && cleanTailStart <= cleanHeadEnd && cleanPrunedMessages.length > cleanHeadEnd + 2) {
+      cleanTailStart = snapTailStart(cleanPrunedMessages, cleanPrunedMessages.length - 2);
+    }
     if (cleanTailStart <= cleanHeadEnd) {
       return pruned;
     }
@@ -613,7 +667,11 @@ export async function compressIfNeeded(
     if (prevCompaction) {
       // Delta: everything after the summary assistant up to (but not including) the tail.
       const deltaStart = prevCompaction.assistantIdx + 1;
-      const deltaEnd = messages.length - tailProtect;
+      const deltaEnd = originalIndexForCleanBoundary(
+        cleanToOriginal,
+        cleanTailStart,
+        messages.length,
+      );
       auxMiddle = pruned.slice(deltaStart, Math.max(deltaStart, deltaEnd));
     } else {
       auxMiddle = cleanPrunedMessages.slice(cleanHeadEnd, cleanTailStart);
