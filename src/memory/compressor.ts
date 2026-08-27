@@ -579,7 +579,7 @@ export async function compressIfNeeded(
   let didCompact = false;
   try {
     const contextWindow = opts.contextWindow ?? defaultContextWindow();
-    const triggerRatio = opts.triggerRatio ?? 0.6;
+    const triggerRatio = opts.triggerRatio ?? 0.9;
     const headProtect = opts.headProtect ?? 2;
     const tailProtect = opts.tailProtect;
     const tailProtectTokens =

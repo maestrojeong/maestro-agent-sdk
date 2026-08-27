@@ -280,7 +280,7 @@ export async function* runConversation(
       // Steer the summarizer to preserve the live work thread (latest user
       // request) in full and shed tangents. Undefined → generic summary.
       ...(focusTopic ? { focusTopic } : {}),
-      // Provider-specific trigger ratio; undefined → compressor default (0.6).
+      // Provider-specific trigger ratio; undefined → compressor default (0.9).
       ...(agent.provider.compactionTriggerRatio !== undefined
         ? { triggerRatio: agent.provider.compactionTriggerRatio }
         : {}),

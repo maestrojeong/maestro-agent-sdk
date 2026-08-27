@@ -247,7 +247,7 @@ export interface Provider {
    * they benefit from compacting EARLIER than cache-friendly providers
    * (Anthropic prompt cache / DeepSeek auto-cache make re-upload cheap, so a
    * later trigger is fine there). The agent loop reads this and forwards it to
-   * `compressIfNeeded`; `undefined` falls back to the compressor default (0.6).
+   * `compressIfNeeded`; `undefined` falls back to the compressor default (0.9).
    */
   readonly compactionTriggerRatio?: number;
   /**
