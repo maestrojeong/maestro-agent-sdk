@@ -584,13 +584,13 @@ export async function compressIfNeeded(
     const tailProtect = opts.tailProtect;
     const tailProtectTokens =
       opts.tailProtectTokens ??
-      Math.min(DEFAULT_COMPACTION_TAIL_TOKENS, Math.max(1, Math.floor(contextWindow / 4)));
+      Math.min(DEFAULT_COMPACTION_TAIL_TOKENS, Math.max(1, Math.floor(contextWindow / 2)));
     const auxModel = opts.auxModel;
     const force = opts.force === true;
     const minSavingsRatio = opts.minSavingsRatio ?? COMPACTOR_MIN_SAVINGS_RATIO;
 
     // Fast-path: short conversations can't trigger compaction.
-    const minSize = headProtect + 3 + (tailProtect ?? 0);
+    const minSize = tailProtect !== undefined ? headProtect + 1 + tailProtect : headProtect + 3;
     if (messages.length < minSize) {
       return messages;
     }
@@ -608,6 +608,10 @@ export async function compressIfNeeded(
     const pruned = pruneMessages(messages);
     const prunedTokens = estimateTokens(pruned);
     const skipIndices = compactionBlockIndices(messages);
+    const { cleanMessages: cleanCanonicalMessages } = cleanMessagesWithIndexMap(
+      messages,
+      skipIndices,
+    );
     const { cleanMessages: cleanPrunedMessages, cleanToOriginal } = cleanMessagesWithIndexMap(
       pruned,
       skipIndices,
@@ -620,10 +624,16 @@ export async function compressIfNeeded(
         role: "assistant",
         content: prevCompaction.summary,
       };
-      const post = pruned.slice(prevCompaction.assistantIdx + 1);
-      const effectiveTokens = estimateTokens([summaryMsg, ...post]);
+      const prunedPost = pruned.slice(prevCompaction.assistantIdx + 1);
+      const effectiveTokens = estimateTokens([summaryMsg, ...prunedPost]);
       if (effectiveTokens < threshold) {
-        return buildCompactedWire(cleanPrunedMessages, prevCompaction.summary, headProtect, post);
+        const canonicalPost = messages.slice(prevCompaction.assistantIdx + 1);
+        return buildCompactedWire(
+          cleanCanonicalMessages,
+          prevCompaction.summary,
+          headProtect,
+          canonicalPost,
+        );
       }
     }
 
@@ -635,24 +645,31 @@ export async function compressIfNeeded(
     // fast-path above. Reuse the result for the incremental prompt path.
     const previousSummary = prevCompaction?.summary;
 
-    // Snap wire boundaries on the pruned clean view. Using pruned here keeps
-    // stale tool_result bytes out of both the aux compaction transcript and
-    // the final provider wire. Canonical `messages` are still used for
-    // compaction-marker persistence below.
+    // Select the protected head/tail from the canonical view so "retained"
+    // means verbatim even when the token budget spans beyond pruneMessages'
+    // fixed age window. The pruned view is still used for the summarized
+    // middle so stale outputs do not inflate the aux request.
     const cleanHeadEnd = snapHeadEnd(
-      cleanPrunedMessages,
-      Math.min(headProtect, cleanPrunedMessages.length),
+      cleanCanonicalMessages,
+      Math.min(headProtect, cleanCanonicalMessages.length),
     );
     let cleanTailStart =
       tailProtect !== undefined
-        ? snapTailStart(cleanPrunedMessages, Math.max(cleanPrunedMessages.length - tailProtect, 0))
-        : tokenBoundedTailStart(cleanPrunedMessages, tailProtectTokens);
+        ? snapTailStart(
+            cleanCanonicalMessages,
+            Math.max(cleanCanonicalMessages.length - tailProtect, 0),
+          )
+        : tokenBoundedTailStart(cleanCanonicalMessages, tailProtectTokens);
     // A forced/manual compact of a short session may fit entirely inside the
     // recent-tail budget. Preserve one complete recent turn in that case so
     // the operation can still produce a smaller checkpoint instead of being a
     // guaranteed no-op.
-    if (force && cleanTailStart <= cleanHeadEnd && cleanPrunedMessages.length > cleanHeadEnd + 2) {
-      cleanTailStart = snapTailStart(cleanPrunedMessages, cleanPrunedMessages.length - 2);
+    if (
+      force &&
+      cleanTailStart <= cleanHeadEnd &&
+      cleanCanonicalMessages.length > cleanHeadEnd + 2
+    ) {
+      cleanTailStart = snapTailStart(cleanCanonicalMessages, cleanCanonicalMessages.length - 2);
     }
     if (cleanTailStart <= cleanHeadEnd) {
       return pruned;
@@ -999,8 +1016,8 @@ ${previousSummary ? `Previous summary for context:\n${previousSummary}` : ""}`,
       // which meant `finally` fired before `didCompact` could be set →
       // onCompactionResult always reported `didCompact: false` on success.
       // Moving it inside the try lets the meta callback see the truth.
-      const tail = cleanPrunedMessages.slice(cleanTailStart);
-      const compacted = buildCompactedWire(cleanPrunedMessages, summaryText, headProtect, tail);
+      const tail = cleanCanonicalMessages.slice(cleanTailStart);
+      const compacted = buildCompactedWire(cleanCanonicalMessages, summaryText, headProtect, tail);
       const compactedTokens = estimateTokens(compacted);
 
       // Degenerate check — MUST run before persisting compaction blocks.
@@ -1052,9 +1069,9 @@ ${previousSummary ? `Previous summary for context:\n${previousSummary}` : ""}`,
       if (opts.disablePruneFallback) return messages;
       const fallbackSummary = opts.lastGoodSummary?.trim() || previousSummary;
       if (fallbackSummary?.trim()) {
-        const tail = cleanPrunedMessages.slice(cleanTailStart);
+        const tail = cleanCanonicalMessages.slice(cleanTailStart);
         const fallback = buildCompactedWire(
-          cleanPrunedMessages,
+          cleanCanonicalMessages,
           fallbackSummary,
           headProtect,
           tail,

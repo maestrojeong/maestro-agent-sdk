@@ -127,10 +127,10 @@ describe("token-bounded compaction tail", () => {
     expect(start).toBe(messages.length);
   });
 
-  test("uses the default context-scaled token budget in the compacted wire", async () => {
+  test("uses the fixed 64K default token budget in the compacted wire", async () => {
     const provider = new RecordingProvider();
-    const messages = buildBigHistory(40, 2_000);
-    const contextWindow = 50_000;
+    const messages = buildBigHistory(160, 2_000);
+    const contextWindow = 256_000;
     const out = await compressIfNeeded(messages, {
       auxProvider: provider,
       auxModel: TEST_AUX_MODEL,
@@ -148,7 +148,67 @@ describe("token-bounded compaction tail", () => {
     expect(summaryIndex).toBeGreaterThanOrEqual(0);
     expect(tail.length).toBeGreaterThan(6);
     expect(tail[0]?.role).toBe("user");
-    expect(estimateTokens(tail)).toBeLessThanOrEqual(Math.floor(contextWindow / 4));
+    expect(estimateTokens(tail)).toBeLessThanOrEqual(64_000);
+  });
+
+  test("preserves the legacy explicit message-count pre-gate for short huge histories", async () => {
+    const provider = new RecordingProvider();
+    const messages = buildBigHistory(3, 10_000);
+    const out = await compressIfNeeded(messages, {
+      auxProvider: provider,
+      auxModel: TEST_AUX_MODEL,
+      contextWindow: 8_192,
+      triggerRatio: 0.6,
+      headProtect: 2,
+      tailProtect: 2,
+    });
+
+    expect(provider.calls.length).toBeGreaterThan(0);
+    expect(
+      out.some(
+        (message) =>
+          message.role === "user" &&
+          typeof message.content === "string" &&
+          message.content.startsWith(COMPACTED_MARKER_OPEN),
+      ),
+    ).toBe(true);
+  });
+
+  test("keeps tool results verbatim across a tail wider than prune's age window", async () => {
+    const provider = new RecordingProvider();
+    const messages: ProviderMessage[] = [];
+    for (let index = 0; index < 25; index++) {
+      const id = `tool-${index}`;
+      messages.push(
+        userText(`run tool ${index}`),
+        {
+          role: "assistant",
+          content: [{ type: "tool_use", id, name: "exec", input: { index } }],
+        },
+        {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: id,
+              content: `VERBATIM-${index}-${"v".repeat(15_000)}`,
+            },
+          ],
+        },
+        assistantText(`finished ${index}-${"a".repeat(10_000)}`),
+      );
+    }
+
+    const out = await compressIfNeeded(messages, {
+      auxProvider: provider,
+      auxModel: TEST_AUX_MODEL,
+      contextWindow: 128_000,
+      triggerRatio: 0.6,
+    });
+    const wire = JSON.stringify(out);
+
+    expect(wire).toContain(`VERBATIM-17-${"v".repeat(1_000)}`);
+    expect(wire).not.toContain("[Tool output removed: exec");
   });
 });
 
