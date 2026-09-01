@@ -34,6 +34,14 @@ export const MODEL_DEEPSEEK_V4_FLASH: string = "deepseek-v4-flash";
 export const MODEL_KIMI_K3: string = "kimi-k3";
 export const MODEL_KIMI_K27_CODE: string = "kimi-k2.7-code";
 
+// GLM / Zhipu AI (bigmodel.cn). OpenAI-compatible chat-completions API.
+// `glm-5.3` and `glm-5.2` are text-only always-thinking models; `glm-5.3-flash`
+// additionally accepts native `image_url` vision input (verified against the
+// live API — `glm-5.2`/`glm-5.3` 400 on any non-"text" content part).
+export const MODEL_GLM_5_3: string = "glm-5.3";
+export const MODEL_GLM_5_2: string = "glm-5.2";
+export const MODEL_GLM_5_3_FLASH: string = "glm-5.3-flash";
+
 export const FILE_TAG_REGEX: RegExp = /\[FILE:(\/[^\]]+)\]/gi;
 
 // Make sure DATA_DIR exists before any tool/skill code tries to readdir into

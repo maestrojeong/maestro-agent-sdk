@@ -2,21 +2,24 @@ import { describe, expect, test } from "vitest";
 import { countImagesLosingVisibility, modelHasNativeVision } from "@/provider";
 import type { ProviderMessage } from "@/providers/base";
 import { translateMessagesToOpenAI as translateDeepseek } from "@/providers/deepseek";
+import { translateMessagesToOpenAI as translateGlm } from "@/providers/glm";
 import { translateMessagesToOpenAI as translateKimi } from "@/providers/kimi";
 
 /**
- * Cross-provider parity checks between the DeepSeek and Kimi OpenAI-compat
- * translators.
+ * Cross-provider parity checks between the DeepSeek, Kimi, and GLM
+ * OpenAI-compat translators.
  *
- * Both adapters translate the SAME provider-agnostic canonical
+ * All three adapters translate the SAME provider-agnostic canonical
  * `ProviderMessage[]` shape, and a session persisted while talking to one
- * provider can be resumed under the other (`provider.ts`'s `providerForModel`
- * swaps `DeepseekProvider` <-> `KimiProvider` based on the model string,
- * reusing the same history). These tests don't assert byte-for-byte wire
- * parity (that's not the contract — e.g. Kimi keeps real `image_url` parts
- * where DeepSeek degrades to text, and DeepSeek only preserves
+ * provider can be resumed under another (`provider.ts`'s `providerForModel`
+ * swaps `DeepseekProvider` <-> `KimiProvider` <-> `GlmProvider` based on the
+ * model string, reusing the same history). These tests don't assert
+ * byte-for-byte wire parity (that's not the contract — e.g. Kimi and GLM's
+ * `glm-5.3-flash` keep real `image_url` parts where DeepSeek and GLM's
+ * `glm-5.2`/`glm-5.3` degrade to text, and DeepSeek only preserves
  * `reasoning_content` on tool-calling turns where Kimi's always-thinking
- * models preserve it on every turn). What they DO assert:
+ * models and every GLM 5.x model preserve it on every turn). What they DO
+ * assert:
  *
  *   1. Same emitted role sequence for the same canonical history (a resumed
  *      session shouldn't suddenly gain/lose messages just from switching
@@ -39,7 +42,7 @@ function rolesOf(out: Array<{ role: string }>): string[] {
   return out.map((m) => m.role);
 }
 
-describe("DeepSeek/Kimi translator parity", () => {
+describe("DeepSeek/Kimi/GLM translator parity", () => {
   test("same role sequence for a mixed history (text, tool_use, tool_result, is_error)", () => {
     const msgs: ProviderMessage[] = [
       { role: "user", content: "what's the weather?" },
@@ -59,11 +62,13 @@ describe("DeepSeek/Kimi translator parity", () => {
 
     const ds = translateDeepseek("", msgs);
     const ki = translateKimi("", msgs, true);
+    const glm = translateGlm("", msgs, false);
     expect(rolesOf(ds)).toEqual(rolesOf(ki));
+    expect(rolesOf(ds)).toEqual(rolesOf(glm));
     expect(rolesOf(ds)).toEqual(["user", "assistant", "tool", "assistant"]);
   });
 
-  test("is_error:true produces a '[tool error] ' prefix on both translators", () => {
+  test("is_error:true produces a '[tool error] ' prefix on all three translators", () => {
     const msgs: ProviderMessage[] = [
       {
         role: "user",
@@ -72,11 +77,13 @@ describe("DeepSeek/Kimi translator parity", () => {
     ];
     const ds = translateDeepseek("", msgs);
     const ki = translateKimi("", msgs, false);
+    const glm = translateGlm("", msgs, false);
     expect(ds[0].content).toBe("[tool error] boom");
     expect(ki[0].content).toBe("[tool error] boom");
+    expect(glm[0].content).toBe("[tool error] boom");
   });
 
-  test("neither translator throws for an unsupported public image URL (degrades instead)", () => {
+  test("no translator throws for an unsupported public image URL (degrades instead)", () => {
     const msgs: ProviderMessage[] = [
       {
         role: "user",
@@ -85,23 +92,30 @@ describe("DeepSeek/Kimi translator parity", () => {
     ];
     expect(() => translateDeepseek("", msgs)).not.toThrow();
     expect(() => translateKimi("", msgs, false)).not.toThrow();
+    expect(() => translateGlm("", msgs, false)).not.toThrow();
+    expect(() => translateGlm("", msgs, true)).not.toThrow();
   });
 
-  test("neither translator throws for a malformed/incomplete image source", () => {
+  test("no translator throws for a malformed/incomplete image source", () => {
     const msgs: ProviderMessage[] = [
       { role: "user", content: [{ type: "image", source: { type: "base64" } }] },
     ];
     expect(() => translateDeepseek("", msgs)).not.toThrow();
     expect(() => translateKimi("", msgs, false)).not.toThrow();
+    expect(() => translateGlm("", msgs, false)).not.toThrow();
+    expect(() => translateGlm("", msgs, true)).not.toThrow();
   });
 });
 
 describe("countImagesLosingVisibility / modelHasNativeVision (provider-switch capability check)", () => {
-  test("only Kimi K3/K2.7-code are reported as natively vision-capable", () => {
+  test("Kimi K3/K2.7-code and GLM's glm-5.3-flash are natively vision-capable; DeepSeek and glm-5.2/glm-5.3 are not", () => {
     expect(modelHasNativeVision("kimi-k3")).toBe(true);
     expect(modelHasNativeVision("kimi-k2.7-code")).toBe(true);
+    expect(modelHasNativeVision("glm-5.3-flash")).toBe(true);
     expect(modelHasNativeVision("deepseek-v4-pro")).toBe(false);
     expect(modelHasNativeVision("deepseek-v4-flash")).toBe(false);
+    expect(modelHasNativeVision("glm-5.2")).toBe(false);
+    expect(modelHasNativeVision("glm-5.3")).toBe(false);
   });
 
   test("counts images in both user turns and tool_result content when the target model lacks vision", () => {
@@ -130,7 +144,7 @@ describe("countImagesLosingVisibility / modelHasNativeVision (provider-switch ca
     expect(countImagesLosingVisibility(msgs, "deepseek-v4-pro")).toBe(2);
   });
 
-  test("reports zero when the target model has native vision (Kimi)", () => {
+  test("reports zero when the target model has native vision (Kimi or glm-5.3-flash)", () => {
     const msgs: ProviderMessage[] = [
       {
         role: "user",
@@ -140,6 +154,20 @@ describe("countImagesLosingVisibility / modelHasNativeVision (provider-switch ca
       },
     ];
     expect(countImagesLosingVisibility(msgs, "kimi-k3")).toBe(0);
+    expect(countImagesLosingVisibility(msgs, "glm-5.3-flash")).toBe(0);
+  });
+
+  test("counts images when switching to a non-vision GLM model (glm-5.2/glm-5.3)", () => {
+    const msgs: ProviderMessage[] = [
+      {
+        role: "user",
+        content: [
+          { type: "image", source: { type: "base64", media_type: "image/png", data: "aaaa" } },
+        ],
+      },
+    ];
+    expect(countImagesLosingVisibility(msgs, "glm-5.2")).toBe(1);
+    expect(countImagesLosingVisibility(msgs, "glm-5.3")).toBe(1);
   });
 
   test("reports zero when there are no image blocks at all", () => {

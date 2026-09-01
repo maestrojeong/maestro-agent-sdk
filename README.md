@@ -115,10 +115,14 @@ for await (const event of maestroProvider({
 | --- | --- | --- |
 | DeepSeek V4 | `deepseek-v4-pro`, `deepseek-v4-flash` | `DEEPSEEK_API_KEY` |
 | Moonshot Kimi | `kimi-k3`, `kimi-k2.7-code` | `MOONSHOT_API_KEY` |
+| Zhipu GLM | `glm-5.3`, `glm-5.2`, `glm-5.3-flash` | `GLM_API_KEY` |
 
 The model can be selected per call with `model`. Kimi uses
 `https://api.moonshot.ai/v1` by default; set `MOONSHOT_BASE_URL` for the China
-endpoint or a compatible proxy.
+endpoint or a compatible proxy. GLM uses `https://open.bigmodel.cn/api/paas/v4`
+by default; set `GLM_BASE_URL` for a regional/proxy override. Every GLM 5.x
+model always thinks (thinking cannot be disabled) with three tiers —
+low/high/max — that the five maestro `effort` levels collapse onto.
 
 For direct provider access, use `fromEnv()` and compose your own agent:
 
@@ -306,7 +310,9 @@ See [`.env.example`](./.env.example) for the complete template.
 | `DEEPSEEK_API_KEY` | none | DeepSeek credentials |
 | `MOONSHOT_API_KEY` | none | Kimi credentials |
 | `MOONSHOT_BASE_URL` | `https://api.moonshot.ai/v1` | Kimi endpoint or proxy |
-| `GEMINI_API_KEY` | none | Optional DeepSeek image-QA fallback |
+| `GLM_API_KEY` | none | GLM (Zhipu AI) credentials |
+| `GLM_BASE_URL` | `https://open.bigmodel.cn/api/paas/v4` | GLM endpoint or proxy |
+| `GEMINI_API_KEY` | none | Optional image-QA fallback for non-vision models |
 | `GEMINI_IMAGE_QA_MODEL` | `gemini-2.5-flash` | Model for the `View` tool |
 | `MAESTRO_DATA_DIR` | `~/.maestro` | Session storage root |
 | `MAESTRO_CONTEXT_WINDOW` | provider value | Compaction tuning/testing |
@@ -319,9 +325,10 @@ compressor uses the active model by default; no separate model is required.
 
 ### Image input
 
-Kimi models have native vision. For DeepSeek, setting `GEMINI_API_KEY`
-registers a `View` tool backed by the configured Gemini Flash model. Supported
-images are PNG, JPG, WebP, and GIF up to 10 MB.
+Kimi models and GLM's `glm-5.3-flash` have native vision. For DeepSeek and
+GLM's `glm-5.2`/`glm-5.3` (which cannot see images natively), setting
+`GEMINI_API_KEY` registers a `View` tool backed by the configured Gemini Flash
+model. Supported images are PNG, JPG, WebP, and GIF up to 10 MB.
 
 ## MCP
 
