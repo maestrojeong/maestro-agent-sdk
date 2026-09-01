@@ -92,6 +92,15 @@ export {
   translateMessagesToOpenAI,
 } from "@/providers/deepseek";
 export {
+  contextWindowForGlmModel,
+  effortForGlm,
+  GLM_CONTEXT_WINDOW,
+  GlmProvider,
+  isAlwaysThinkingGlmModel,
+  isVisionCapableGlmModel,
+  translateMessagesToOpenAI as translateGlmMessagesToOpenAI,
+} from "@/providers/glm";
+export {
   contextWindowForKimiModel,
   effortForKimi,
   isAlwaysThinkingKimiModel,

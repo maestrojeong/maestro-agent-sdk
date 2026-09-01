@@ -190,6 +190,7 @@ export interface AgentHooks {
 export interface ProviderApiKeyOverrides {
   deepseek?: string;
   moonshot?: string;
+  glm?: string;
 }
 
 /**
@@ -423,10 +424,10 @@ export interface AgentQueryOptions {
    */
   llmPostHook?: LlmPostHook;
   /**
-   * Per-call credential override for Maestro's DeepSeek/Kimi providers.
+   * Per-call credential override for Maestro's DeepSeek/Kimi/GLM providers.
    *
-   * `providerForModel` falls back to `DEEPSEEK_API_KEY` / `MOONSHOT_API_KEY`
-   * process env vars when the matching field here is omitted. Set this when
+   * `providerForModel` falls back to `DEEPSEEK_API_KEY` / `MOONSHOT_API_KEY` /
+   * `GLM_API_KEY` process env vars when the matching field here is omitted. Set this when
    * the host resolves credentials per-user (a secrets vault, a multi-tenant
    * key store) rather than from the process's own environment — passing the
    * key explicitly avoids mutating `process.env`, which would race across

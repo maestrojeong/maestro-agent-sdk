@@ -233,7 +233,7 @@ describe("View Gemini image QA tool", () => {
   });
 });
 
-describe("DeepSeek-only View registration policy", () => {
+describe("DeepSeek/GLM (non-vision) View registration policy", () => {
   test("registers only for DeepSeek models when GEMINI_API_KEY is present", () => {
     expect(
       shouldRegisterGeminiImageQATool("deepseek-v4-flash", {
@@ -302,5 +302,45 @@ describe("Kimi vision-native registration policy", () => {
       // tool is never registered for Kimi.
       expect(prompt).not.toContain("call `View`");
     }
+  });
+});
+
+describe("GLM View registration policy (glm-5.2/glm-5.3 non-vision, glm-5.3-flash native vision)", () => {
+  test("registers the Gemini fallback for glm-5.2/glm-5.3 when GEMINI_API_KEY is present", () => {
+    const env = { GEMINI_API_KEY: "gem-test" } as NodeJS.ProcessEnv;
+    expect(shouldRegisterGeminiImageQATool("glm-5.2", env)).toBe(true);
+    expect(shouldRegisterGeminiImageQATool("glm-5.3", env)).toBe(true);
+  });
+
+  test("does not register for glm-5.2/glm-5.3 without GEMINI_API_KEY", () => {
+    expect(shouldRegisterGeminiImageQATool("glm-5.3", {} as NodeJS.ProcessEnv)).toBe(false);
+    expect(
+      shouldRegisterGeminiImageQATool("glm-5.3", { GEMINI_API_KEY: "   " } as NodeJS.ProcessEnv),
+    ).toBe(false);
+  });
+
+  test("never registers the Gemini fallback for glm-5.3-flash (native vision)", () => {
+    const env = { GEMINI_API_KEY: "gem-test" } as NodeJS.ProcessEnv;
+    expect(shouldRegisterGeminiImageQATool("glm-5.3-flash", env)).toBe(false);
+  });
+
+  test("adds a GLM image-handling prompt for glm-5.2/glm-5.3 when the model cannot inspect images", () => {
+    const withGemini = imageHandlingPrompt("glm-5.3", true) ?? "";
+    expect(withGemini).toContain("cannot inspect image pixels");
+    expect(withGemini).toContain("GLM");
+    expect(withGemini).toContain("View");
+
+    const withoutGemini = imageHandlingPrompt("glm-5.2", false) ?? "";
+    expect(withoutGemini).toContain("OCR/text-extraction");
+    expect(withoutGemini).not.toContain("call `View`");
+  });
+
+  test("adds a glm-5.3-flash-specific image-handling prompt affirming native vision", () => {
+    const prompt = imageHandlingPrompt("glm-5.3-flash", false) ?? "";
+    expect(prompt).toContain("native vision");
+    expect(prompt).not.toContain("cannot inspect image pixels");
+    // No Gemini View tool for glm-5.3-flash; on-disk images must reach it via Read.
+    expect(prompt).toContain("`Read`");
+    expect(prompt).not.toContain("call `View`");
   });
 });

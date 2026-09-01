@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.5.0] - 2026-09-01
+
+### Added
+
+- **GLM (Zhipu AI) provider** — `glm-5.3`, `glm-5.2`, and `glm-5.3-flash`,
+  behind `GLM_API_KEY` (`GLM_BASE_URL` override for regional/proxy access).
+  OpenAI Chat Completions-compatible, mirroring the Kimi adapter's shape:
+  - Every GLM 5.x model always thinks and cannot disable thinking. Three
+    native tiers (`thinking.effort`: low/high/max) absorb maestro's five
+    `effort` levels (`low`/`medium` → `low`, `high`/`xhigh` → `high`, `max` →
+    `max`; unset effort defaults to `low`).
+  - Only `glm-5.3-flash` has native vision (`image_url` content parts);
+    `glm-5.2`/`glm-5.3` reject non-text content and degrade image/document
+    blocks to text placeholders, same as DeepSeek's unconditional degrade.
+  - Usage nests the cache-hit count under `prompt_tokens_details.cached_tokens`
+    (mapped to the shared `cacheReadInputTokens` field).
+  - New aliases: `glm` / `glm-pro` → `glm-5.3`, `glm-flash` → `glm-5.3-flash`,
+    `glm-5.2` → itself.
+- Extended the Gemini image-QA `View` tool fallback (previously DeepSeek-only)
+  to also cover GLM's non-vision models (`glm-5.2`/`glm-5.3`).
+- `ProviderApiKeyOverrides.glm` for per-call GLM credential overrides.
+- `resolveAuxModel` routes `glm-5.3`/`glm-5.2` to `glm-5.3-flash` for
+  compaction, mirroring the DeepSeek pro→flash mapping.
+
 ## [0.4.1] - 2026-08-27
 
 ### Changed

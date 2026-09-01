@@ -18,6 +18,7 @@ bootstrapHostPath();
 
 import type { Provider, ProviderContentBlock, ProviderMessage } from "@/providers/base";
 import { DeepseekProvider } from "@/providers/deepseek";
+import { GlmProvider, isVisionCapableGlmModel } from "@/providers/glm";
 import { KimiProvider } from "@/providers/kimi";
 import { maestroRegistry } from "@/registry";
 import {
@@ -698,18 +699,35 @@ export function providerForModel(
   if (resolvedModel.startsWith("kimi-")) {
     throw new Error(`Maestro: unsupported Kimi model '${resolvedModel}'`);
   }
+  if (
+    resolvedModel === "glm-5.3" ||
+    resolvedModel === "glm-5.2" ||
+    resolvedModel === "glm-5.3-flash"
+  ) {
+    return GlmProvider.fromEnv(apiKeyOverrides?.glm);
+  }
+  if (resolvedModel.startsWith("glm-")) {
+    throw new Error(`Maestro: unsupported GLM model '${resolvedModel}'`);
+  }
   return DeepseekProvider.fromEnv(apiKeyOverrides?.deepseek);
 }
 
 /**
  * True when `resolvedModel` can natively see image blocks — Kimi K3/K2.7
- * Code render them as real `image_url` parts (kimi.ts). Everything else
- * (currently only the DeepSeek family) unconditionally rewrites every
- * `image` block into a text placeholder regardless of whether the source
- * is well-formed (deepseek.ts's `toolResultToOpenAI` / user-block handling).
+ * Code render them as real `image_url` parts (kimi.ts), and so does GLM's
+ * `glm-5.3-flash` (glm.ts's `isVisionCapableGlmModel`). Everything else
+ * (DeepSeek's whole family, plus GLM's `glm-5.2`/`glm-5.3`) unconditionally
+ * rewrites every `image` block into a text placeholder regardless of
+ * whether the source is well-formed (deepseek.ts's `toolResultToOpenAI` /
+ * user-block handling; glm.ts's `imageBlockToPart` when `visionCapable` is
+ * false).
  */
 export function modelHasNativeVision(resolvedModel: string): boolean {
-  return resolvedModel === "kimi-k3" || resolvedModel === "kimi-k2.7-code";
+  return (
+    resolvedModel === "kimi-k3" ||
+    resolvedModel === "kimi-k2.7-code" ||
+    isVisionCapableGlmModel(resolvedModel)
+  );
 }
 
 /**
@@ -755,19 +773,34 @@ export function countImagesLosingVisibility(
 }
 
 /**
- * DeepSeek cannot currently consume Maestro image blocks natively in this
- * adapter, so when a Gemini API key is configured we expose a narrow vision
- * fallback tool only for DeepSeek models. Kimi models (K3/K2.7 Code)
- * support vision natively via `kimi.ts`'s `image_url` translation, so they
- * never need the Gemini fallback. Other providers keep their existing tool
- * menu and avoid unnecessary third-party image upload/cost.
+ * True for models that have NO native vision path at all — DeepSeek's whole
+ * family, plus GLM's `glm-5.2`/`glm-5.3` (glm-5.3-flash is vision-capable,
+ * see `isVisionCapableGlmModel`). These are exactly the models that benefit
+ * from the Gemini image-QA fallback tool.
+ */
+function isNonVisionModel(resolvedModel: string): boolean {
+  return (
+    resolvedModel.startsWith("deepseek-") ||
+    resolvedModel === "glm-5.2" ||
+    resolvedModel === "glm-5.3"
+  );
+}
+
+/**
+ * DeepSeek and GLM's non-vision models (`glm-5.2`/`glm-5.3`) cannot consume
+ * Maestro image blocks natively, so when a Gemini API key is configured we
+ * expose a narrow vision fallback tool for them. Kimi (K3/K2.7 Code) and
+ * GLM's `glm-5.3-flash` support vision natively via their own `image_url`
+ * translation, so they never need the Gemini fallback. Other providers keep
+ * their existing tool menu and avoid unnecessary third-party image
+ * upload/cost.
  */
 export function shouldRegisterGeminiImageQATool(
   resolvedModel: string,
   env: NodeJS.ProcessEnv = process.env,
 ): boolean {
   const key = env.GEMINI_API_KEY;
-  return resolvedModel.startsWith("deepseek-") && typeof key === "string" && key.trim().length > 0;
+  return isNonVisionModel(resolvedModel) && typeof key === "string" && key.trim().length > 0;
 }
 
 export function imageHandlingPrompt(
@@ -780,13 +813,20 @@ export function imageHandlingPrompt(
       "Kimi has native vision: inline images are visible directly, and on-disk images become visible once loaded with `Read`.",
     ].join("\n");
   }
-  if (!resolvedModel.startsWith("deepseek-")) return undefined;
+  if (resolvedModel === "glm-5.3-flash") {
+    return [
+      "## Image Handling",
+      "This GLM model has native vision: inline images are visible directly, and on-disk images become visible once loaded with `Read`.",
+    ].join("\n");
+  }
+  if (!isNonVisionModel(resolvedModel)) return undefined;
+  const modelLabel = resolvedModel.startsWith("deepseek-") ? "DeepSeek" : "GLM";
   const fallback = geminiImageQaAvailable
     ? "When the user asks about an attached image file path, call `View` with the absolute `image_path` and a focused `question` before answering."
     : "When the user asks about an attached image file path, use available OCR/text-extraction tools or explain that visual inspection requires a vision tool.";
   return [
     "## Image Handling",
-    "The active DeepSeek model cannot inspect image pixels, image files, or image content directly from file paths.",
+    `The active ${modelLabel} model cannot inspect image pixels, image files, or image content directly from file paths.`,
     fallback,
     "Do not claim you inspected an image unless a vision/OCR tool returned evidence.",
   ].join("\n");

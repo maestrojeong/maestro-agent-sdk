@@ -3,6 +3,9 @@ import type { AgentRegistry } from "@/agents/contracts";
 import {
   MODEL_DEEPSEEK_V4_FLASH,
   MODEL_DEEPSEEK_V4_PRO,
+  MODEL_GLM_5_2,
+  MODEL_GLM_5_3,
+  MODEL_GLM_5_3_FLASH,
   MODEL_KIMI_K3,
   MODEL_KIMI_K27_CODE,
 } from "@/platform/config";
@@ -30,6 +33,13 @@ const ALIAS_MAP: Record<string, string> = {
   kimi: MODEL_KIMI_K3,
   "kimi-pro": MODEL_KIMI_K3,
   "kimi-code": MODEL_KIMI_K27_CODE,
+  // GLM / Zhipu AI — flagship 5.3, previous-gen 5.2, and the vision-capable
+  // 5.3-flash (the only GLM model with native image_url support; see
+  // providers/glm.ts's `isVisionCapableGlmModel`).
+  glm: MODEL_GLM_5_3,
+  "glm-pro": MODEL_GLM_5_3,
+  "glm-flash": MODEL_GLM_5_3_FLASH,
+  "glm-5.2": MODEL_GLM_5_2,
 };
 
 const VALID_ALIASES = new Set(Object.keys(ALIAS_MAP));
@@ -47,6 +57,11 @@ const VALID_EFFORTS = new Set<EffortLevel>(MAESTRO_EFFORT_VALUES);
  * conservative defaults for both:
  *   - `kimi-k3`                    → 65_536 (native cap far higher, 1M ctx)
  *   - `kimi-k2.7-code`             → 32_768
+ * GLM 5.x's native `max_tokens` hard cap is 131_072 (verified against the
+ * live API — values outside `[1, 131072]` 400). We stay well below that:
+ *   - `glm-5.3`      → 65_536 (flagship)
+ *   - `glm-5.2`      → 65_536 (previous-gen flagship, same cap)
+ *   - `glm-5.3-flash` → 32_768
  * Unknown ids fall back to `DEFAULT_MAX_OUTPUT_TOKENS` (32_768).
  */
 export const MODEL_MAX_OUTPUT_TOKENS: Readonly<Record<string, number>> = {
@@ -56,6 +71,10 @@ export const MODEL_MAX_OUTPUT_TOKENS: Readonly<Record<string, number>> = {
   // Kimi / Moonshot AI — see docstring above.
   [MODEL_KIMI_K3]: 65_536,
   [MODEL_KIMI_K27_CODE]: 32_768,
+  // GLM / Zhipu AI — see docstring above.
+  [MODEL_GLM_5_3]: 65_536,
+  [MODEL_GLM_5_2]: 65_536,
+  [MODEL_GLM_5_3_FLASH]: 32_768,
 } as const;
 
 /**
