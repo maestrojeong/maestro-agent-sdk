@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.5.1] - 2026-09-08
+
+### Fixed
+
+- Recover MCP servers whose cached session became invalid after a server or
+  transport restart. A failed `tools/list` now evicts and closes the stale
+  client, reconnects once with a fresh MCP session, and removes the replacement
+  too if the retry fails instead of leaking its cache refcount indefinitely.
+
 ## [0.5.0] - 2026-09-01
 
 ### Added

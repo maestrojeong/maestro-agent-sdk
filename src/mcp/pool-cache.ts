@@ -20,8 +20,10 @@ import { logger } from "@/platform/logger";
  * Lifecycle invariants:
  *   - One physical `MaestroMcpClient.start()` per cache key.
  *   - Per-turn callers acquire via `getOrStartClient` (refcount++) and release
- *     via `releaseClient` (refcount--). Eviction never closes a client whose
- *     refcount > 0 — an abort that closes the pool only drops the lease.
+ *     via `releaseClient` (refcount--). Routine TTL/LRU eviction never closes
+ *     a client whose refcount > 0 — an abort that closes the pool only drops
+ *     the lease. Health eviction detaches a failed client immediately, then
+ *     closes it once any other outstanding leases have been released.
  *   - Idle TTL (`MAESTRO_MCP_POOL_IDLE_TTL_MS`) and LRU cap
  *     (`MAESTRO_MCP_POOL_MAX`) evict clients whose refcount is 0.
  *   - One process-wide `beforeExit`/`SIGINT`/`SIGTERM` handler closes every
@@ -65,6 +67,7 @@ interface CachedEntry {
 }
 
 const cache = new Map<string, CachedEntry>();
+const retired = new Map<MaestroMcpClient, CachedEntry>();
 let sweeperHandle: ReturnType<typeof setInterval> | null = null;
 let shutdownRegistered = false;
 
@@ -200,10 +203,67 @@ export function releaseClient(clientRef: MaestroMcpClient): void {
       return;
     }
   }
+
+  const retiredEntry = retired.get(clientRef);
+  if (retiredEntry) {
+    if (retiredEntry.refcount > 0) retiredEntry.refcount--;
+    if (retiredEntry.refcount === 0) {
+      retired.delete(clientRef);
+      void retiredEntry.client.close().catch((err) => {
+        logger.warn(
+          { err, server: retiredEntry.serverName },
+          "maestro mcp pool-cache: close on retired release failed",
+        );
+      });
+    }
+    return;
+  }
+
   logger.warn(
     { server: clientRef.name },
     "maestro mcp pool-cache: release of unknown client (double-release?)",
   );
+}
+
+/** Remove a failed client from reuse, consuming the caller's lease. */
+export async function evictClient(clientRef: MaestroMcpClient): Promise<boolean> {
+  for (const entry of cache.values()) {
+    if (entry.client === clientRef) {
+      cache.delete(entry.key);
+      if (entry.refcount > 0) entry.refcount--;
+      if (entry.refcount > 0) {
+        retired.set(clientRef, entry);
+        return true;
+      }
+      try {
+        await entry.client.close();
+      } catch (err) {
+        logger.warn(
+          { err, server: entry.serverName },
+          "maestro mcp pool-cache: close on forced evict failed",
+        );
+      }
+      return true;
+    }
+  }
+
+  const entry = retired.get(clientRef);
+  if (entry) {
+    if (entry.refcount > 0) entry.refcount--;
+    if (entry.refcount === 0) {
+      retired.delete(clientRef);
+      try {
+        await entry.client.close();
+      } catch (err) {
+        logger.warn(
+          { err, server: entry.serverName },
+          "maestro mcp pool-cache: close on forced evict failed",
+        );
+      }
+    }
+    return true;
+  }
+  return false;
 }
 
 /** Force-evict and close a single entry. Used by the sweeper / cap evictor /
@@ -269,8 +329,9 @@ export function stopSweeper(): void {
  * Safe to call multiple times — entries are removed as they close.
  */
 export async function closeAll(timeoutMs = 3000): Promise<void> {
-  const entries = [...cache.values()];
+  const entries = [...cache.values(), ...retired.values()];
   cache.clear();
+  retired.clear();
   const closes = entries.map(async (e) => {
     try {
       await e.client.close();
@@ -301,6 +362,7 @@ function ensureShutdownHook(): void {
  *  test runs that share the module singleton. */
 export function __resetForTests(): void {
   cache.clear();
+  retired.clear();
   stopSweeper();
   shutdownRegistered = false;
   clientFactory = (name, spec) => new MaestroMcpClient(name, spec);

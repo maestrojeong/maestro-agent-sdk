@@ -345,4 +345,67 @@ describe("startMcpPool — lease integration with cache", () => {
     // refcount should not go negative — second close is a no-op.
     expect(__getEntry({ userId: "u1" }, "wiki", { command: "bun" })?.refcount).toBe(0);
   });
+
+  test("evicts a stale cached client and retries with a fresh session", async () => {
+    const ctx: CacheKeyContext = { userId: "u1", session: "t1", agentKind: "maestro" };
+    const spec: MaestroMcpServerSpec = { command: "bun", args: ["wiki.ts"] };
+    const stale = await getOrStartClient(ctx, "wiki", spec);
+    stale.listTools = async () => {
+      throw new Error("Session not found");
+    };
+    releaseClient(stale);
+
+    const pool = await startMcpPool({ wiki: spec }, ctx);
+
+    expect(mockServers).toHaveLength(2);
+    expect(mockServers[0].closeCount).toBe(1);
+    expect(pool.clients).toHaveLength(1);
+    expect(pool.clients[0]).not.toBe(stale);
+    expect(__cacheSize()).toBe(1);
+    expect(__getEntry(ctx, "wiki", spec)?.refcount).toBe(1);
+
+    await pool.close();
+    expect(__getEntry(ctx, "wiki", spec)?.refcount).toBe(0);
+  });
+
+  test("defers closing a stale client until its other leases are released", async () => {
+    const ctx: CacheKeyContext = { userId: "u1", session: "t1", agentKind: "maestro" };
+    const spec: MaestroMcpServerSpec = { command: "bun", args: ["wiki.ts"] };
+    const inFlightClient = await getOrStartClient(ctx, "wiki", spec);
+    inFlightClient.listTools = async () => {
+      throw new Error("Session not found");
+    };
+
+    const pool = await startMcpPool({ wiki: spec }, ctx);
+
+    expect(pool.clients).toHaveLength(1);
+    expect(pool.clients[0]).not.toBe(inFlightClient);
+    expect(mockServers[0].closeCount).toBe(0);
+
+    releaseClient(inFlightClient);
+    expect(mockServers[0].closeCount).toBe(1);
+    await pool.close();
+  });
+
+  test("evicts the replacement and skips the server when the retry also fails", async () => {
+    const baseFactory = makeMockClientFactory();
+    __setClientFactoryForTests((name, spec) => {
+      const client = baseFactory(name, spec);
+      client.listTools = async () => {
+        throw new Error("Session not found");
+      };
+      return client;
+    });
+
+    const pool = await startMcpPool(
+      { wiki: { command: "bun", args: ["wiki.ts"] } },
+      { userId: "u1", session: "t1", agentKind: "maestro" },
+    );
+
+    expect(pool.clients).toHaveLength(0);
+    expect(pool.tools).toHaveLength(0);
+    expect(mockServers).toHaveLength(2);
+    expect(mockServers.every((server) => server.closeCount === 1)).toBe(true);
+    expect(__cacheSize()).toBe(0);
+  });
 });
