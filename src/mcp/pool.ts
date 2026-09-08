@@ -1,5 +1,10 @@
 import type { MaestroMcpClient, MaestroMcpServerSpec, MaestroMcpTool } from "@/mcp/client";
-import { type CacheKeyContext, getOrStartClient, releaseClient } from "@/mcp/pool-cache";
+import {
+  type CacheKeyContext,
+  evictClient,
+  getOrStartClient,
+  releaseClient,
+} from "@/mcp/pool-cache";
 import { logger } from "@/platform/logger";
 import type { ToolHandler, ToolRegistry } from "@/tools/registry";
 
@@ -62,9 +67,25 @@ export async function startMcpPool(
   const entries = Object.entries(servers ?? {});
   const results = await Promise.allSettled(
     entries.map(async ([name, spec]) => {
-      const client = await getOrStartClient(ctx, name, spec);
-      const ts = await client.listTools();
-      return { client, tools: ts };
+      let client = await getOrStartClient(ctx, name, spec);
+      try {
+        const ts = await client.listTools();
+        return { client, tools: ts };
+      } catch (err) {
+        logger.warn(
+          { err, server: name },
+          "maestro mcp pool: client failed, evicting and retrying once",
+        );
+        await evictClient(client);
+        client = await getOrStartClient(ctx, name, spec);
+        try {
+          const ts = await client.listTools();
+          return { client, tools: ts };
+        } catch (retryErr) {
+          await evictClient(client);
+          throw retryErr;
+        }
+      }
     }),
   );
 
