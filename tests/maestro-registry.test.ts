@@ -36,6 +36,12 @@ describe("maestroRegistry alias map", () => {
     expect(maestroRegistry.expandModelAlias("deepseek-pro")).toBe(MODEL_DEEPSEEK_V4_PRO);
   });
 
+  test("canonical Flash id is deepseek-flash; the retired deepseek-v4-flash still resolves to it", () => {
+    expect(MODEL_DEEPSEEK_V4_FLASH).toBe("deepseek-flash");
+    expect(maestroRegistry.expandModelAlias("deepseek-v4-flash")).toBe("deepseek-flash");
+    expect(maestroRegistry.validateModel("deepseek-v4-flash")).toBe(true);
+  });
+
   test("validateModel accepts aliases and resolved IDs", () => {
     expect(maestroRegistry.validateModel("deepseek")).toBe(true);
     expect(maestroRegistry.validateModel(MODEL_DEEPSEEK_V4_PRO)).toBe(true);

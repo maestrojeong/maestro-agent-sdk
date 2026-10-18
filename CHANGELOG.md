@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.5.4] - 2026-10-19
+
+### Added
+
+- **DeepSeek V4.1 Flash native vision.** `deepseek-flash` now receives real
+  `image_url` parts (base64 `data:` URIs) for images in user messages and inside
+  tool results, instead of the "not visible to DeepSeek" text placeholder.
+  `deepseek-v4-pro` has no vision (per DeepSeek's pricing page) and keeps the
+  placeholder. Public `https` image URLs stay degraded (unverified for DeepSeek,
+  same policy as Kimi/GLM). `modelHasNativeVision`, the image-handling prompt and
+  the Gemini image-QA fallback policy follow: Flash no longer registers the
+  fallback tool. New export `isVisionCapableDeepseekModel`. Verified against the
+  live API (user image, tool-result image, legacy id).
+- **`code` on error events.** `{ type: "error", content, code? }` gains an optional
+  machine-readable `code`; the hard-cap rejection now sets
+  `code: "context_budget_exceeded"` so hosts can branch without matching the
+  message text. Additive and backward compatible. New type export `MaestroErrorCode`.
+
+### Changed
+
+- **Canonical Flash model id is `deepseek-flash`** (DeepSeek: "use `deepseek-flash`
+  to access the latest V4.1-Flash"). `MODEL_DEEPSEEK_V4_FLASH` is now
+  `"deepseek-flash"`. The retired `deepseek-v4-flash` name remains a valid input
+  (`LEGACY_DEEPSEEK_FLASH_IDS`): it resolves to the canonical id in
+  `expandModelAlias`, shares its output cap, vision and compaction mapping, so
+  stored sessions and host settings keep working. New helper `isDeepseekFlashModel`.
+- Compaction (`resolveAuxModel`) maps `deepseek-v4-pro` and both Flash ids to the
+  canonical Flash id.
+
+### Verified, no change needed
+
+- DeepSeek accepts every `reasoning_effort` the SDK sends (`low`/`medium`/`high`/
+  `max`) on both Flash and Pro (HTTP 200), including `medium` and the `xhigh` →
+  `high` bucket, so the effort mapping is unchanged.
+
 ## [0.5.3] - 2026-10-18
 
 ### Fixed

@@ -5,6 +5,7 @@ import {
   DEEPSEEK_V4_CONTEXT_WINDOW,
   DeepseekProvider,
   effortForDeepseek,
+  isVisionCapableDeepseekModel,
   mapStopReason,
   translateMessagesToOpenAI,
 } from "@/providers/deepseek";
@@ -985,5 +986,99 @@ describe("DeepseekProvider.contextWindowForModel", () => {
     expect(provider.contextWindowForModel("deepseek-v4-pro")).toBe(DEEPSEEK_V4_CONTEXT_WINDOW);
     expect(provider.contextWindowForModel("deepseek-v4-flash")).toBe(DEEPSEEK_V4_CONTEXT_WINDOW);
     expect(provider.contextWindowForModel("deepseek-flash")).toBe(1_000_000);
+  });
+});
+
+describe("DeepSeek native vision (deepseek-flash)", () => {
+  const userImage: ProviderMessage = {
+    role: "user",
+    content: [
+      { type: "text", text: "what is this?" },
+      { type: "image", source: { type: "base64", media_type: "image/jpeg", data: "QUJD" } },
+    ],
+  };
+  const toolImage: ProviderMessage = {
+    role: "user",
+    content: [
+      {
+        type: "tool_result",
+        tool_use_id: "t1",
+        content: [
+          { type: "image", source: { type: "base64", media_type: "image/png", data: "REVG" } },
+        ],
+      },
+    ],
+  };
+
+  test("only Flash (canonical and retired id) is vision-capable; Pro is not", () => {
+    expect(isVisionCapableDeepseekModel("deepseek-flash")).toBe(true);
+    expect(isVisionCapableDeepseekModel("deepseek-v4-flash")).toBe(true);
+    expect(isVisionCapableDeepseekModel("deepseek-v4-pro")).toBe(false);
+  });
+
+  test("a vision-capable model gets a real image_url part in user messages", () => {
+    const out = translateMessagesToOpenAI("", [userImage], true);
+    expect(out).toHaveLength(1);
+    expect(out[0]?.content).toEqual([
+      { type: "text", text: "what is this?" },
+      { type: "image_url", image_url: { url: "data:image/jpeg;base64,QUJD" } },
+    ]);
+  });
+
+  test("a vision-capable model gets a real image_url part inside tool results", () => {
+    const out = translateMessagesToOpenAI("", [toolImage], true);
+    expect(out[0]).toMatchObject({
+      role: "tool",
+      tool_call_id: "t1",
+      content: [{ type: "image_url", image_url: { url: "data:image/png;base64,REVG" } }],
+    });
+  });
+
+  test("text-only models keep the placeholder (default, and for Pro)", () => {
+    const user = translateMessagesToOpenAI("", [userImage]);
+    expect(String(user[0]?.content)).toContain("not visible to DeepSeek");
+    const tool = translateMessagesToOpenAI("", [toolImage], false);
+    expect(String(tool[0]?.content)).toContain("not visible to DeepSeek");
+  });
+
+  test("public https image URLs are degraded, data: URIs pass through", () => {
+    const urlImage = (url: string): ProviderMessage => ({
+      role: "user",
+      content: [{ type: "image", source: { type: "url", url } }],
+    });
+    const https = translateMessagesToOpenAI("", [urlImage("https://example.com/a.png")], true);
+    expect(JSON.stringify(https[0]?.content)).toContain("unverified");
+    expect(JSON.stringify(https[0]?.content)).not.toContain("image_url");
+    const data = translateMessagesToOpenAI("", [urlImage("data:image/png;base64,AAAA")], true);
+    expect(data[0]?.content).toEqual([
+      { type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } },
+    ]);
+  });
+
+  test("the request body for deepseek-flash carries image_url; for deepseek-v4-pro it does not", async () => {
+    const send = async (model: string) => {
+      let body = "";
+      globalThis.fetch = vi.fn(async (_u: unknown, init?: RequestInit) => {
+        body = String(init?.body);
+        return new Response(
+          JSON.stringify({
+            choices: [
+              { index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" },
+            ],
+            usage: { prompt_tokens: 1, completion_tokens: 1 },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }) as unknown as typeof fetch;
+      await new DeepseekProvider("k").complete({
+        model,
+        system: "",
+        messages: [userImage],
+        tools: [],
+      } as never);
+      return body;
+    };
+    expect(await send("deepseek-flash")).toContain("image_url");
+    expect(await send("deepseek-v4-pro")).not.toContain("image_url");
   });
 });

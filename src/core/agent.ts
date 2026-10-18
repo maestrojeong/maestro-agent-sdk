@@ -34,7 +34,7 @@ export interface AIAgentConfig {
    * Per-API-call max output tokens.
    *
    * Omitted → resolved via `getNativeMaxOutputTokens(model)` against the
-   * registry catalog (deepseek-v4-pro → 64K, deepseek-v4-flash → 32K,
+   * registry catalog (deepseek-v4-pro → 64K, deepseek-flash → 32K,
    * unknown → 32K).
    *
    * v0.1.21+: prior versions defaulted to a flat 4096, which silently
@@ -88,7 +88,7 @@ export interface AIAgentConfig {
    * different underlying providers based on the requested model).
    *
    * Leave omitted for the default mapping: gpt-5.5 → gpt-5.4-mini,
-   * opus → haiku, deepseek-v4-pro → deepseek-v4-flash. Cheap tiers
+   * opus → haiku, deepseek-v4-pro → deepseek-flash. Cheap tiers
    * self-map so the behavior is a no-op for callers already on a small
    * model.
    */

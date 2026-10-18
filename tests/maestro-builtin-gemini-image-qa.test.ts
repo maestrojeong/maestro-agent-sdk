@@ -234,25 +234,19 @@ describe("View Gemini image QA tool", () => {
 });
 
 describe("DeepSeek/GLM (non-vision) View registration policy", () => {
-  test("registers only for DeepSeek models when GEMINI_API_KEY is present", () => {
-    expect(
-      shouldRegisterGeminiImageQATool("deepseek-v4-flash", {
-        GEMINI_API_KEY: "gem-test",
-      } as NodeJS.ProcessEnv),
-    ).toBe(true);
-    expect(
-      shouldRegisterGeminiImageQATool("deepseek-v4-pro", {
-        GEMINI_API_KEY: "gem-test",
-      } as NodeJS.ProcessEnv),
-    ).toBe(true);
+  test("registers for DeepSeek Pro (text-only) but not for Flash (native vision) when GEMINI_API_KEY is present", () => {
+    const env = { GEMINI_API_KEY: "gem-test" } as NodeJS.ProcessEnv;
+    expect(shouldRegisterGeminiImageQATool("deepseek-v4-pro", env)).toBe(true);
+    // V4.1 Flash reads images directly, so it never needs the Gemini fallback —
+    // under its canonical id and the retired alias alike.
+    expect(shouldRegisterGeminiImageQATool("deepseek-flash", env)).toBe(false);
+    expect(shouldRegisterGeminiImageQATool("deepseek-v4-flash", env)).toBe(false);
   });
 
   test("does not register for DeepSeek without GEMINI_API_KEY", () => {
-    expect(shouldRegisterGeminiImageQATool("deepseek-v4-flash", {} as NodeJS.ProcessEnv)).toBe(
-      false,
-    );
+    expect(shouldRegisterGeminiImageQATool("deepseek-v4-pro", {} as NodeJS.ProcessEnv)).toBe(false);
     expect(
-      shouldRegisterGeminiImageQATool("deepseek-v4-flash", {
+      shouldRegisterGeminiImageQATool("deepseek-v4-pro", {
         GEMINI_API_KEY: "   ",
       } as NodeJS.ProcessEnv),
     ).toBe(false);
@@ -265,16 +259,25 @@ describe("DeepSeek/GLM (non-vision) View registration policy", () => {
   });
 
   test("adds DeepSeek image-handling prompt when the model cannot inspect images", () => {
-    const withGemini = deepseekImageHandlingPrompt("deepseek-v4-flash", true) ?? "";
+    const withGemini = deepseekImageHandlingPrompt("deepseek-v4-pro", true) ?? "";
     expect(withGemini).toContain("cannot inspect image pixels");
     expect(withGemini).toContain("View");
     expect(withGemini).toContain("image_path");
 
-    const withoutGemini = deepseekImageHandlingPrompt("deepseek-v4-flash", false) ?? "";
+    const withoutGemini = deepseekImageHandlingPrompt("deepseek-v4-pro", false) ?? "";
     expect(withoutGemini).toContain("OCR/text-extraction");
     expect(withoutGemini).not.toContain("call `View`");
 
     expect(deepseekImageHandlingPrompt("claude-sonnet-4-6", true)).toBeUndefined();
+  });
+
+  test("DeepSeek Flash gets the native-vision prompt (no Gemini fallback wording)", () => {
+    for (const id of ["deepseek-flash", "deepseek-v4-flash"]) {
+      const prompt = deepseekImageHandlingPrompt(id, true) ?? "";
+      expect(prompt).toContain("native vision");
+      expect(prompt).not.toContain("cannot inspect image pixels");
+      expect(prompt).not.toContain("call `View`");
+    }
   });
 });
 

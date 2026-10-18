@@ -26,6 +26,8 @@ describe("getNativeMaxOutputTokens", () => {
   test("returns conservative defaults for DeepSeek V4 (below 384K native cap)", () => {
     expect(getNativeMaxOutputTokens(MODEL_DEEPSEEK_V4_PRO)).toBe(65_536);
     expect(getNativeMaxOutputTokens(MODEL_DEEPSEEK_V4_FLASH)).toBe(32_768);
+    // The retired alias keeps the same cap.
+    expect(getNativeMaxOutputTokens("deepseek-v4-flash")).toBe(32_768);
     expect(getNativeMaxOutputTokens(MODEL_DEEPSEEK_V4_PRO)).toBeLessThan(384_000);
     expect(getNativeMaxOutputTokens(MODEL_DEEPSEEK_V4_FLASH)).toBeLessThan(384_000);
   });

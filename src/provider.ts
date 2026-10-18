@@ -17,7 +17,7 @@ import { getMcpServersForQuery } from "@/platform/mcp-config";
 bootstrapHostPath();
 
 import type { Provider, ProviderContentBlock, ProviderMessage } from "@/providers/base";
-import { DeepseekProvider } from "@/providers/deepseek";
+import { DeepseekProvider, isVisionCapableDeepseekModel } from "@/providers/deepseek";
 import { GlmProvider, isVisionCapableGlmModel } from "@/providers/glm";
 import { KimiProvider } from "@/providers/kimi";
 import { maestroRegistry } from "@/registry";
@@ -714,9 +714,10 @@ export function providerForModel(
 
 /**
  * True when `resolvedModel` can natively see image blocks — Kimi K3/K2.7
- * Code render them as real `image_url` parts (kimi.ts), and so does GLM's
- * `glm-5.3-flash` (glm.ts's `isVisionCapableGlmModel`). Everything else
- * (DeepSeek's whole family, plus GLM's `glm-5.2`/`glm-5.3`) unconditionally
+ * Code render them as real `image_url` parts (kimi.ts), and so do GLM's
+ * `glm-5.3-flash` (glm.ts's `isVisionCapableGlmModel`) and DeepSeek V4.1
+ * Flash (deepseek.ts's `isVisionCapableDeepseekModel`). Everything else
+ * (DeepSeek V4 Pro, plus GLM's `glm-5.2`/`glm-5.3`) unconditionally
  * rewrites every `image` block into a text placeholder regardless of
  * whether the source is well-formed (deepseek.ts's `toolResultToOpenAI` /
  * user-block handling; glm.ts's `imageBlockToPart` when `visionCapable` is
@@ -726,7 +727,8 @@ export function modelHasNativeVision(resolvedModel: string): boolean {
   return (
     resolvedModel === "kimi-k3" ||
     resolvedModel === "kimi-k2.7-code" ||
-    isVisionCapableGlmModel(resolvedModel)
+    isVisionCapableGlmModel(resolvedModel) ||
+    isVisionCapableDeepseekModel(resolvedModel)
   );
 }
 
@@ -773,14 +775,15 @@ export function countImagesLosingVisibility(
 }
 
 /**
- * True for models that have NO native vision path at all — DeepSeek's whole
- * family, plus GLM's `glm-5.2`/`glm-5.3` (glm-5.3-flash is vision-capable,
- * see `isVisionCapableGlmModel`). These are exactly the models that benefit
- * from the Gemini image-QA fallback tool.
+ * True for models that have NO native vision path at all — DeepSeek V4 Pro
+ * (V4.1 Flash is vision-capable, see `isVisionCapableDeepseekModel`), plus
+ * GLM's `glm-5.2`/`glm-5.3` (glm-5.3-flash is vision-capable, see
+ * `isVisionCapableGlmModel`). These are exactly the models that benefit from
+ * the Gemini image-QA fallback tool.
  */
 function isNonVisionModel(resolvedModel: string): boolean {
   return (
-    resolvedModel.startsWith("deepseek-") ||
+    (resolvedModel.startsWith("deepseek-") && !isVisionCapableDeepseekModel(resolvedModel)) ||
     resolvedModel === "glm-5.2" ||
     resolvedModel === "glm-5.3"
   );
@@ -817,6 +820,12 @@ export function imageHandlingPrompt(
     return [
       "## Image Handling",
       "This GLM model has native vision: inline images are visible directly, and on-disk images become visible once loaded with `Read`.",
+    ].join("\n");
+  }
+  if (isVisionCapableDeepseekModel(resolvedModel)) {
+    return [
+      "## Image Handling",
+      "This DeepSeek model (V4.1 Flash) has native vision: inline images are visible directly, and on-disk images become visible once loaded with `Read`.",
     ].join("\n");
   }
   if (!isNonVisionModel(resolvedModel)) return undefined;

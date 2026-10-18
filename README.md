@@ -60,7 +60,7 @@ import { maestroProvider } from "maestro-agent-sdk";
 for await (const event of maestroProvider({
   agent: "maestro",
   cwd: process.cwd(),
-  model: "deepseek-v4-flash",
+  model: "deepseek-flash",
   systemPrompt: "You are a concise coding assistant.",
   prompt: "Inspect this project and summarize its package scripts.",
   effort: "medium",
@@ -113,7 +113,7 @@ for await (const event of maestroProvider({
 
 | Provider | Models | Credential |
 | --- | --- | --- |
-| DeepSeek V4 | `deepseek-v4-pro`, `deepseek-v4-flash` | `DEEPSEEK_API_KEY` |
+| DeepSeek V4 | `deepseek-v4-pro`, `deepseek-flash` (V4.1 Flash; native vision; legacy id `deepseek-v4-flash` still accepted) | `DEEPSEEK_API_KEY` |
 | Moonshot Kimi | `kimi-k3`, `kimi-k2.7-code` | `MOONSHOT_API_KEY` |
 | Zhipu GLM | `glm-5.3`, `glm-5.2`, `glm-5.3-flash` | `GLM_API_KEY` |
 
@@ -139,7 +139,7 @@ const tools = new ToolRegistry();
 tools.register(bashTool);
 
 const agent = new AIAgent(DeepseekProvider.fromEnv(), tools, {
-  model: "deepseek-v4-flash",
+  model: "deepseek-flash",
   systemPrompt: "You are a concise assistant.",
   maxIterations: 10,
   effort: "medium",
@@ -247,7 +247,7 @@ const weatherTool: ToolHandler = {
 const tools = new ToolRegistry();
 tools.register(weatherTool);
 const agent = new AIAgent(DeepseekProvider.fromEnv(), tools, {
-  model: "deepseek-v4-flash",
+  model: "deepseek-flash",
   systemPrompt: "Use tools when they help.",
 });
 
