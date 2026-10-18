@@ -118,6 +118,17 @@ export class DeepseekProvider implements Provider {
     private readonly contextWindow: number = DEEPSEEK_V4_CONTEXT_WINDOW,
   ) {}
 
+  /**
+   * DeepSeek V4.1-Flash and V4-Pro both have a 1M-token window (official docs).
+   * Without this hook the loop falls back to `defaultContextWindow()` (200K), so
+   * the hard context cap and 90% auto-compaction fire at ~157K/180K tokens and
+   * long sessions fail with "Request exceeds the provider context budget".
+   * Kimi and GLM already report a per-model window the same way.
+   */
+  contextWindowForModel(_model: string): number {
+    return this.contextWindow;
+  }
+
   /** @param overrideApiKey Caller-supplied key, tried before `DEEPSEEK_API_KEY` env. */
   static fromEnv(overrideApiKey?: string): DeepseekProvider {
     const apiKey =

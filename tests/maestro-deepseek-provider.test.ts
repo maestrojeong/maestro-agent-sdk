@@ -978,3 +978,12 @@ describe("DeepSeek multimodal translation (v0.1.18+)", () => {
     expect(out[0].content).toBe("plain string");
   });
 });
+
+describe("DeepseekProvider.contextWindowForModel", () => {
+  test("reports the 1M V4 window for every model so the loop does not fall back to 200K", () => {
+    const provider = new DeepseekProvider("k");
+    expect(provider.contextWindowForModel("deepseek-v4-pro")).toBe(DEEPSEEK_V4_CONTEXT_WINDOW);
+    expect(provider.contextWindowForModel("deepseek-v4-flash")).toBe(DEEPSEEK_V4_CONTEXT_WINDOW);
+    expect(provider.contextWindowForModel("deepseek-flash")).toBe(1_000_000);
+  });
+});
