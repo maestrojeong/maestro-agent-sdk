@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.3] - 2026-10-18
+
+### Fixed
+
+- Auto-compaction could never start inside a "dead zone" below the hard context
+  cap. With a 200K window and `maxTokens` 32,768 the hard cap is 157,232 tokens
+  but the compactor's default 0.9 trigger waited until 180,000, so sessions in
+  between failed every turn with "Request exceeds the provider context budget".
+  The loop now clamps the compaction trigger to 90% of the hard cap
+  (`effectiveTriggerRatio`), so compaction always starts first. The hard-cap
+  formula moved to `computeHardCapTokens` (unchanged behavior).
+
 ## [0.5.2] - 2026-10-18
 
 ### Fixed
