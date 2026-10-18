@@ -223,3 +223,25 @@ describe("runConversation hard cap wiring", () => {
     expect(events.some((e) => e.type === "status")).toBe(false);
   });
 });
+
+describe("effectiveTriggerRatio", () => {
+  test("200K window with 32K output: compaction starts below the 157,232 hard cap (no dead zone)", async () => {
+    const { computeHardCapTokens, effectiveTriggerRatio } = await import("@/memory/hard-cap");
+    const hardCap = computeHardCapTokens(200_000, 32_768);
+    expect(hardCap).toBe(157_232);
+    const triggerTokens = 200_000 * effectiveTriggerRatio(200_000, 32_768);
+    expect(triggerTokens).toBeLessThan(hardCap);
+  });
+
+  test("1M window keeps a trigger below its (much larger) hard cap", async () => {
+    const { computeHardCapTokens, effectiveTriggerRatio } = await import("@/memory/hard-cap");
+    const hardCap = computeHardCapTokens(1_000_000, 32_768);
+    expect(1_000_000 * effectiveTriggerRatio(1_000_000, 32_768)).toBeLessThan(hardCap);
+  });
+
+  test("never raises the ratio above the caller's base", async () => {
+    const { effectiveTriggerRatio } = await import("@/memory/hard-cap");
+    expect(effectiveTriggerRatio(1_000_000, 0, 0.5)).toBe(0.5);
+    expect(effectiveTriggerRatio(0, 0, 0.9)).toBe(0.9);
+  });
+});

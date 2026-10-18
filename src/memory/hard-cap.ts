@@ -165,3 +165,30 @@ export function capOversizeToolResults(
   }
   return { messages: out, trimmed: true, trimmedBlocks, beforeTokens, afterTokens: running };
 }
+
+/**
+ * Ceiling the loop enforces on the wire size right before a provider call:
+ * 95% of the window minus the output budget (system prompt + tool schemas ride
+ * outside `messages`, hence the 5% slack), floored at half the window so a
+ * misconfigured `maxTokens` can't starve the history.
+ */
+export function computeHardCapTokens(contextWindow: number, maxTokens = 0): number {
+  return Math.max(Math.floor(contextWindow * 0.95) - maxTokens, Math.floor(contextWindow / 2));
+}
+
+/**
+ * Auto-compaction must start BEFORE the hard cap can reject a request.
+ * With the default 0.9 trigger and a 200K window the compactor waits until
+ * 180K tokens, while the hard cap is 157K (window 200K, maxTokens 32,768): in
+ * the 157K–180K "dead zone" nothing compacts and every turn fails. Clamp the
+ * trigger to 90% of the hard cap so compaction always wins the race.
+ */
+export function effectiveTriggerRatio(
+  contextWindow: number,
+  maxTokens: number | undefined,
+  baseRatio = 0.9,
+): number {
+  if (contextWindow <= 0) return baseRatio;
+  const hardCap = computeHardCapTokens(contextWindow, maxTokens ?? 0);
+  return Math.min(baseRatio, (hardCap * 0.9) / contextWindow);
+}

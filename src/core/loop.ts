@@ -8,7 +8,11 @@ import {
   defaultContextWindow,
   findLastCompactionSummary,
 } from "@/memory/compressor";
-import { capOversizeToolResults } from "@/memory/hard-cap";
+import {
+  capOversizeToolResults,
+  computeHardCapTokens,
+  effectiveTriggerRatio,
+} from "@/memory/hard-cap";
 import { StreamingContextScrubber, scrubString } from "@/memory/scrubber";
 import {
   buildMaestroMemoryState,
@@ -280,10 +284,13 @@ export async function* runConversation(
       // Steer the summarizer to preserve the live work thread (latest user
       // request) in full and shed tangents. Undefined → generic summary.
       ...(focusTopic ? { focusTopic } : {}),
-      // Provider-specific trigger ratio; undefined → compressor default (0.9).
-      ...(agent.provider.compactionTriggerRatio !== undefined
-        ? { triggerRatio: agent.provider.compactionTriggerRatio }
-        : {}),
+      // Provider-specific trigger ratio (default 0.9), clamped so compaction
+      // always starts before the hard cap below can reject the request.
+      triggerRatio: effectiveTriggerRatio(
+        activeContextWindow,
+        agent.config.maxTokens,
+        agent.provider.compactionTriggerRatio ?? 0.9,
+      ),
       // Provider-specific legacy message-count override; undefined → the
       // compressor's default recent-turn budget (64K estimated tokens).
       ...(agent.provider.compactionTailProtect !== undefined
@@ -338,10 +345,7 @@ export async function* runConversation(
     // hence the 5% slack), floored at half the window so a misconfigured
     // maxTokens can't starve the history. Pure copy-on-write: canonical
     // `messages` keeps the full payloads for persistence/resume.
-    const hardCapTokens = Math.max(
-      Math.floor(activeContextWindow * 0.95) - (agent.config.maxTokens ?? 0),
-      Math.floor(activeContextWindow / 2),
-    );
+    const hardCapTokens = computeHardCapTokens(activeContextWindow, agent.config.maxTokens);
     const hardCap = capOversizeToolResults(wireMessages, hardCapTokens);
     if (hardCap.trimmed) {
       wireMessages = hardCap.messages;
