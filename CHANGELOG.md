@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.5.2] - 2026-10-18
+
+### Fixed
+
+- DeepSeek sessions were treated as a 200K-token window although V4.1-Flash and
+  V4-Pro both have 1M. `DeepseekProvider` now implements
+  `contextWindowForModel`, so the loop's hard context cap and 90%
+  auto-compaction use the real window. Previously long sessions were capped at
+  ~157K tokens and every turn failed with "Request exceeds the provider context
+  budget after applying ephemeralSystemPrompt".
+
 ## [0.5.1] - 2026-09-08
 
 ### Fixed
