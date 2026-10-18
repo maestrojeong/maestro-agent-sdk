@@ -1,6 +1,8 @@
 import { unlinkSync } from "node:fs";
 import type { AgentRegistry } from "@/agents/contracts";
 import {
+  isDeepseekFlashModel,
+  LEGACY_DEEPSEEK_FLASH_IDS,
   MODEL_DEEPSEEK_V4_FLASH,
   MODEL_DEEPSEEK_V4_PRO,
   MODEL_GLM_5_2,
@@ -29,6 +31,9 @@ const ALIAS_MAP: Record<string, string> = {
   deepseek: MODEL_DEEPSEEK_V4_FLASH,
   "deepseek-flash": MODEL_DEEPSEEK_V4_FLASH,
   "deepseek-pro": MODEL_DEEPSEEK_V4_PRO,
+  // Retired Flash ids resolve to the canonical id, so a session or host setting
+  // that still carries `deepseek-v4-flash` keeps working.
+  ...Object.fromEntries(LEGACY_DEEPSEEK_FLASH_IDS.map((id) => [id, MODEL_DEEPSEEK_V4_FLASH])),
   // Kimi / Moonshot AI — flagship K3 and coding-specialized K2.7 Code only.
   kimi: MODEL_KIMI_K3,
   "kimi-pro": MODEL_KIMI_K3,
@@ -52,7 +57,7 @@ const VALID_EFFORTS = new Set<EffortLevel>(MAESTRO_EFFORT_VALUES);
  * DeepSeek V4 caps native output at 384K. We pin conservative defaults to
  * avoid runaway cost/wall-time on a single turn:
  *   - `deepseek-v4-pro`   → 65_536
- *   - `deepseek-v4-flash` → 32_768
+ *   - `deepseek-flash`    → 32_768 (the retired `deepseek-v4-flash` shares it)
  * K3 uses `max_completion_tokens`; K2.7 Code uses `max_tokens`. We keep
  * conservative defaults for both:
  *   - `kimi-k3`                    → 65_536 (native cap far higher, 1M ctx)
@@ -101,7 +106,8 @@ export const DEFAULT_MAX_OUTPUT_TOKENS = 32_768 as const;
  * output tokens") without duplicating the table.
  */
 export function getNativeMaxOutputTokens(model: string): number {
-  return MODEL_MAX_OUTPUT_TOKENS[model] ?? DEFAULT_MAX_OUTPUT_TOKENS;
+  const canonical = isDeepseekFlashModel(model) ? MODEL_DEEPSEEK_V4_FLASH : model;
+  return MODEL_MAX_OUTPUT_TOKENS[canonical] ?? DEFAULT_MAX_OUTPUT_TOKENS;
 }
 
 export const maestroRegistry: AgentRegistry = {

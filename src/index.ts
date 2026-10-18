@@ -89,6 +89,7 @@ export { defineTool } from "@/providers/base";
 export {
   DeepseekProvider,
   effortForDeepseek,
+  isVisionCapableDeepseekModel,
   translateMessagesToOpenAI,
 } from "@/providers/deepseek";
 export {
@@ -185,6 +186,7 @@ export type {
   GuardrailResult,
   LlmPostHook,
   LlmPreHook,
+  MaestroErrorCode,
   ProviderApiKeyOverrides,
   TokenUsage,
   UnifiedEvent,

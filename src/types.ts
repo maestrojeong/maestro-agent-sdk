@@ -112,6 +112,17 @@ export function isAgentKind(value: unknown): value is AgentKind {
  * Normalized event stream emitted by the agent loop. Hosts iterate this
  * async generator and render / persist whichever variants they care about.
  */
+/**
+ * Machine-readable code on `error` events, so hosts can branch without
+ * pattern-matching the human-readable `content`. Optional and additive: events
+ * without a code behave exactly as before.
+ *
+ * - `context_budget_exceeded`: the request is still over the provider's context
+ *   budget after trimming, so it was not sent. Retrying cannot help — the
+ *   conversation must be compacted or restarted.
+ */
+export type MaestroErrorCode = "context_budget_exceeded";
+
 export type UnifiedEvent =
   | { type: "user_message"; content: string }
   | { type: "session"; sessionId: string }
@@ -157,7 +168,7 @@ export type UnifiedEvent =
   | { type: "text"; content: string }
   | { type: "result"; content: string; stopReason: string; usage?: TokenUsage }
   | { type: "file"; path: string; source: string; origin: "tag" | "extension" }
-  | { type: "error"; content: string }
+  | { type: "error"; content: string; code?: MaestroErrorCode }
   | { type: "status"; content: string };
 
 /**
@@ -324,7 +335,7 @@ export interface AgentQueryOptions {
    * Override the auxiliary (compaction) model id. When omitted, the loop
    * resolves it via `resolveAuxModel(model)` — intra-provider remap to the
    * cheapest sibling (gpt-5.5 → gpt-5.4-mini, opus → haiku,
-   * deepseek-v4-pro → deepseek-v4-flash). Set this to pin a specific
+   * deepseek-v4-pro → deepseek-flash). Set this to pin a specific
    * compaction model regardless of which main model the call uses.
    *
    * v0.1.28+: added after production logs showed gpt-5.5 main + gpt-5.5

@@ -223,6 +223,8 @@ describe("runConversation", () => {
       expect(events).toEqual([
         {
           type: "error",
+          // Machine-readable code so hosts need not pattern-match the message.
+          code: "context_budget_exceeded",
           content:
             "Request exceeds the provider context budget after applying ephemeralSystemPrompt. " +
             "Reduce the ephemeral instructions or start a shorter session.",

@@ -1,3 +1,4 @@
+import { isDeepseekFlashModel } from "@/platform/config";
 import { logger } from "@/platform/logger";
 import type {
   MaestroToolResultBlock,
@@ -17,7 +18,7 @@ const DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions";
 export const DEEPSEEK_V4_CONTEXT_WINDOW = 1_000_000;
 
 /**
- * DeepSeek V4 provider (deepseek-v4-pro / deepseek-v4-flash).
+ * DeepSeek V4 provider (deepseek-v4-pro / deepseek-flash).
  *
  * The API is OpenAI-compatible at `/v1/chat/completions`, so this adapter
  * translates the Anthropic-shaped `ProviderMessage` history into OpenAI chat
@@ -58,7 +59,7 @@ interface OpenAIToolCall {
  * (their public Vision API mirrors OpenAI's content-parts contract:
  * `{type:"image_url", image_url:{url}}`). Older DeepSeek text-only
  * endpoints will reject these arrays — callers using image input must
- * pick a vision-capable model (`deepseek-v4-pro` / `deepseek-v4-flash`).
+ * pick a vision-capable model (`deepseek-flash`; `deepseek-v4-pro` has no vision).
  */
 type OpenAIContentPart =
   | { type: "text"; text: string }
@@ -100,6 +101,16 @@ interface OpenAIResponse {
   choices: OpenAIChoice[];
   usage?: OpenAIUsage;
   model?: string;
+}
+
+/**
+ * True for DeepSeek models with native vision (`image_url` parts): V4.1 Flash
+ * (`deepseek-flash`, and its retired alias `deepseek-v4-flash`, which the API
+ * serves with the same model). `deepseek-v4-pro` has no vision (official
+ * pricing page) and keeps the text placeholder.
+ */
+export function isVisionCapableDeepseekModel(model: string): boolean {
+  return isDeepseekFlashModel(model);
 }
 
 export class DeepseekProvider implements Provider {
@@ -321,7 +332,11 @@ export class DeepseekProvider implements Provider {
 function buildRequestBody(opts: ProviderCompleteOptions, stream: boolean): Record<string, unknown> {
   const body: Record<string, unknown> = {
     model: opts.model,
-    messages: translateMessagesToOpenAI(opts.system, opts.messages),
+    messages: translateMessagesToOpenAI(
+      opts.system,
+      opts.messages,
+      isVisionCapableDeepseekModel(opts.model),
+    ),
     max_tokens: opts.maxTokens ?? 4096,
   };
   if (opts.tools && opts.tools.length > 0) {
@@ -501,6 +516,7 @@ function openAiChoiceToBlocks(choice: OpenAIChoice): ProviderContentBlock[] {
 export function translateMessagesToOpenAI(
   system: string,
   messages: readonly ProviderMessage[],
+  visionCapable = false,
 ): OpenAIChatMessage[] {
   const out: OpenAIChatMessage[] = [];
   if (system && system.length > 0) {
@@ -534,15 +550,10 @@ export function translateMessagesToOpenAI(
         if (block.type === "text") {
           userParts.push({ type: "text", text: block.text });
         } else if (block.type === "image") {
-          // DeepSeek V4 text-only endpoints reject `image_url` parts. Instead
-          // of converting to an OpenAI image_url (which triggers 400 on non-
-          // vision models), we inject a text placeholder so the model knows
-          // an image was attached. Callers who need vision should pick a
-          // vision-capable model or extract text via Read/OCR first.
-          userParts.push({
-            type: "text",
-            text: `[Image attached — not visible to DeepSeek; describe it first or use a vision-capable model.]`,
-          });
+          // Vision-capable models (deepseek-flash) get a real `image_url`
+          // part; text-only ones (deepseek-v4-pro) get a placeholder so the
+          // model knows an image was attached instead of 400ing on the part.
+          userParts.push(imageBlockToPart(block.source, visionCapable));
         } else if (block.type === "document") {
           // DeepSeek/OpenAI Vision doesn't accept native PDF blocks; the
           // closest path is "extract text and inject as a text part". The
@@ -564,7 +575,7 @@ export function translateMessagesToOpenAI(
           out.push({
             role: "tool",
             tool_call_id: block.tool_use_id,
-            content: toolResultToOpenAI(block.content, block.is_error),
+            content: toolResultToOpenAI(block.content, block.is_error, visionCapable),
           });
         }
         // Other block types (tool_use, thinking) don't legally appear in
@@ -620,6 +631,42 @@ export function translateMessagesToOpenAI(
   return out;
 }
 
+const IMAGE_PLACEHOLDER = `[Image attached — not visible to DeepSeek; describe it first or use a vision-capable model.]`;
+
+/**
+ * Translate a Maestro `image` block into an OpenAI-shaped content part.
+ * Vision-capable DeepSeek models get a real `image_url` part (base64 data URI);
+ * everything else degrades to a text placeholder. Only `data:` URIs are sent —
+ * public https URLs are unverified for DeepSeek, so (like kimi.ts / glm.ts) they
+ * are degraded rather than passed through.
+ */
+function imageBlockToPart(
+  source: { type: "base64" | "url"; media_type?: string; data?: string; url?: string },
+  visionCapable: boolean,
+): OpenAIContentPart {
+  if (!visionCapable) return { type: "text", text: IMAGE_PLACEHOLDER };
+  if (source.type === "url") {
+    if (!source.url) return imageDegradePlaceholder("missing its url");
+    if (!source.url.startsWith("data:")) {
+      return imageDegradePlaceholder(
+        "DeepSeek's public image URL support is unverified — provide a base64 image instead",
+      );
+    }
+    return { type: "image_url", image_url: { url: source.url } };
+  }
+  if (!source.data) return imageDegradePlaceholder("missing its base64 data");
+  const mediaType = source.media_type ?? "image/png";
+  return { type: "image_url", image_url: { url: `data:${mediaType};base64,${source.data}` } };
+}
+
+function imageDegradePlaceholder(reason: string): OpenAIContentPart {
+  logger.warn(
+    { reason },
+    "deepseek: image block cannot be rendered — degrading to text placeholder",
+  );
+  return { type: "text", text: `[Image attached — cannot render on DeepSeek: ${reason}.]` };
+}
+
 /**
  * If a user message ends up as all-text parts, collapse to a single plain
  * string — keeps the wire shape identical to v0.1.17 for the (overwhelming)
@@ -657,6 +704,7 @@ function condenseUserParts(parts: OpenAIContentPart[]): string | OpenAIContentPa
 function toolResultToOpenAI(
   content: string | MaestroToolResultBlock[],
   isError?: boolean,
+  visionCapable = false,
 ): string | OpenAIContentPart[] {
   // OpenAI `tool` messages have no structural equivalent of Anthropic's
   // `tool_result.is_error` flag, so without this prefix an `is_error: true`
@@ -679,12 +727,8 @@ function toolResultToOpenAI(
     if (b.type === "text") {
       parts.push({ type: "text", text: b.text });
     } else if (b.type === "image") {
-      // Same rationale as user-message image handling — DeepSeek text-only
-      // endpoints reject `image_url` parts. Convert to text placeholder.
-      parts.push({
-        type: "text",
-        text: `[Image attached — not visible to DeepSeek; describe it first or use a vision-capable model.]`,
-      });
+      // Same rule as user-message images (see `imageBlockToPart`).
+      parts.push(imageBlockToPart(b.source, visionCapable));
     } else if (b.type === "document") {
       const bytes = b.source.data ? Math.floor((b.source.data.length * 3) / 4) : 0;
       parts.push({

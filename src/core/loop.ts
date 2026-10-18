@@ -366,6 +366,7 @@ export async function* runConversation(
     if (agent.config.ephemeralSystemPrompt && hardCap.afterTokens > hardCapTokens) {
       yield {
         type: "error",
+        code: "context_budget_exceeded",
         content:
           "Request exceeds the provider context budget after applying ephemeralSystemPrompt. " +
           "Reduce the ephemeral instructions or start a shorter session.",

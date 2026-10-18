@@ -28,7 +28,18 @@ export const DATA_DIR: string = process.env.MAESTRO_DATA_DIR
 
 // DeepSeek V4 (released 2026-04-24). OpenAI-compatible chat-completions API.
 export const MODEL_DEEPSEEK_V4_PRO: string = "deepseek-v4-pro";
-export const MODEL_DEEPSEEK_V4_FLASH: string = "deepseek-v4-flash";
+// V4.1 Flash is served under the canonical id `deepseek-flash` (DeepSeek's docs:
+// "use `deepseek-flash` to access the latest V4.1-Flash"). The legacy
+// `deepseek-v4-flash` name is retired upstream but still routed to V4.1 Flash at
+// Flash pricing, so it stays a valid INPUT (stored sessions, host settings) and
+// is normalized to the canonical id before reaching the API.
+export const MODEL_DEEPSEEK_V4_FLASH: string = "deepseek-flash";
+export const LEGACY_DEEPSEEK_FLASH_IDS: readonly string[] = ["deepseek-v4-flash"];
+
+/** True for the canonical DeepSeek Flash id and its retired legacy aliases. */
+export function isDeepseekFlashModel(model: string): boolean {
+  return model === MODEL_DEEPSEEK_V4_FLASH || LEGACY_DEEPSEEK_FLASH_IDS.includes(model);
+}
 
 // Kimi / Moonshot AI. OpenAI-compatible chat-completions API.
 export const MODEL_KIMI_K3: string = "kimi-k3";

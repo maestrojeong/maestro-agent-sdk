@@ -108,12 +108,14 @@ describe("DeepSeek/Kimi/GLM translator parity", () => {
 });
 
 describe("countImagesLosingVisibility / modelHasNativeVision (provider-switch capability check)", () => {
-  test("Kimi K3/K2.7-code and GLM's glm-5.3-flash are natively vision-capable; DeepSeek and glm-5.2/glm-5.3 are not", () => {
+  test("Kimi K3/K2.7-code and GLM's glm-5.3-flash are natively vision-capable; DeepSeek Pro and glm-5.2/glm-5.3 are not", () => {
     expect(modelHasNativeVision("kimi-k3")).toBe(true);
     expect(modelHasNativeVision("kimi-k2.7-code")).toBe(true);
     expect(modelHasNativeVision("glm-5.3-flash")).toBe(true);
     expect(modelHasNativeVision("deepseek-v4-pro")).toBe(false);
-    expect(modelHasNativeVision("deepseek-v4-flash")).toBe(false);
+    // V4.1 Flash has native vision; its retired alias is served by the same model.
+    expect(modelHasNativeVision("deepseek-flash")).toBe(true);
+    expect(modelHasNativeVision("deepseek-v4-flash")).toBe(true);
     expect(modelHasNativeVision("glm-5.2")).toBe(false);
     expect(modelHasNativeVision("glm-5.3")).toBe(false);
   });
